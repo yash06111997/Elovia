@@ -17,7 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useApp, CustomMacros } from "@/context/AppContext";
+import { useApp, CustomMacros, FitnessGoal, FitnessLevel, ActivityLevel, WorkoutPreference, FoodPreference, Equipment, DietType } from "@/context/AppContext";
 import { useWorkout } from "@/context/WorkoutContext";
 import { useHealth } from "@/context/HealthContext";
 import { useAuth } from "@/lib/auth";
@@ -39,7 +39,44 @@ const levelLabels: Record<string, string> = {
   advanced: "Advanced",
 };
 
-type EditField = "heightCm" | "weightKg" | "targetWeightKg" | "targetWeeks" | null;
+const activityLabels: Record<string, string> = {
+  sedentary: "Sedentary",
+  lightly_active: "Lightly Active",
+  moderately_active: "Moderately Active",
+  very_active: "Very Active",
+  extra_active: "Extra Active",
+};
+
+const prefLabels: Record<string, string> = {
+  gym: "Gym",
+  home: "Home",
+  mixed: "Mixed",
+};
+
+const foodPrefLabels: Record<string, string> = {
+  non_vegetarian: "Non-Vegetarian",
+  vegetarian: "Vegetarian",
+  eggetarian: "Eggetarian",
+  vegan: "Vegan",
+};
+
+const allEquipment: { label: string; value: Equipment }[] = [
+  { label: "Dumbbells", value: "dumbbells" },
+  { label: "Barbell", value: "barbell" },
+  { label: "Bench", value: "bench" },
+  { label: "Resistance Bands", value: "resistance_bands" },
+  { label: "Pull-Up Bar", value: "pull_up_bar" },
+  { label: "Cable Machine", value: "cable_machine" },
+  { label: "Treadmill", value: "treadmill" },
+  { label: "Cycle", value: "cycle" },
+  { label: "Kettlebells", value: "kettlebells" },
+  { label: "Squat Rack", value: "squat_rack" },
+  { label: "Smith Machine", value: "smith_machine" },
+  { label: "No Equipment", value: "no_equipment" },
+];
+
+type EditField = "heightCm" | "weightKg" | "targetWeightKg" | "targetWeeks" | "age" | "sleepHours" | "waterIntakeLiters" | "workoutDaysPerWeek" | "workoutDurationMins" | null;
+type EditSection = "fitness" | "diet" | "equipment" | "health" | "name" | null;
 
 export default function ProfileScreen() {
   const colorScheme = useColorScheme();
@@ -157,6 +194,7 @@ export default function ProfileScreen() {
   const macros = calculateMacros();
 
   const [editField, setEditField] = useState<EditField>(null);
+  const [editSection, setEditSection] = useState<EditSection>(null);
   const [macroModalVisible, setMacroModalVisible] = useState(false);
   const [macroForm, setMacroForm] = useState({
     calories: macros.calories.toString(),
@@ -225,6 +263,11 @@ export default function ProfileScreen() {
     weightKg: { title: "Edit Weight", unit: "kg", min: 30, max: 250, step: 0.5, value: profile.weightKg },
     targetWeightKg: { title: "Edit Target Weight", unit: "kg", min: 30, max: 250, step: 0.5, value: profile.targetWeightKg || profile.weightKg },
     targetWeeks: { title: "Edit Target Weeks", unit: "weeks", min: 4, max: 52, step: 1, value: profile.targetWeeks || 12 },
+    age: { title: "Edit Age", unit: "years", min: 10, max: 90, step: 1, value: profile.age },
+    sleepHours: { title: "Edit Sleep Hours", unit: "hrs", min: 3, max: 12, step: 0.5, value: profile.sleepHours },
+    waterIntakeLiters: { title: "Edit Water Intake", unit: "L", min: 0.5, max: 6, step: 0.25, value: profile.waterIntakeLiters },
+    workoutDaysPerWeek: { title: "Edit Workout Days", unit: "days/wk", min: 1, max: 7, step: 1, value: profile.workoutDaysPerWeek },
+    workoutDurationMins: { title: "Edit Session Length", unit: "min", min: 15, max: 120, step: 15, value: profile.workoutDurationMins },
   };
 
   const currentEditConfig = editField ? editFieldConfig[editField] : null;
@@ -263,8 +306,8 @@ export default function ProfileScreen() {
       </View>
 
       <SectionCard title="Body Stats" isDark={isDark} theme={theme} subtitle="Tap values to edit">
-        <InfoRow label="Age" value={`${profile.age} years`} theme={theme} />
-        <InfoRow label="Gender" value={profile.gender.charAt(0).toUpperCase() + profile.gender.slice(1)} theme={theme} />
+        <TappableRow label="Age" value={`${profile.age} years`} theme={theme} onPress={() => setEditField("age")} />
+        <TappableRow label="Gender" value={profile.gender.charAt(0).toUpperCase() + profile.gender.slice(1)} theme={theme} onPress={() => setEditSection("name")} />
         <TappableRow label="Height" value={`${profile.heightCm} cm`} theme={theme} onPress={() => setEditField("heightCm")} />
         <TappableRow label="Weight" value={`${profile.weightKg} kg`} theme={theme} onPress={() => setEditField("weightKg")} />
         <TappableRow
@@ -325,35 +368,41 @@ export default function ProfileScreen() {
         <InfoRow label="Fats" value={`${macros.fats} g`} theme={theme} />
       </SectionCard>
 
-      <SectionCard title="Fitness Profile" isDark={isDark} theme={theme}>
-        <InfoRow label="Goal" value={goalLabels[profile.goal]} theme={theme} />
-        <InfoRow label="Level" value={levelLabels[profile.fitnessLevel]} theme={theme} />
-        <InfoRow label="Activity" value={profile.activityLevel.replace("_", " ")} theme={theme} />
-        <InfoRow label="Workout Days" value={`${profile.workoutDaysPerWeek} days/week`} theme={theme} />
-        <InfoRow label="Session Length" value={`${profile.workoutDurationMins} min`} theme={theme} />
-        <InfoRow label="Preference" value={profile.workoutPreference} theme={theme} />
+      <SectionCard title="Fitness Profile" isDark={isDark} theme={theme} subtitle="Tap to edit" onEdit={() => setEditSection("fitness")}>
+        <TappableRow label="Goal" value={goalLabels[profile.goal]} theme={theme} onPress={() => setEditSection("fitness")} />
+        <TappableRow label="Level" value={levelLabels[profile.fitnessLevel]} theme={theme} onPress={() => setEditSection("fitness")} />
+        <TappableRow label="Activity" value={activityLabels[profile.activityLevel]} theme={theme} onPress={() => setEditSection("fitness")} />
+        <TappableRow label="Workout Days" value={`${profile.workoutDaysPerWeek} days/week`} theme={theme} onPress={() => setEditField("workoutDaysPerWeek")} />
+        <TappableRow label="Session Length" value={`${profile.workoutDurationMins} min`} theme={theme} onPress={() => setEditField("workoutDurationMins")} />
+        <TappableRow label="Preference" value={prefLabels[profile.workoutPreference]} theme={theme} onPress={() => setEditSection("fitness")} />
       </SectionCard>
 
-      <SectionCard title="Diet Profile" isDark={isDark} theme={theme}>
-        <InfoRow label="Food Type" value={profile.foodPreference.replace("_", " ")} theme={theme} />
-        {profile.dietaryRestrictions ? <InfoRow label="Restrictions" value={profile.dietaryRestrictions} theme={theme} /> : null}
-        {profile.dislikedFoods ? <InfoRow label="Dislikes" value={profile.dislikedFoods} theme={theme} /> : null}
-        {profile.medicalNotes ? <InfoRow label="Medical Notes" value={profile.medicalNotes} theme={theme} /> : null}
+      <SectionCard title="Diet Profile" isDark={isDark} theme={theme} subtitle="Tap to edit" onEdit={() => setEditSection("diet")}>
+        <TappableRow label="Food Type" value={foodPrefLabels[profile.foodPreference]} theme={theme} onPress={() => setEditSection("diet")} />
+        <TappableRow label="Restrictions" value={profile.dietaryRestrictions || "None"} theme={theme} onPress={() => setEditSection("diet")} />
+        <TappableRow label="Dislikes" value={profile.dislikedFoods || "None"} theme={theme} onPress={() => setEditSection("diet")} />
+        <TappableRow label="Medical Notes" value={profile.medicalNotes || "None"} theme={theme} onPress={() => setEditSection("diet")} />
       </SectionCard>
 
-      <SectionCard title="Equipment" isDark={isDark} theme={theme}>
-        <View style={styles.equipmentList}>
-          {profile.equipment.map((eq) => (
-            <View key={eq} style={[styles.equipTag, { backgroundColor: Colors.primary + "20" }]}>
-              <Text style={[styles.equipTagText, { color: Colors.primary }]}>{eq.replace(/_/g, " ")}</Text>
+      <SectionCard title="Equipment" isDark={isDark} theme={theme} subtitle="Tap to edit" onEdit={() => setEditSection("equipment")}>
+        <TouchableOpacity onPress={() => setEditSection("equipment")} activeOpacity={0.7}>
+          <View style={styles.equipmentList}>
+            {profile.equipment.map((eq) => (
+              <View key={eq} style={[styles.equipTag, { backgroundColor: Colors.primary + "20" }]}>
+                <Text style={[styles.equipTagText, { color: Colors.primary }]}>{eq.replace(/_/g, " ")}</Text>
+              </View>
+            ))}
+            <View style={[styles.equipTag, { backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }]}>
+              <Ionicons name="pencil" size={10} color={Colors.primary} />
+              <Text style={[styles.equipTagText, { color: Colors.primary }]}>Edit</Text>
             </View>
-          ))}
-        </View>
+          </View>
+        </TouchableOpacity>
       </SectionCard>
 
-      <SectionCard title="Health Habits" isDark={isDark} theme={theme}>
-        <InfoRow label="Sleep" value={`${profile.sleepHours} hours/night`} theme={theme} />
-        <InfoRow label="Water Goal" value={`${profile.waterIntakeLiters} L/day`} theme={theme} />
+      <SectionCard title="Health Habits" isDark={isDark} theme={theme} subtitle="Tap to edit">
+        <TappableRow label="Sleep" value={`${profile.sleepHours} hours/night`} theme={theme} onPress={() => setEditField("sleepHours")} />
+        <TappableRow label="Water Goal" value={`${profile.waterIntakeLiters} L/day`} theme={theme} onPress={() => setEditField("waterIntakeLiters")} />
       </SectionCard>
 
       <SectionCard title="Health Data Sync" isDark={isDark} theme={theme} subtitle="Connect devices & apps">
@@ -629,6 +678,42 @@ export default function ProfileScreen() {
           </View>
         </View>
       </Modal>
+
+      <FitnessEditModal
+        visible={editSection === "fitness"}
+        onClose={() => setEditSection(null)}
+        profile={profile}
+        updateProfileField={updateProfileField}
+        isDark={isDark}
+        theme={theme}
+      />
+
+      <DietEditModal
+        visible={editSection === "diet"}
+        onClose={() => setEditSection(null)}
+        profile={profile}
+        updateProfileField={updateProfileField}
+        isDark={isDark}
+        theme={theme}
+      />
+
+      <EquipmentEditModal
+        visible={editSection === "equipment"}
+        onClose={() => setEditSection(null)}
+        profile={profile}
+        updateProfileField={updateProfileField}
+        isDark={isDark}
+        theme={theme}
+      />
+
+      <NameGenderEditModal
+        visible={editSection === "name"}
+        onClose={() => setEditSection(null)}
+        profile={profile}
+        updateProfileField={updateProfileField}
+        isDark={isDark}
+        theme={theme}
+      />
     </ScrollView>
   );
 }
@@ -650,7 +735,7 @@ function MacroInput({ label, unit, value, onChange, theme, color }: any) {
   );
 }
 
-function SectionCard({ title, children, isDark, theme, subtitle }: any) {
+function SectionCard({ title, children, isDark, theme, subtitle, onEdit }: any) {
   return (
     <View style={[styles.sectionCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
       <View style={styles.sectionHeaderRow}>
@@ -659,6 +744,300 @@ function SectionCard({ title, children, isDark, theme, subtitle }: any) {
       </View>
       {children}
     </View>
+  );
+}
+
+function ModalSheet({ visible, onClose, title, children, theme }: any) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.macroOverlay}>
+        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onClose} />
+        <ScrollView style={{ maxHeight: "85%" }} bounces={false} keyboardShouldPersistTaps="handled">
+          <View style={[styles.macroSheet, { backgroundColor: theme.surface }]}>
+            <View style={styles.macroHandle} />
+            <Text style={[styles.macroTitle, { color: theme.text }]}>{title}</Text>
+            {children}
+          </View>
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+}
+
+function OptionPicker({ label, options, selected, onSelect, theme }: any) {
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>{label}</Text>
+      <View style={styles.optionGrid}>
+        {options.map((opt: any) => {
+          const active = selected === opt.value;
+          return (
+            <TouchableOpacity
+              key={opt.value}
+              style={[styles.optionChip, {
+                backgroundColor: active ? Colors.primary + "20" : theme.card,
+                borderColor: active ? Colors.primary : theme.border,
+              }]}
+              onPress={() => { onSelect(opt.value); Haptics.selectionAsync(); }}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.optionChipText, { color: active ? Colors.primary : theme.text }]}>
+                {opt.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDark, theme }: any) {
+  const [goal, setGoal] = useState(profile.goal);
+  const [level, setLevel] = useState(profile.fitnessLevel);
+  const [activity, setActivity] = useState(profile.activityLevel);
+  const [pref, setPref] = useState(profile.workoutPreference);
+
+  React.useEffect(() => {
+    if (visible) {
+      setGoal(profile.goal);
+      setLevel(profile.fitnessLevel);
+      setActivity(profile.activityLevel);
+      setPref(profile.workoutPreference);
+    }
+  }, [visible]);
+
+  const handleSave = () => {
+    updateProfileField("goal", goal);
+    updateProfileField("fitnessLevel", level);
+    updateProfileField("activityLevel", activity);
+    updateProfileField("workoutPreference", pref);
+    onClose();
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  return (
+    <ModalSheet visible={visible} onClose={onClose} title="Edit Fitness Profile" theme={theme}>
+      <OptionPicker
+        label="Primary Goal"
+        options={Object.entries(goalLabels).map(([value, label]) => ({ value, label }))}
+        selected={goal}
+        onSelect={setGoal}
+        theme={theme}
+      />
+      <OptionPicker
+        label="Fitness Level"
+        options={Object.entries(levelLabels).map(([value, label]) => ({ value, label }))}
+        selected={level}
+        onSelect={setLevel}
+        theme={theme}
+      />
+      <OptionPicker
+        label="Activity Level"
+        options={Object.entries(activityLabels).map(([value, label]) => ({ value, label }))}
+        selected={activity}
+        onSelect={setActivity}
+        theme={theme}
+      />
+      <OptionPicker
+        label="Workout Preference"
+        options={Object.entries(prefLabels).map(([value, label]) => ({ value, label }))}
+        selected={pref}
+        onSelect={setPref}
+        theme={theme}
+      />
+      <View style={styles.macroActions}>
+        <TouchableOpacity style={[styles.macroCancelBtn, { borderColor: theme.border }]} onPress={onClose}>
+          <Text style={[styles.macroCancelText, { color: theme.textSecondary }]}>Cancel</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.macroSaveBtn, { backgroundColor: Colors.primary }]} onPress={handleSave} activeOpacity={0.8}>
+          <Text style={styles.macroSaveText}>Save</Text>
+        </TouchableOpacity>
+      </View>
+    </ModalSheet>
+  );
+}
+
+function DietEditModal({ visible, onClose, profile, updateProfileField, isDark, theme }: any) {
+  const [foodPref, setFoodPref] = useState(profile.foodPreference);
+  const [restrictions, setRestrictions] = useState(profile.dietaryRestrictions || "");
+  const [dislikes, setDislikes] = useState(profile.dislikedFoods || "");
+  const [medicalNotes, setMedicalNotes] = useState(profile.medicalNotes || "");
+
+  React.useEffect(() => {
+    if (visible) {
+      setFoodPref(profile.foodPreference);
+      setRestrictions(profile.dietaryRestrictions || "");
+      setDislikes(profile.dislikedFoods || "");
+      setMedicalNotes(profile.medicalNotes || "");
+    }
+  }, [visible]);
+
+  const handleSave = () => {
+    updateProfileField("foodPreference", foodPref);
+    updateProfileField("dietaryRestrictions", restrictions);
+    updateProfileField("dislikedFoods", dislikes);
+    updateProfileField("medicalNotes", medicalNotes);
+    onClose();
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  return (
+    <ModalSheet visible={visible} onClose={onClose} title="Edit Diet Profile" theme={theme}>
+      <OptionPicker
+        label="Food Preference"
+        options={Object.entries(foodPrefLabels).map(([value, label]) => ({ value, label }))}
+        selected={foodPref}
+        onSelect={setFoodPref}
+        theme={theme}
+      />
+      <View style={{ gap: 6 }}>
+        <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Restrictions / Allergies</Text>
+        <TextInput
+          style={[styles.editTextInput, { backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
+          value={restrictions}
+          onChangeText={setRestrictions}
+          placeholder="e.g. gluten-free, nut allergy..."
+          placeholderTextColor={theme.textMuted}
+          multiline
+        />
+      </View>
+      <View style={{ gap: 6 }}>
+        <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Disliked Foods</Text>
+        <TextInput
+          style={[styles.editTextInput, { backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
+          value={dislikes}
+          onChangeText={setDislikes}
+          placeholder="e.g. broccoli, tofu..."
+          placeholderTextColor={theme.textMuted}
+          multiline
+        />
+      </View>
+      <View style={{ gap: 6 }}>
+        <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Medical Notes</Text>
+        <TextInput
+          style={[styles.editTextInput, { backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
+          value={medicalNotes}
+          onChangeText={setMedicalNotes}
+          placeholder="e.g. lower back pain..."
+          placeholderTextColor={theme.textMuted}
+          multiline
+        />
+      </View>
+      <View style={styles.macroActions}>
+        <TouchableOpacity style={[styles.macroCancelBtn, { borderColor: theme.border }]} onPress={onClose}>
+          <Text style={[styles.macroCancelText, { color: theme.textSecondary }]}>Cancel</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.macroSaveBtn, { backgroundColor: Colors.primary }]} onPress={handleSave} activeOpacity={0.8}>
+          <Text style={styles.macroSaveText}>Save</Text>
+        </TouchableOpacity>
+      </View>
+    </ModalSheet>
+  );
+}
+
+function EquipmentEditModal({ visible, onClose, profile, updateProfileField, isDark, theme }: any) {
+  const [selected, setSelected] = useState<Equipment[]>(profile.equipment || []);
+
+  React.useEffect(() => {
+    if (visible) {
+      setSelected(profile.equipment || []);
+    }
+  }, [visible]);
+
+  const toggle = (eq: Equipment) => {
+    setSelected((prev) => prev.includes(eq) ? prev.filter((e) => e !== eq) : [...prev, eq]);
+    Haptics.selectionAsync();
+  };
+
+  const handleSave = () => {
+    updateProfileField("equipment", selected);
+    onClose();
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  return (
+    <ModalSheet visible={visible} onClose={onClose} title="Edit Equipment" theme={theme}>
+      <View style={styles.optionGrid}>
+        {allEquipment.map((eq) => {
+          const active = selected.includes(eq.value);
+          return (
+            <TouchableOpacity
+              key={eq.value}
+              style={[styles.optionChip, {
+                backgroundColor: active ? Colors.primary + "20" : theme.card,
+                borderColor: active ? Colors.primary : theme.border,
+              }]}
+              onPress={() => toggle(eq.value)}
+              activeOpacity={0.8}
+            >
+              {active && <Ionicons name="checkmark-circle" size={14} color={Colors.primary} />}
+              <Text style={[styles.optionChipText, { color: active ? Colors.primary : theme.text }]}>
+                {eq.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+      <View style={styles.macroActions}>
+        <TouchableOpacity style={[styles.macroCancelBtn, { borderColor: theme.border }]} onPress={onClose}>
+          <Text style={[styles.macroCancelText, { color: theme.textSecondary }]}>Cancel</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.macroSaveBtn, { backgroundColor: Colors.primary }]} onPress={handleSave} activeOpacity={0.8}>
+          <Text style={styles.macroSaveText}>Save</Text>
+        </TouchableOpacity>
+      </View>
+    </ModalSheet>
+  );
+}
+
+function NameGenderEditModal({ visible, onClose, profile, updateProfileField, isDark, theme }: any) {
+  const [name, setName] = useState(profile.name || "");
+
+  React.useEffect(() => {
+    if (visible) {
+      setName(profile.name || "");
+    }
+  }, [visible]);
+
+  const handleSave = () => {
+    if (name.trim()) updateProfileField("name", name.trim());
+    onClose();
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  return (
+    <ModalSheet visible={visible} onClose={onClose} title="Edit Name & Gender" theme={theme}>
+      <View style={{ gap: 6 }}>
+        <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Name</Text>
+        <TextInput
+          style={[styles.editTextInput, { backgroundColor: theme.card, borderColor: theme.border, color: theme.text, height: 44 }]}
+          value={name}
+          onChangeText={setName}
+          placeholder="Your name"
+          placeholderTextColor={theme.textMuted}
+        />
+      </View>
+      <OptionPicker
+        label="Gender"
+        options={[
+          { label: "Male", value: "male" },
+          { label: "Female", value: "female" },
+          { label: "Other", value: "other" },
+        ]}
+        selected={profile.gender}
+        onSelect={(v: string) => updateProfileField("gender", v)}
+        theme={theme}
+      />
+      <View style={styles.macroActions}>
+        <TouchableOpacity style={[styles.macroCancelBtn, { borderColor: theme.border }]} onPress={onClose}>
+          <Text style={[styles.macroCancelText, { color: theme.textSecondary }]}>Cancel</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.macroSaveBtn, { backgroundColor: Colors.primary }]} onPress={handleSave} activeOpacity={0.8}>
+          <Text style={styles.macroSaveText}>Save</Text>
+        </TouchableOpacity>
+      </View>
+    </ModalSheet>
   );
 }
 
@@ -755,7 +1134,7 @@ const styles = StyleSheet.create({
   macroEditText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
   macroResetBtn: { width: 32, height: 32, borderRadius: 8, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   equipmentList: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingTop: 4 },
-  equipTag: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
+  equipTag: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
   equipTagText: { fontSize: 12, fontFamily: "Inter_500Medium", textTransform: "capitalize" },
   settingRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 4 },
   settingLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
@@ -811,4 +1190,9 @@ const styles = StyleSheet.create({
   logoutBtnText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
   loginBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, padding: 14, borderRadius: 12 },
   loginBtnText: { color: "#000", fontSize: 15, fontFamily: "Inter_700Bold" },
+  editSectionLabel: { fontSize: 12, fontFamily: "Inter_600SemiBold", textTransform: "uppercase", letterSpacing: 0.5 },
+  optionGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  optionChip: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, borderWidth: 1, flexDirection: "row", alignItems: "center", gap: 6 },
+  optionChipText: { fontSize: 13, fontFamily: "Inter_500Medium" },
+  editTextInput: { borderWidth: 1, borderRadius: 10, padding: 12, fontSize: 14, fontFamily: "Inter_400Regular", minHeight: 60, textAlignVertical: "top" },
 });

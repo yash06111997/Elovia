@@ -16,10 +16,11 @@ import * as Haptics from "expo-haptics";
 import { useApp, UserProfile, FitnessGoal, FitnessLevel, ActivityLevel, WorkoutPreference, FoodPreference, Equipment, DietType } from "@/context/AppContext";
 import { useWorkout } from "@/context/WorkoutContext";
 import { useNutrition } from "@/context/NutritionContext";
+import { useAuth } from "@/lib/auth";
 import { generateWorkoutPlan, generateMealPlan } from "@/utils/aiEngine";
 import { Colors } from "@/constants/colors";
 
-const TOTAL_STEPS = 6;
+const TOTAL_STEPS = 7;
 
 export default function OnboardingScreen() {
   const colorScheme = useColorScheme();
@@ -29,6 +30,7 @@ export default function OnboardingScreen() {
   const { setProfile, completeOnboarding } = useApp();
   const { setPlan } = useWorkout();
   const { setMealPlan } = useNutrition();
+  const { isAuthenticated, login, user } = useAuth();
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(false);
 
@@ -97,16 +99,18 @@ export default function OnboardingScreen() {
   const renderStep = () => {
     switch (step) {
       case 0:
-        return <StepPersonal form={form} update={update} isDark={isDark} theme={theme} />;
+        return <StepWelcome isAuthenticated={isAuthenticated} login={login} user={user} isDark={isDark} theme={theme} />;
       case 1:
-        return <StepGoal form={form} update={update} isDark={isDark} theme={theme} />;
+        return <StepPersonal form={form} update={update} isDark={isDark} theme={theme} />;
       case 2:
-        return <StepWorkout form={form} update={update} isDark={isDark} theme={theme} />;
+        return <StepGoal form={form} update={update} isDark={isDark} theme={theme} />;
       case 3:
-        return <StepEquipment form={form} toggleEquipment={toggleEquipment} isDark={isDark} theme={theme} />;
+        return <StepWorkout form={form} update={update} isDark={isDark} theme={theme} />;
       case 4:
-        return <StepDiet form={form} update={update} isDark={isDark} theme={theme} />;
+        return <StepEquipment form={form} toggleEquipment={toggleEquipment} isDark={isDark} theme={theme} />;
       case 5:
+        return <StepDiet form={form} update={update} isDark={isDark} theme={theme} />;
+      case 6:
         return <StepHealth form={form} update={update} isDark={isDark} theme={theme} />;
       default:
         return null;
@@ -114,6 +118,7 @@ export default function OnboardingScreen() {
   };
 
   const stepTitles = [
+    "Welcome",
     "About You",
     "Your Goals",
     "Workout Preferences",
@@ -175,6 +180,66 @@ export default function OnboardingScreen() {
           )}
         </TouchableOpacity>
       </View>
+    </View>
+  );
+}
+
+function StepWelcome({ isAuthenticated, login, user, isDark, theme }: any) {
+  return (
+    <View style={styles.stepContent}>
+      <View style={styles.welcomeIconWrap}>
+        <View style={[styles.welcomeIconCircle, { backgroundColor: Colors.primary + "20" }]}>
+          <Ionicons name="fitness" size={48} color={Colors.primary} />
+        </View>
+      </View>
+
+      <Text style={[styles.welcomeHeadline, { color: theme.text }]}>
+        Your AI-Powered{"\n"}Fitness Companion
+      </Text>
+      <Text style={[styles.welcomeSubtext, { color: theme.textSecondary }]}>
+        Personalized workouts, meal plans, and health tracking — all in one place.
+      </Text>
+
+      <View style={[styles.welcomeCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+        <View style={styles.welcomeFeature}>
+          <Ionicons name="barbell-outline" size={20} color={Colors.primary} />
+          <Text style={[styles.welcomeFeatureText, { color: theme.text }]}>Custom workout plans</Text>
+        </View>
+        <View style={styles.welcomeFeature}>
+          <Ionicons name="nutrition-outline" size={20} color={Colors.accentGreen} />
+          <Text style={[styles.welcomeFeatureText, { color: theme.text }]}>AI meal planning</Text>
+        </View>
+        <View style={styles.welcomeFeature}>
+          <Ionicons name="analytics-outline" size={20} color={Colors.accent} />
+          <Text style={[styles.welcomeFeatureText, { color: theme.text }]}>Progress tracking</Text>
+        </View>
+      </View>
+
+      {isAuthenticated ? (
+        <View style={[styles.signedInCard, { backgroundColor: Colors.accentGreen + "15", borderColor: Colors.accentGreen + "40" }]}>
+          <Ionicons name="checkmark-circle" size={22} color={Colors.accentGreen} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.signedInTitle, { color: Colors.accentGreen }]}>Signed In</Text>
+            <Text style={[styles.signedInEmail, { color: theme.textSecondary }]}>
+              {user?.email || "Your data will be saved to your account"}
+            </Text>
+          </View>
+        </View>
+      ) : (
+        <View style={styles.welcomeAuthSection}>
+          <TouchableOpacity
+            style={[styles.googleSignInBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
+            onPress={() => { login(); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); }}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="logo-google" size={20} color="#4285F4" />
+            <Text style={[styles.googleSignInText, { color: theme.text }]}>Sign in with Google</Text>
+          </TouchableOpacity>
+          <Text style={[styles.skipAuthText, { color: theme.textMuted }]}>
+            Optional — you can sign in later from your Profile
+          </Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -436,22 +501,54 @@ function LabelInput({ label, value, onChangeText, placeholder, theme, multiline 
 }
 
 function NumberStepper({ label, value, min, max, step, onChange, theme }: any) {
+  const [editing, setEditing] = useState(false);
+  const [textVal, setTextVal] = useState(String(value));
+
+  const handleEndEditing = () => {
+    setEditing(false);
+    const parsed = parseFloat(textVal);
+    if (!isNaN(parsed)) {
+      const clamped = Math.max(min, Math.min(max, +(parsed).toFixed(2)));
+      onChange(clamped);
+      setTextVal(String(clamped));
+    } else {
+      setTextVal(String(value));
+    }
+  };
+
   return (
     <View style={styles.field}>
       <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>{label}</Text>
       <View style={styles.stepper}>
         <TouchableOpacity
           style={[styles.stepBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
-          onPress={() => { const v = Math.max(min, +(value - step).toFixed(2)); onChange(v); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
+          onPress={() => { const v = Math.max(min, +(value - step).toFixed(2)); onChange(v); setTextVal(String(v)); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
         >
           <Ionicons name="remove" size={18} color={theme.text} />
         </TouchableOpacity>
-        <View style={[styles.stepValue, { backgroundColor: theme.card, borderColor: theme.border }]}>
-          <Text style={[styles.stepValueText, { color: theme.text }]}>{value}</Text>
-        </View>
+        {editing ? (
+          <TextInput
+            style={[styles.stepValueInput, { backgroundColor: theme.card, borderColor: Colors.primary, color: theme.text }]}
+            value={textVal}
+            onChangeText={setTextVal}
+            onBlur={handleEndEditing}
+            onSubmitEditing={handleEndEditing}
+            keyboardType="decimal-pad"
+            selectTextOnFocus
+            autoFocus
+          />
+        ) : (
+          <TouchableOpacity
+            style={[styles.stepValue, { backgroundColor: theme.card, borderColor: theme.border }]}
+            onPress={() => { setTextVal(String(value)); setEditing(true); }}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.stepValueText, { color: theme.text }]}>{value}</Text>
+          </TouchableOpacity>
+        )}
         <TouchableOpacity
           style={[styles.stepBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
-          onPress={() => { const v = Math.min(max, +(value + step).toFixed(2)); onChange(v); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
+          onPress={() => { const v = Math.min(max, +(value + step).toFixed(2)); onChange(v); setTextVal(String(v)); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
         >
           <Ionicons name="add" size={18} color={theme.text} />
         </TouchableOpacity>
@@ -496,6 +593,7 @@ const styles = StyleSheet.create({
   stepBtn: { width: 44, height: 44, borderRadius: 12, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   stepValue: { flex: 1, height: 44, borderRadius: 12, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   stepValueText: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  stepValueInput: { flex: 1, height: 44, borderRadius: 12, borderWidth: 2, textAlign: "center", fontSize: 16, fontFamily: "Inter_600SemiBold" },
   chipRow: { flexDirection: "row", gap: 8 },
   chip: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 20, borderWidth: 1 },
   chipText: { fontSize: 13, fontFamily: "Inter_500Medium" },
@@ -515,4 +613,18 @@ const styles = StyleSheet.create({
   footer: { paddingHorizontal: 20, paddingTop: 12, borderTopWidth: 1 },
   nextBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: Colors.primary, borderRadius: 14, padding: 16, gap: 8 },
   nextBtnText: { color: "#000", fontSize: 16, fontFamily: "Inter_700Bold" },
+  welcomeIconWrap: { alignItems: "center", marginTop: 20, marginBottom: 16 },
+  welcomeIconCircle: { width: 100, height: 100, borderRadius: 50, alignItems: "center", justifyContent: "center" },
+  welcomeHeadline: { fontSize: 28, fontFamily: "Inter_700Bold", textAlign: "center", lineHeight: 36 },
+  welcomeSubtext: { fontSize: 15, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 22, paddingHorizontal: 10 },
+  welcomeCard: { borderRadius: 16, borderWidth: 1, padding: 16, gap: 14, marginTop: 8 },
+  welcomeFeature: { flexDirection: "row", alignItems: "center", gap: 12 },
+  welcomeFeatureText: { fontSize: 15, fontFamily: "Inter_500Medium" },
+  welcomeAuthSection: { gap: 10, marginTop: 8 },
+  googleSignInBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, padding: 16, borderRadius: 14, borderWidth: 1 },
+  googleSignInText: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  skipAuthText: { fontSize: 12, fontFamily: "Inter_400Regular", textAlign: "center" },
+  signedInCard: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 14, borderWidth: 1, marginTop: 8 },
+  signedInTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  signedInEmail: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 1 },
 });

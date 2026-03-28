@@ -12,8 +12,9 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 
 ## Features
 
-### Onboarding (6 steps)
-- Personal info (name, age, gender, height, weight, target weight)
+### Onboarding (7 steps)
+- **Welcome screen** — app branding, feature highlights, optional Google Sign-In button (can skip and sign in later from Profile)
+- Personal info (name, age, gender, height, weight, target weight) — **NumberStepper values are tappable for keyboard input**
 - Fitness goals (fat loss, muscle gain, strength, endurance, maintenance, general fitness) + **goal timeline** (target weeks stepper with live calorie adjustment preview)
 - Workout preferences (gym/home/mixed, days per week, session duration)
 - Equipment selection (12 equipment types)
@@ -64,12 +65,16 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 
 ### Profile Tab
 - Full profile view with all stats
-- Tap-to-edit height, weight, target weight, and **target weeks** (NumberEditModal with stepper + keypad)
+- **Full inline editing** — all profile sections are tappable with edit modals:
+  - Body Stats: tap-to-edit age, name/gender, height, weight, target weight, target weeks
+  - Fitness Profile: edit goal, fitness level, activity level, workout preference, days/week, session length (staged save with Cancel/Save)
+  - Diet Profile: edit food preference, restrictions, dislikes, medical notes (staged save)
+  - Equipment: edit all equipment toggles (staged save)
+  - Health Habits: edit sleep hours, water intake
 - **Goal timeline tracking** — shows weekly rate, daily calorie adjustment based on weight delta and timeline
 - Target weight tracking with weight delta badge
 - Manual macro overrides (custom calories/protein/carbs/fats targets)
 - Body stats, TDEE, daily macro targets
-- Fitness & diet profile summary
 - **Health Data Sync section** — Apple Health, Google Fit, Step Counter, GPS Tracking toggle cards
 - **Step tracking** with progress bar toward 10,000 goal
 - **GPS run tracking** — start/stop run with real-time distance tracking via expo-location, active run banner with pulse indicator
@@ -118,7 +123,7 @@ artifacts/mobile/
       progress.tsx        # Analytics
       profile.tsx         # Profile & settings (+ editable stats + custom macros)
     onboarding/
-      index.tsx           # 6-step onboarding flow (includes target weight)
+      index.tsx           # 7-step onboarding flow (Welcome + 6 setup steps, keyboard-editable number steppers)
   components/
     ProgressRing.tsx      # SVG circular progress
     MacroBar.tsx          # Animated macro progress bar
