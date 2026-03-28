@@ -1,96 +1,121 @@
-# Workspace
+# FitAI - Health & Fitness App
 
-## Overview
+A production-ready mobile health and fitness app built with Expo (React Native).
 
-pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.
+## Architecture
 
-## Stack
+- **Framework**: Expo / React Native with Expo Router file-based routing
+- **State**: React Context + AsyncStorage for full local persistence (no backend needed)
+- **Platform**: iOS, Android, Web (all supported)
 
-- **Monorepo tool**: pnpm workspaces
-- **Node.js version**: 24
-- **Package manager**: pnpm
-- **TypeScript version**: 5.9
-- **API framework**: Express 5
-- **Database**: PostgreSQL + Drizzle ORM
-- **Validation**: Zod (`zod/v4`), `drizzle-zod`
-- **API codegen**: Orval (from OpenAPI spec)
-- **Build**: esbuild (CJS bundle)
+## Features
 
-## Structure
+### Onboarding (6 steps)
+- Personal info (name, age, gender, height, weight)
+- Fitness goals (fat loss, muscle gain, strength, endurance, maintenance, general fitness)
+- Workout preferences (gym/home/mixed, days per week, session duration)
+- Equipment selection (12 equipment types)
+- Diet & nutrition (vegetarian/vegan/non-veg/eggetarian, restrictions, dislikes)
+- Health habits (sleep hours, water intake, medical notes)
 
-```text
-artifacts-monorepo/
-├── artifacts/              # Deployable applications
-│   └── api-server/         # Express API server
-├── lib/                    # Shared libraries
-│   ├── api-spec/           # OpenAPI spec + Orval codegen config
-│   ├── api-client-react/   # Generated React Query hooks
-│   ├── api-zod/            # Generated Zod schemas from OpenAPI
-│   └── db/                 # Drizzle ORM schema + DB connection
-├── scripts/                # Utility scripts (single workspace package)
-│   └── src/                # Individual .ts scripts, run via `pnpm --filter @workspace/scripts run <script>`
-├── pnpm-workspace.yaml     # pnpm workspace (artifacts/*, lib/*, lib/integrations/*, scripts)
-├── tsconfig.base.json      # Shared TS options (composite, bundler resolution, es2022)
-├── tsconfig.json           # Root TS project references
-└── package.json            # Root package with hoisted devDeps
+### Dashboard
+- TDEE-based calorie tracking ring (Mifflin-St Jeor formula)
+- Macro progress bars (protein/carbs/fats)
+- Today's workout card
+- Weekly completion tracker
+- Stats: steps, water intake (tap to add 250ml), weekly workouts, personal records
+- Greeting by time of day
+
+### Workouts Tab
+- AI-generated workout plans using local exercise database
+- Push/Pull/Legs, Upper/Lower, PPL, and 4/5/6-day bro splits
+- Per-exercise set logging with weight and rep inputs
+- Active session timer
+- PR tracking per exercise (highlighted with trophy icon)
+- Regenerate plan button
+
+### Diet Tab
+- AI-generated meal plans (breakfast/lunch/dinner/snack)
+- Food logging with quick-add modal
+- Daily macro progress tracking
+- Today's food log with delete support
+- Meal plan refresh
+
+### Progress Tab
+- Personal records leaderboard
+- Session history
+- Weekly calorie bar chart (7 days)
+- Body stats (BMI, weight change trend)
+- Tabs: Strength / Nutrition / Body
+
+### Profile Tab
+- Full profile view with all stats
+- Body stats, TDEE, daily macro targets
+- Fitness & diet profile summary
+- Dark/light mode toggle
+- Reset all data option
+
+## Tech Stack
+
+- **Expo SDK 54** with Expo Router v6
+- **expo-glass-effect** + **NativeTabs** (iOS 26 liquid glass tab bar)
+- **expo-blur** (tab bar blur on iOS)
+- **expo-symbols** (SF Symbols on iOS)
+- **@expo/vector-icons** (Ionicons on Android/Web)
+- **react-native-svg** (ProgressRing component)
+- **react-native-reanimated** (animated macro bars)
+- **@react-native-async-storage/async-storage** (full data persistence)
+- **expo-haptics** (tactile feedback throughout)
+- **@expo-google-fonts/inter** (Inter 400/500/600/700)
+
+## File Structure
+
+```
+artifacts/mobile/
+  app/
+    _layout.tsx           # Root layout with all providers
+    (tabs)/
+      _layout.tsx         # 5-tab layout with AppGuard onboarding redirect
+      index.tsx           # Dashboard
+      workouts.tsx        # Workout plans & logging
+      diet.tsx            # Nutrition tracking
+      progress.tsx        # Analytics
+      profile.tsx         # Profile & settings
+    onboarding/
+      index.tsx           # 6-step onboarding flow
+  components/
+    ProgressRing.tsx      # SVG circular progress
+    MacroBar.tsx          # Animated macro progress bar
+    StatCard.tsx          # Stat display card
+    ExerciseCard.tsx      # Exercise with set logging
+    MealCard.tsx          # Meal with log action
+    ErrorBoundary.tsx     # Error boundary
+  context/
+    AppContext.tsx         # Profile, health metrics, TDEE/macros
+    WorkoutContext.tsx     # Plans, sessions, PRs
+    NutritionContext.tsx   # Meal plans, food log
+  utils/
+    aiEngine.ts           # Local workout & meal plan generation
+  constants/
+    colors.ts             # Electric blue + dark charcoal theme
 ```
 
-## TypeScript & Composite Projects
+## Design System
 
-Every package extends `tsconfig.base.json` which sets `composite: true`. The root `tsconfig.json` lists all packages as project references. This means:
+- **Primary**: Electric blue `#00D4FF`
+- **Background**: Dark charcoal `#0A0A0F`
+- **Cards**: `#1A1A24` with `#2A2A3A` borders
+- **Accents**: Green `#00E676`, Orange `#FF6B35`, Yellow `#FFD600`, Red `#FF3D71`
+- **Font**: Inter (400/500/600/700)
+- Both **dark and light** modes supported
 
-- **Always typecheck from the root** — run `pnpm run typecheck` (which runs `tsc --build --emitDeclarationOnly`). This builds the full dependency graph so that cross-package imports resolve correctly. Running `tsc` inside a single package will fail if its dependencies haven't been built yet.
-- **`emitDeclarationOnly`** — we only emit `.d.ts` files during typecheck; actual JS bundling is handled by esbuild/tsx/vite...etc, not `tsc`.
-- **Project references** — when package A depends on package B, A's `tsconfig.json` must list B in its `references` array. `tsc --build` uses this to determine build order and skip up-to-date packages.
+## Local Data Persistence
 
-## Root Scripts
-
-- `pnpm run build` — runs `typecheck` first, then recursively runs `build` in all packages that define it
-- `pnpm run typecheck` — runs `tsc --build --emitDeclarationOnly` using project references
-
-## Packages
-
-### `artifacts/api-server` (`@workspace/api-server`)
-
-Express 5 API server. Routes live in `src/routes/` and use `@workspace/api-zod` for request and response validation and `@workspace/db` for persistence.
-
-- Entry: `src/index.ts` — reads `PORT`, starts Express
-- App setup: `src/app.ts` — mounts CORS, JSON/urlencoded parsing, routes at `/api`
-- Routes: `src/routes/index.ts` mounts sub-routers; `src/routes/health.ts` exposes `GET /health` (full path: `/api/health`)
-- Depends on: `@workspace/db`, `@workspace/api-zod`
-- `pnpm --filter @workspace/api-server run dev` — run the dev server
-- `pnpm --filter @workspace/api-server run build` — production esbuild bundle (`dist/index.cjs`)
-- Build bundles an allowlist of deps (express, cors, pg, drizzle-orm, zod, etc.) and externalizes the rest
-
-### `lib/db` (`@workspace/db`)
-
-Database layer using Drizzle ORM with PostgreSQL. Exports a Drizzle client instance and schema models.
-
-- `src/index.ts` — creates a `Pool` + Drizzle instance, exports schema
-- `src/schema/index.ts` — barrel re-export of all models
-- `src/schema/<modelname>.ts` — table definitions with `drizzle-zod` insert schemas (no models definitions exist right now)
-- `drizzle.config.ts` — Drizzle Kit config (requires `DATABASE_URL`, automatically provided by Replit)
-- Exports: `.` (pool, db, schema), `./schema` (schema only)
-
-Production migrations are handled by Replit when publishing. In development, we just use `pnpm --filter @workspace/db run push`, and we fallback to `pnpm --filter @workspace/db run push-force`.
-
-### `lib/api-spec` (`@workspace/api-spec`)
-
-Owns the OpenAPI 3.1 spec (`openapi.yaml`) and the Orval config (`orval.config.ts`). Running codegen produces output into two sibling packages:
-
-1. `lib/api-client-react/src/generated/` — React Query hooks + fetch client
-2. `lib/api-zod/src/generated/` — Zod schemas
-
-Run codegen: `pnpm --filter @workspace/api-spec run codegen`
-
-### `lib/api-zod` (`@workspace/api-zod`)
-
-Generated Zod schemas from the OpenAPI spec (e.g. `HealthCheckResponse`). Used by `api-server` for response validation.
-
-### `lib/api-client-react` (`@workspace/api-client-react`)
-
-Generated React Query hooks and fetch client from the OpenAPI spec (e.g. `useHealthCheck`, `healthCheck`).
-
-### `scripts` (`@workspace/scripts`)
-
-Utility scripts package. Each script is a `.ts` file in `src/` with a corresponding npm script in `package.json`. Run scripts via `pnpm --filter @workspace/scripts run <script>`. Scripts can import any workspace package (e.g., `@workspace/db`) by adding it as a dependency in `scripts/package.json`.
+All data is stored in AsyncStorage:
+- `@fitai_state` — profile, onboarding flag, health metrics, streak, total workouts
+- `@fitai_plan` — workout plan
+- `@fitai_sessions` — workout session history (up to 200)
+- `@fitai_prs` — personal records per exercise
+- `@fitai_meal_plan` — generated meal plan
+- `@fitai_food_log` — food log entries (up to 500)
+- `@fitai_active_session` — current in-progress workout session

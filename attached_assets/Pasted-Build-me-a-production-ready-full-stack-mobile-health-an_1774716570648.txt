@@ -1,0 +1,273 @@
+Build me a production-ready full-stack mobile health and fitness app with a clean modern UI and an AI-powered recommendation system. I am a non-technical founder, so generate the app architecture, database schema, frontend, backend, and deployment-ready code with clear comments and setup instructions.
+
+APP GOAL:
+Create an all-in-one health app that:
+1. Recommends personalized workouts
+2. Recommends personalized diet and nutrition
+3. Tracks workout performance and fitness progress
+4. Tracks health-related metrics like heart rate and GPS/location-based activity
+5. Gives a dashboard that feels premium, simple, motivating, and easy to use
+
+PLATFORM:
+Build it as a mobile-first app. If needed, use React Native with Expo for frontend and Node.js/Express or Next.js/FastAPI for backend. Use PostgreSQL or Supabase for database/auth/storage. Choose the stack that is easiest to run and deploy from Replit, but keep it scalable.
+
+CORE APP FLOW:
+When a user signs up, the onboarding should ask for:
+- Name
+- Age
+- Gender
+- Height
+- Weight
+- Goal: fat loss / muscle gain / maintenance / general fitness / strength / endurance
+- Fitness level: beginner / intermediate / advanced
+- Activity level
+- Workout preference: gym / home / mixed
+- Workout days per week
+- Workout duration preferred
+- Equipment available:
+  - dumbbells
+  - barbell
+  - bench
+  - resistance bands
+  - pull-up bar
+  - cable machine
+  - treadmill
+  - cycle
+  - kettlebells
+  - squat rack
+  - smith machine
+  - no equipment
+  - custom equipment list
+- Food preference:
+  - vegetarian
+  - eggetarian
+  - non-vegetarian
+  - vegan
+- Dietary restrictions / allergies
+- Foods disliked
+- Medical issues or injury notes
+- Sleep hours
+- Water intake habits
+
+IMPORTANT:
+The AI must use this information before generating workout or diet recommendations. Do not suggest random plans without respecting food type, dietary restrictions, injuries, fitness level, and available equipment.
+
+MAIN FEATURES:
+
+1. DASHBOARD
+The dashboard should show:
+- Daily calorie recommendation
+- Daily macros recommendation:
+  - protein
+  - carbs
+  - fats
+- Calories consumed today
+- Macros consumed today
+- Workout scheduled for the day
+- Workout completion percentage
+- Steps / activity summary
+- Water tracking
+- Heart rate summary if available
+- Weight trend summary
+- Progress summary cards
+- Streaks and motivation
+Make the dashboard visually attractive and easy to understand.
+
+2. WORKOUT RECOMMENDATION ENGINE
+The app should generate personalized workout plans based on:
+- user goal
+- age
+- fitness level
+- workout frequency
+- available equipment
+- home/gym preference
+- injury or mobility limitations
+
+For each workout day, display exercises in a table/card format with:
+- Exercise name
+- Number of sets
+- Reps or rep range
+- Rest time
+- Target muscle group
+- Notes / form cues
+- A simple exercise demo video or embedded exercise tutorial
+- Option to mark completed
+- Option to log actual reps and actual weight used
+
+The app must ask about all equipment the user has and only recommend exercises accordingly.
+
+3. DIET / NUTRITION RECOMMENDATION ENGINE
+The nutrition system must:
+- First ask food category:
+  - vegetarian
+  - eggetarian
+  - non-vegetarian
+  - vegan
+- Ask dietary restrictions and allergies before suggesting anything
+- Generate daily calories and macros according to the user’s goal
+- Suggest meal plans that respect food type and restrictions
+- Show meal suggestions for breakfast, lunch, dinner, snacks
+- Allow food logging
+- Track calories and macros consumed
+- Show progress bars for:
+  - calories
+  - protein
+  - carbs
+  - fats
+
+4. WORKOUT TRACKING
+The user should be able to log:
+- Exercise completed
+- Sets
+- Reps
+- Weight lifted
+- Time spent
+- Notes
+For each exercise, track:
+- Personal best / max weight lifted
+- Best reps
+- Best volume
+- Last performed date
+
+5. PROGRESS SECTION
+The progress page must show:
+- Weight change over time
+- Calories adherence
+- Macros adherence
+- Workout consistency
+- Personal records
+- Max weight pulled/pushed for each exercise
+- Progress bar for each exercise
+- Strength progression history
+- Body measurement tracking if possible
+- Charts and graphs for trends
+
+IMPORTANT:
+Do not only show calorie progress. Also show progress for:
+- macros
+- workout completion
+- strength progress for each exercise
+
+6. HEALTH TRACKING
+Add health-related tracking features such as:
+- Heart rate tracking
+- GPS/location tracking for walks, runs, cycling, etc.
+- Step/activity tracking
+- Distance traveled
+- Estimated calories burned
+- Sleep tracking placeholder if wearable integration is not yet available
+
+IMPORTANT:
+Handle permissions properly for:
+- Health data
+- Device sensors
+- GPS/location
+- Notifications
+If native APIs are hard to implement fully, create proper architecture and mock integrations with clear upgrade points for Apple Health, Google Fit, Health Connect, smartwatch APIs, or wearable integrations later.
+
+7. AI FEATURES
+Include an AI assistant or recommendation engine that can:
+- Recommend workouts
+- Recommend meals
+- Adapt recommendations based on progress
+- Suggest replacement exercises if user lacks equipment
+- Suggest easier/harder variations by fitness level
+- Provide short form tips for exercise technique and recovery
+
+The AI should never ignore:
+- dietary type
+- allergies
+- restrictions
+- injury notes
+- available equipment
+
+8. DATA MODEL / DATABASE
+Design proper schema/tables for:
+- users
+- profiles
+- goals
+- equipment
+- dietary preferences
+- allergies/restrictions
+- workouts
+- workout plans
+- workout logs
+- exercises
+- exercise videos
+- nutrition plans
+- meals
+- food logs
+- health metrics
+- heart rate logs
+- GPS activity logs
+- progress metrics
+- personal records
+- notifications
+
+9. UX/UI REQUIREMENTS
+Design the app with:
+- modern premium fitness app aesthetic
+- simple onboarding
+- intuitive navigation
+- mobile-first responsive layout
+- cards, charts, progress bars
+- tab navigation for Dashboard / Workouts / Diet / Progress / Profile
+- dark/light mode if possible
+
+10. TECHNICAL REQUIREMENTS
+Please generate:
+- frontend
+- backend
+- database schema
+- API routes
+- authentication
+- reusable components
+- seed/mock data
+- sample AI recommendation logic
+- sample exercise video links or placeholders
+- deployment instructions
+
+11. MUST-HAVE SCREENS
+Create these screens:
+- Splash screen
+- Sign up / login
+- Onboarding questionnaire
+- Dashboard
+- Workout plan screen
+- Exercise detail screen with video/demo
+- Diet/nutrition screen
+- Food logging screen
+- Progress analytics screen
+- Health tracking screen
+- Profile/settings screen
+
+12. IMPORTANT LOGIC DETAILS
+- Daily nutrition must show recommended calories and macros based on the person’s requirements
+- Workout must show number of sets, exercise name, and simple exercise video in a clear tabular/card format
+- The app must ask what equipment the person has before recommending workouts
+- The diet section must ask what type of food the person can eat before AI suggests meals
+- The progress section must display max weight lifted for each exercise
+- Add progress bars not just for calories, but also for macros and workout/exercise progress
+- Support long-term tracking and personalized recommendations
+
+13. OUTPUT I WANT FROM YOU
+Please do all of the following:
+- Generate the full app structure
+- Write clean code
+- Explain folder structure
+- Explain how to run locally in Replit
+- Explain how to deploy
+- Add dummy data where required
+- Make the app actually usable, not just a rough prototype
+- If some features need paid APIs or native permissions, build the best working version possible and clearly mark placeholders
+
+14. EXTRA
+Also add:
+- Push notification reminders for workouts, meals, water, and steps
+- Search/filter for exercises and meals
+- Replace exercise option
+- Weekly summary and insights
+- Error handling and validation
+- Secure auth and privacy-aware data handling for health data
+
+Start by first generating the complete project architecture and then implement the app step by step.
