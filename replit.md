@@ -75,8 +75,16 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - **GPS run tracking** — start/stop run with real-time distance tracking via expo-location, active run banner with pulse indicator
 - **Run history** — last run stats (distance, duration, calories)
 - Sync Now button with last-synced timestamp
+- **Account section** — Sign in with Google (via OIDC), user profile display, cloud backup/restore buttons
+- **Data sync** — Upload/download all app data (profile, workouts, meals, health) to/from server database
 - Dark/light mode toggle
 - Reset all data option
+
+### Authentication
+- OIDC-based auth via Replit provider (supports Google login)
+- Mobile: expo-auth-session with PKCE flow → token exchange → secure token storage
+- Server: openid-client, cookie-based sessions stored in PostgreSQL
+- User data persistence: all AsyncStorage keys synced to PostgreSQL user_data table
 
 ## Tech Stack
 
@@ -93,6 +101,12 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - **@expo-google-fonts/inter** (Inter 400/500/600/700)
 - **@anthropic-ai/sdk** (AI food recognition & workout generation via backend)
 - **expo-location** (GPS run tracking with foreground permissions)
+- **expo-auth-session** (OIDC authentication with PKCE)
+- **expo-secure-store** (secure token storage)
+- **expo-web-browser** (auth browser flow)
+- **expo-crypto** (PKCE code verifier generation)
+- **openid-client** (server-side OIDC validation)
+- **cookie-parser** (session cookie handling)
 
 ## File Structure
 
@@ -118,6 +132,8 @@ artifacts/mobile/
     NumberEditModal.tsx   # Tap-to-edit modal with stepper + keypad
     FoodSearch.tsx        # Food database browser with search & categories
     ErrorBoundary.tsx     # Error boundary
+  lib/
+    auth.tsx              # AuthProvider with expo-auth-session OIDC flow
   context/
     AppContext.tsx         # Profile, health metrics, TDEE/macros, custom macros
     WorkoutContext.tsx     # Plans, sessions, PRs
@@ -137,16 +153,30 @@ artifacts/mobile/
 
 artifacts/api-server/
   src/
-    app.ts                # Express app with CORS, JSON (20mb limit for images)
+    app.ts                # Express app with CORS, cookie-parser, auth middleware, JSON (20mb)
+    lib/
+      auth.ts             # OIDC config, session CRUD (PostgreSQL), token management
+    middlewares/
+      authMiddleware.ts   # Loads user from session, patches req.isAuthenticated()
     routes/
       index.ts            # Route registry
       health.ts           # Health check
+      auth.ts             # OIDC login/callback/logout + mobile token exchange
+      userData.ts         # GET/POST /api/user-data (cloud data sync)
       ai/
         index.ts          # AI routes: /api/ai/recognize-food, /api/ai/generate-workout
 ```
 
 ## API Endpoints
 
+- `GET /api/auth/user` — Returns current authenticated user or `{ user: null }`
+- `GET /api/login` — Redirects to OIDC provider for login
+- `GET /api/callback` — OIDC callback, creates session, redirects
+- `GET /api/logout` — Clears session, redirects to OIDC logout
+- `POST /api/mobile-auth/token-exchange` — Exchange mobile OIDC code for session token
+- `POST /api/mobile-auth/logout` — Delete mobile session
+- `GET /api/user-data` — Fetch user's synced app data (authenticated)
+- `POST /api/user-data` — Save user's app data to database (authenticated)
 - `POST /api/ai/recognize-food` — Send `{ imageBase64 }`, returns structured food analysis with macros
 - `POST /api/ai/generate-workout` — Send `{ profile, planType: "daily"|"scheduled" }`, returns workout plan
 - `POST /api/ai/generate-meal-plan` — Send `{ profile, dietPrefs: { dietType, favoriteFoods, mealSuggestions, mealsPerDay } }`, returns personalized meal plan with macros

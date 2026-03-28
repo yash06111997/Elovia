@@ -16,9 +16,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useApp, CustomMacros } from "@/context/AppContext";
 import { useWorkout } from "@/context/WorkoutContext";
 import { useHealth } from "@/context/HealthContext";
+import { useAuth } from "@/lib/auth";
 import { NumberEditModal } from "@/components/NumberEditModal";
 import { Colors } from "@/constants/colors";
 
@@ -47,7 +49,109 @@ export default function ProfileScreen() {
   const { state: appState, calculateTDEE, calculateMacros, toggleColorScheme, updateProfileField, setCustomMacros } = useApp();
   const { sessions, personalRecords } = useWorkout();
   const { healthData, toggleSync, syncHealthData, isTracking, startRunTracking, stopRunTracking, currentRun } = useHealth();
+  const { user, isAuthenticated, isLoading: authLoading, login, logout } = useAuth();
+  const [syncing, setSyncing] = useState(false);
   const profile = appState.profile;
+
+  const getApiBase = () => {
+    if (process.env.EXPO_PUBLIC_DOMAIN) return `https://${process.env.EXPO_PUBLIC_DOMAIN}`;
+    return "";
+  };
+
+  const getAuthToken = async () => {
+    try {
+      const SecureStore = await import("expo-secure-store");
+      return await SecureStore.getItemAsync("auth_session_token");
+    } catch {
+      return null;
+    }
+  };
+
+  const uploadData = async () => {
+    if (!isAuthenticated) return;
+    setSyncing(true);
+    try {
+      const token = await getAuthToken();
+      const keys = [
+        "@fitai_state", "@fitai_plan", "@fitai_custom_plans", "@fitai_active_plan_type",
+        "@fitai_active_custom_plan_id", "@fitai_sessions", "@fitai_prs", "@fitai_meal_plan",
+        "@fitai_food_log", "@fitai_custom_meal_plans", "@fitai_active_meal_plan_type",
+        "@fitai_active_custom_meal_plan_id", "@fitai_health_data",
+      ];
+      const values = await AsyncStorage.multiGet(keys);
+      const parse = (k: string) => { const v = values.find(([key]) => key === k)?.[1]; return v ? JSON.parse(v) : null; };
+
+      const body = {
+        appState: parse("@fitai_state"),
+        workoutPlan: parse("@fitai_plan"),
+        customPlans: parse("@fitai_custom_plans"),
+        activePlanType: values.find(([k]) => k === "@fitai_active_plan_type")?.[1] || null,
+        activeCustomPlanId: values.find(([k]) => k === "@fitai_active_custom_plan_id")?.[1] || null,
+        sessions: parse("@fitai_sessions"),
+        personalRecords: parse("@fitai_prs"),
+        mealPlan: parse("@fitai_meal_plan"),
+        foodLog: parse("@fitai_food_log"),
+        customMealPlans: parse("@fitai_custom_meal_plans"),
+        activeMealPlanType: values.find(([k]) => k === "@fitai_active_meal_plan_type")?.[1] || null,
+        activeCustomMealPlanId: values.find(([k]) => k === "@fitai_active_custom_meal_plan_id")?.[1] || null,
+        healthData: parse("@fitai_health_data"),
+      };
+
+      const res = await fetch(`${getApiBase()}/api/user-data`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        Alert.alert("Backup Complete", "Your data has been saved to your account.");
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else {
+        Alert.alert("Backup Failed", "Could not save data. Please try again.");
+      }
+    } catch (e: any) {
+      Alert.alert("Error", e.message || "Failed to back up data.");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const downloadData = async () => {
+    if (!isAuthenticated) return;
+    setSyncing(true);
+    try {
+      const token = await getAuthToken();
+      const res = await fetch(`${getApiBase()}/api/user-data`, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const json = await res.json();
+      if (!json.data) {
+        Alert.alert("No Data", "No saved data found on your account.");
+        return;
+      }
+      const d = json.data;
+      const pairs: [string, string][] = [];
+      if (d.appState) pairs.push(["@fitai_state", JSON.stringify(d.appState)]);
+      if (d.workoutPlan) pairs.push(["@fitai_plan", JSON.stringify(d.workoutPlan)]);
+      if (d.customPlans) pairs.push(["@fitai_custom_plans", JSON.stringify(d.customPlans)]);
+      if (d.activePlanType) pairs.push(["@fitai_active_plan_type", d.activePlanType]);
+      if (d.activeCustomPlanId) pairs.push(["@fitai_active_custom_plan_id", d.activeCustomPlanId]);
+      if (d.sessions) pairs.push(["@fitai_sessions", JSON.stringify(d.sessions)]);
+      if (d.personalRecords) pairs.push(["@fitai_prs", JSON.stringify(d.personalRecords)]);
+      if (d.mealPlan) pairs.push(["@fitai_meal_plan", JSON.stringify(d.mealPlan)]);
+      if (d.foodLog) pairs.push(["@fitai_food_log", JSON.stringify(d.foodLog)]);
+      if (d.customMealPlans) pairs.push(["@fitai_custom_meal_plans", JSON.stringify(d.customMealPlans)]);
+      if (d.activeMealPlanType) pairs.push(["@fitai_active_meal_plan_type", d.activeMealPlanType]);
+      if (d.activeCustomMealPlanId) pairs.push(["@fitai_active_custom_meal_plan_id", d.activeCustomMealPlanId]);
+      if (d.healthData) pairs.push(["@fitai_health_data", JSON.stringify(d.healthData)]);
+      if (pairs.length > 0) await AsyncStorage.multiSet(pairs);
+      Alert.alert("Restore Complete", "Your data has been restored. Please restart the app to see changes.");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: any) {
+      Alert.alert("Error", e.message || "Failed to restore data.");
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const topPadding = Platform.OS === "web" ? 67 : insets.top + 12;
   const tdee = calculateTDEE();
@@ -382,6 +486,78 @@ export default function ProfileScreen() {
         )}
       </SectionCard>
 
+      <SectionCard title="Account" isDark={isDark} theme={theme} subtitle={isAuthenticated ? user?.email || "Signed in" : "Sign in to save your data"}>
+        {isAuthenticated ? (
+          <View style={{ gap: 10 }}>
+            <View style={styles.accountUserRow}>
+              {user?.profileImageUrl ? (
+                <View style={[styles.accountAvatar, { backgroundColor: Colors.primary + "20" }]}>
+                  <Text style={{ fontSize: 18 }}>{user.firstName?.[0] || "U"}</Text>
+                </View>
+              ) : (
+                <View style={[styles.accountAvatar, { backgroundColor: Colors.primary + "20" }]}>
+                  <Ionicons name="person" size={20} color={Colors.primary} />
+                </View>
+              )}
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.accountName, { color: theme.text }]}>
+                  {[user?.firstName, user?.lastName].filter(Boolean).join(" ") || "User"}
+                </Text>
+                {user?.email && <Text style={[styles.accountEmail, { color: theme.textSecondary }]}>{user.email}</Text>}
+              </View>
+            </View>
+
+            <View style={styles.accountActions}>
+              <TouchableOpacity
+                style={[styles.accountActionBtn, { backgroundColor: Colors.accentGreen + "20", borderColor: Colors.accentGreen + "40" }]}
+                onPress={uploadData}
+                disabled={syncing}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="cloud-upload-outline" size={16} color={Colors.accentGreen} />
+                <Text style={[styles.accountActionText, { color: Colors.accentGreen }]}>
+                  {syncing ? "Syncing..." : "Backup"}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.accountActionBtn, { backgroundColor: Colors.primary + "20", borderColor: Colors.primary + "40" }]}
+                onPress={downloadData}
+                disabled={syncing}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="cloud-download-outline" size={16} color={Colors.primary} />
+                <Text style={[styles.accountActionText, { color: Colors.primary }]}>
+                  {syncing ? "Syncing..." : "Restore"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.logoutBtn, { borderColor: Colors.accentRed + "40" }]}
+              onPress={() => {
+                Alert.alert("Sign Out", "Are you sure you want to sign out?", [
+                  { text: "Cancel", style: "cancel" },
+                  { text: "Sign Out", style: "destructive", onPress: () => logout() },
+                ]);
+              }}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="log-out-outline" size={16} color={Colors.accentRed} />
+              <Text style={[styles.logoutBtnText, { color: Colors.accentRed }]}>Sign Out</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity
+            style={[styles.loginBtn, { backgroundColor: Colors.primary }]}
+            onPress={() => { login(); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); }}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="log-in-outline" size={18} color="#000" />
+            <Text style={styles.loginBtnText}>Sign In to Save Data</Text>
+          </TouchableOpacity>
+        )}
+      </SectionCard>
+
       <SectionCard title="Settings" isDark={isDark} theme={theme}>
         <View style={styles.settingRow}>
           <View style={styles.settingLeft}>
@@ -625,4 +801,15 @@ const styles = StyleSheet.create({
   healthActionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, padding: 12, borderRadius: 10, borderWidth: 1 },
   healthActionText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
   lastSynced: { fontSize: 11, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 6 },
+  accountUserRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  accountAvatar: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
+  accountName: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  accountEmail: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 1 },
+  accountActions: { flexDirection: "row", gap: 8 },
+  accountActionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, padding: 12, borderRadius: 10, borderWidth: 1 },
+  accountActionText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, padding: 10, borderRadius: 10, borderWidth: 1 },
+  logoutBtnText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  loginBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, padding: 14, borderRadius: 12 },
+  loginBtnText: { color: "#000", fontSize: 15, fontFamily: "Inter_700Bold" },
 });

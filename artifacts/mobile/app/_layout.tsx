@@ -14,6 +14,7 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { AuthProvider } from "@/lib/auth";
 import { AppProvider } from "@/context/AppContext";
 import { WorkoutProvider } from "@/context/WorkoutContext";
 import { NutritionProvider } from "@/context/NutritionContext";
@@ -52,19 +53,21 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
-          <AppProvider>
-            <WorkoutProvider>
-              <NutritionProvider>
-                <HealthProvider>
-                  <GestureHandlerRootView>
-                    <KeyboardProvider>
-                      <RootLayoutNav />
-                    </KeyboardProvider>
-                  </GestureHandlerRootView>
-                </HealthProvider>
-              </NutritionProvider>
-            </WorkoutProvider>
-          </AppProvider>
+          <AuthProvider>
+            <AppProvider>
+              <WorkoutProvider>
+                <NutritionProvider>
+                  <HealthProvider>
+                    <GestureHandlerRootView>
+                      <KeyboardProvider>
+                        <RootLayoutNav />
+                      </KeyboardProvider>
+                    </GestureHandlerRootView>
+                  </HealthProvider>
+                </NutritionProvider>
+              </WorkoutProvider>
+            </AppProvider>
+          </AuthProvider>
         </QueryClientProvider>
       </ErrorBoundary>
     </SafeAreaProvider>
