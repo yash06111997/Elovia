@@ -27,6 +27,14 @@ export interface WorkoutPlan {
   generatedAt: string;
 }
 
+export interface CustomWorkoutPlan {
+  id: string;
+  name: string;
+  days: WorkoutDay[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ExerciseLog {
   exerciseId: string;
   exerciseName: string;
@@ -61,11 +69,16 @@ export interface WorkoutSession {
   completed: boolean;
 }
 
+export type ActivePlanType = "ai" | "custom";
+
 interface WorkoutContextType {
   plan: WorkoutPlan | null;
   sessions: WorkoutSession[];
   personalRecords: PersonalRecord[];
   activeSession: WorkoutSession | null;
+  customPlans: CustomWorkoutPlan[];
+  activePlanType: ActivePlanType;
+  activeCustomPlanId: string | null;
   setPlan: (plan: WorkoutPlan) => void;
   startSession: (day: WorkoutDay) => void;
   logSet: (exerciseId: string, exerciseName: string, set: SetLog) => void;
@@ -74,6 +87,11 @@ interface WorkoutContextType {
   getPersonalRecord: (exerciseId: string) => PersonalRecord | null;
   todaySession: WorkoutSession | null;
   getWeeklyCompletion: () => number;
+  addCustomPlan: (plan: Omit<CustomWorkoutPlan, "id" | "createdAt" | "updatedAt">) => CustomWorkoutPlan;
+  updateCustomPlan: (plan: CustomWorkoutPlan) => void;
+  deleteCustomPlan: (id: string) => void;
+  setActivePlan: (type: ActivePlanType, customPlanId?: string) => void;
+  getActivePlanDays: () => WorkoutDay[];
 }
 
 const WorkoutContext = createContext<WorkoutContextType | null>(null);
@@ -83,6 +101,9 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   const [sessions, setSessions] = useState<WorkoutSession[]>([]);
   const [personalRecords, setPersonalRecords] = useState<PersonalRecord[]>([]);
   const [activeSession, setActiveSession] = useState<WorkoutSession | null>(null);
+  const [customPlans, setCustomPlans] = useState<CustomWorkoutPlan[]>([]);
+  const [activePlanType, setActivePlanType] = useState<ActivePlanType>("ai");
+  const [activeCustomPlanId, setActiveCustomPlanId] = useState<string | null>(null);
 
   useEffect(() => {
     load();
@@ -90,16 +111,22 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
 
   const load = async () => {
     try {
-      const [p, s, pr, active] = await Promise.all([
+      const [p, s, pr, active, cp, apt, acpid] = await Promise.all([
         AsyncStorage.getItem("@fitai_plan"),
         AsyncStorage.getItem("@fitai_sessions"),
         AsyncStorage.getItem("@fitai_prs"),
         AsyncStorage.getItem("@fitai_active_session"),
+        AsyncStorage.getItem("@fitai_custom_plans"),
+        AsyncStorage.getItem("@fitai_active_plan_type"),
+        AsyncStorage.getItem("@fitai_active_custom_plan_id"),
       ]);
       if (p) setPlanState(JSON.parse(p));
       if (s) setSessions(JSON.parse(s));
       if (pr) setPersonalRecords(JSON.parse(pr));
       if (active) setActiveSession(JSON.parse(active));
+      if (cp) setCustomPlans(JSON.parse(cp));
+      if (apt) setActivePlanType(JSON.parse(apt));
+      if (acpid) setActiveCustomPlanId(JSON.parse(acpid));
     } catch (e) {}
   };
 
@@ -159,12 +186,11 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
     (durationMins: number) => {
       if (!activeSession) return;
       const completed = { ...activeSession, completed: true, durationMins };
-      
+
       const newSessions = [...sessions, completed].slice(-200);
       setSessions(newSessions);
       AsyncStorage.setItem("@fitai_sessions", JSON.stringify(newSessions));
 
-      // Update personal records
       const newPRs = [...personalRecords];
       completed.exerciseLogs.forEach((log) => {
         log.sets.filter((s) => s.completed).forEach((s) => {
@@ -234,9 +260,79 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
       const d = new Date(s.date);
       return d >= weekStart && d <= today && s.completed;
     });
-    const target = plan ? plan.days.length : 3;
+    const activePlan = activePlanType === "custom"
+      ? customPlans.find((cp) => cp.id === activeCustomPlanId)
+      : plan;
+    const target = activePlan ? activePlan.days.length : 3;
     return Math.min(100, Math.round((weekSessions.length / target) * 100));
-  }, [sessions, plan]);
+  }, [sessions, plan, customPlans, activePlanType, activeCustomPlanId]);
+
+  const addCustomPlan = useCallback(
+    (planData: Omit<CustomWorkoutPlan, "id" | "createdAt" | "updatedAt">): CustomWorkoutPlan => {
+      const newPlan: CustomWorkoutPlan = {
+        ...planData,
+        id: Date.now().toString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      setCustomPlans((prev) => {
+        const updated = [...prev, newPlan];
+        AsyncStorage.setItem("@fitai_custom_plans", JSON.stringify(updated));
+        return updated;
+      });
+      return newPlan;
+    },
+    []
+  );
+
+  const updateCustomPlan = useCallback((updatedPlan: CustomWorkoutPlan) => {
+    setCustomPlans((prev) => {
+      const updated = prev.map((p) =>
+        p.id === updatedPlan.id
+          ? { ...updatedPlan, updatedAt: new Date().toISOString() }
+          : p
+      );
+      AsyncStorage.setItem("@fitai_custom_plans", JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  const deleteCustomPlan = useCallback((id: string) => {
+    setCustomPlans((prev) => {
+      const updated = prev.filter((p) => p.id !== id);
+      AsyncStorage.setItem("@fitai_custom_plans", JSON.stringify(updated));
+      return updated;
+    });
+    setActiveCustomPlanId((prev) => {
+      if (prev === id) {
+        AsyncStorage.setItem("@fitai_active_plan_type", JSON.stringify("ai"));
+        AsyncStorage.removeItem("@fitai_active_custom_plan_id");
+        setActivePlanType("ai");
+        return null;
+      }
+      return prev;
+    });
+  }, []);
+
+  const setActivePlan = useCallback((type: ActivePlanType, customPlanId?: string) => {
+    setActivePlanType(type);
+    AsyncStorage.setItem("@fitai_active_plan_type", JSON.stringify(type));
+    if (type === "custom" && customPlanId) {
+      setActiveCustomPlanId(customPlanId);
+      AsyncStorage.setItem("@fitai_active_custom_plan_id", JSON.stringify(customPlanId));
+    } else {
+      setActiveCustomPlanId(null);
+      AsyncStorage.removeItem("@fitai_active_custom_plan_id");
+    }
+  }, []);
+
+  const getActivePlanDays = useCallback((): WorkoutDay[] => {
+    if (activePlanType === "custom" && activeCustomPlanId) {
+      const cp = customPlans.find((p) => p.id === activeCustomPlanId);
+      return cp ? cp.days : [];
+    }
+    return plan ? plan.days : [];
+  }, [activePlanType, activeCustomPlanId, customPlans, plan]);
 
   return (
     <WorkoutContext.Provider
@@ -245,6 +341,9 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
         sessions,
         personalRecords,
         activeSession,
+        customPlans,
+        activePlanType,
+        activeCustomPlanId,
         setPlan,
         startSession,
         logSet,
@@ -253,6 +352,11 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
         getPersonalRecord,
         todaySession,
         getWeeklyCompletion,
+        addCustomPlan,
+        updateCustomPlan,
+        deleteCustomPlan,
+        setActivePlan,
+        getActivePlanDays,
       }}
     >
       {children}

@@ -1,138 +1,119 @@
 import { UserProfile, Equipment, FoodPreference } from "@/context/AppContext";
 import { WorkoutPlan, WorkoutDay, Exercise } from "@/context/WorkoutContext";
 import { MealPlan, Meal } from "@/context/NutritionContext";
+import { allExercises, ExerciseEntry } from "@/utils/exerciseDatabase";
 
 // ---- WORKOUT GENERATOR ----
 
-const exerciseDatabase: Record<string, Exercise[]> = {
-  chest: [
-    { id: "chest_pushup", name: "Push-Up", muscleGroup: "Chest", sets: 3, reps: "10-15", restSeconds: 60, notes: "Keep core tight, elbows at 45° to torso" },
-    { id: "chest_db_press", name: "Dumbbell Bench Press", muscleGroup: "Chest", sets: 4, reps: "8-12", restSeconds: 90, notes: "Plant feet firmly, control the descent" },
-    { id: "chest_db_fly", name: "Dumbbell Fly", muscleGroup: "Chest", sets: 3, reps: "10-12", restSeconds: 75, notes: "Slight bend in elbows throughout" },
-    { id: "chest_bb_press", name: "Barbell Bench Press", muscleGroup: "Chest", sets: 4, reps: "6-10", restSeconds: 120, notes: "Grip slightly wider than shoulder-width" },
-    { id: "chest_incline_db", name: "Incline DB Press", muscleGroup: "Upper Chest", sets: 3, reps: "8-12", restSeconds: 90, notes: "30-45° incline for upper chest focus" },
-    { id: "chest_cable_fly", name: "Cable Crossover", muscleGroup: "Chest", sets: 3, reps: "12-15", restSeconds: 60, notes: "Contract at center, control the arc" },
-  ],
-  back: [
-    { id: "back_row_db", name: "Dumbbell Row", muscleGroup: "Back", sets: 4, reps: "8-12", restSeconds: 90, notes: "Pull elbow back, squeeze at top" },
-    { id: "back_pullup", name: "Pull-Up", muscleGroup: "Back", sets: 3, reps: "5-10", restSeconds: 120, notes: "Full range of motion, dead hang at bottom" },
-    { id: "back_bb_row", name: "Barbell Row", muscleGroup: "Back", sets: 4, reps: "6-10", restSeconds: 90, notes: "Hinge at hips, pull to lower chest" },
-    { id: "back_cable_row", name: "Seated Cable Row", muscleGroup: "Back", sets: 3, reps: "10-12", restSeconds: 75, notes: "Keep chest up, drive elbows back" },
-    { id: "back_lat_pulldown", name: "Lat Pulldown", muscleGroup: "Lats", sets: 4, reps: "10-12", restSeconds: 75, notes: "Pull to upper chest, lean back slightly" },
-    { id: "back_deadlift", name: "Romanian Deadlift", muscleGroup: "Back/Hamstrings", sets: 3, reps: "8-10", restSeconds: 120, notes: "Hinge at hips, soft knees, bar close to legs" },
-  ],
-  legs: [
-    { id: "legs_squat", name: "Bodyweight Squat", muscleGroup: "Legs", sets: 3, reps: "15-20", restSeconds: 60, notes: "Chest up, knees track over toes" },
-    { id: "legs_db_squat", name: "Goblet Squat", muscleGroup: "Legs", sets: 4, reps: "10-12", restSeconds: 90, notes: "Hold dumbbell at chest, upright torso" },
-    { id: "legs_bb_squat", name: "Back Squat", muscleGroup: "Quads/Glutes", sets: 4, reps: "6-10", restSeconds: 120, notes: "Bar on upper traps, break parallel" },
-    { id: "legs_lunge", name: "Walking Lunge", muscleGroup: "Legs", sets: 3, reps: "10/leg", restSeconds: 75, notes: "Long stride, front knee over ankle" },
-    { id: "legs_rdl", name: "Romanian Deadlift", muscleGroup: "Hamstrings", sets: 3, reps: "10-12", restSeconds: 90, notes: "Hinge at hips, feel hamstring stretch" },
-    { id: "legs_calf", name: "Calf Raise", muscleGroup: "Calves", sets: 4, reps: "15-20", restSeconds: 45, notes: "Full range, pause at top" },
-    { id: "legs_leg_press", name: "Leg Press", muscleGroup: "Quads", sets: 4, reps: "10-15", restSeconds: 90, notes: "Feet shoulder-width, don't lock out" },
-  ],
-  shoulders: [
-    { id: "sh_lateral", name: "Lateral Raise", muscleGroup: "Shoulders", sets: 3, reps: "12-15", restSeconds: 60, notes: "Slight bend in elbows, lead with elbows" },
-    { id: "sh_ohp_db", name: "DB Overhead Press", muscleGroup: "Shoulders", sets: 4, reps: "8-12", restSeconds: 90, notes: "Core tight, press straight overhead" },
-    { id: "sh_ohp_bb", name: "Barbell OHP", muscleGroup: "Shoulders", sets: 4, reps: "6-10", restSeconds: 120, notes: "Bar starts at upper chest, press overhead" },
-    { id: "sh_front_raise", name: "Front Raise", muscleGroup: "Front Delts", sets: 3, reps: "12-15", restSeconds: 60, notes: "Controlled movement, don't swing" },
-    { id: "sh_face_pull", name: "Face Pull", muscleGroup: "Rear Delts", sets: 3, reps: "15-20", restSeconds: 60, notes: "Pull to forehead level, external rotation" },
-  ],
-  arms: [
-    { id: "arm_curl_db", name: "Dumbbell Curl", muscleGroup: "Biceps", sets: 3, reps: "10-12", restSeconds: 60, notes: "Supinate at top, control the descent" },
-    { id: "arm_tricep_ext", name: "Tricep Extension", muscleGroup: "Triceps", sets: 3, reps: "10-12", restSeconds: 60, notes: "Keep elbows tucked, extend fully" },
-    { id: "arm_hammer_curl", name: "Hammer Curl", muscleGroup: "Biceps/Brachialis", sets: 3, reps: "10-12", restSeconds: 60, notes: "Neutral grip, controlled movement" },
-    { id: "arm_tricep_pushdown", name: "Cable Pushdown", muscleGroup: "Triceps", sets: 3, reps: "12-15", restSeconds: 60, notes: "Elbows fixed to sides, full extension" },
-    { id: "arm_dips", name: "Tricep Dips", muscleGroup: "Triceps", sets: 3, reps: "8-12", restSeconds: 75, notes: "Lean slightly forward, elbows behind you" },
-    { id: "arm_curl_bb", name: "Barbell Curl", muscleGroup: "Biceps", sets: 3, reps: "8-12", restSeconds: 75, notes: "Full range, don't cheat with momentum" },
-  ],
-  core: [
-    { id: "core_plank", name: "Plank", muscleGroup: "Core", sets: 3, reps: "30-60s", restSeconds: 60, notes: "Neutral spine, squeeze everything" },
-    { id: "core_crunch", name: "Crunch", muscleGroup: "Abs", sets: 3, reps: "15-20", restSeconds: 45, notes: "Controlled, don't pull on neck" },
-    { id: "core_bicycle", name: "Bicycle Crunch", muscleGroup: "Obliques", sets: 3, reps: "15/side", restSeconds: 45, notes: "Slow and controlled rotation" },
-    { id: "core_dead_bug", name: "Dead Bug", muscleGroup: "Core", sets: 3, reps: "10/side", restSeconds: 60, notes: "Keep lower back pressed to floor" },
-    { id: "core_leg_raise", name: "Leg Raise", muscleGroup: "Lower Abs", sets: 3, reps: "12-15", restSeconds: 60, notes: "Lower back stays on floor" },
-  ],
-  cardio: [
-    { id: "cardio_jumping_jacks", name: "Jumping Jacks", muscleGroup: "Full Body", sets: 3, reps: "30s", restSeconds: 30, notes: "Warm-up or HIIT" },
-    { id: "cardio_mountain_climber", name: "Mountain Climbers", muscleGroup: "Core/Cardio", sets: 3, reps: "20s", restSeconds: 30, notes: "Keep hips low" },
-    { id: "cardio_burpee", name: "Burpee", muscleGroup: "Full Body", sets: 3, reps: "10", restSeconds: 60, notes: "Land softly from jump" },
-    { id: "cardio_treadmill", name: "Treadmill Run", muscleGroup: "Cardio", sets: 1, reps: "20-30 min", restSeconds: 0, notes: "Zone 2 cardio" },
-    { id: "cardio_cycle", name: "Cycling", muscleGroup: "Cardio", sets: 1, reps: "20-30 min", restSeconds: 0, notes: "Moderate resistance" },
-  ],
-};
-
-function canUseEquipment(ex: Exercise, equipment: Equipment[]): boolean {
-  const hasGym = equipment.some((e) => ["barbell", "cable_machine", "squat_rack", "smith_machine"].includes(e));
-  const hasDumbbells = equipment.includes("dumbbells");
-  const hasBarbell = equipment.includes("barbell");
-  const hasPullUp = equipment.includes("pull_up_bar");
-  const hasBands = equipment.includes("resistance_bands");
-  const hasTreadmill = equipment.includes("treadmill");
-  const hasCycle = equipment.includes("cycle");
-  const noEquip = equipment.includes("no_equipment");
-
-  const id = ex.id;
-  if (id.includes("bb_") || id.includes("_bb_")) return hasBarbell;
-  if (id.includes("cable")) return hasGym;
-  if (id.includes("pullup") || id.includes("pull_up")) return hasPullUp || hasGym;
-  if (id === "legs_squat" || id === "core_plank" || id === "core_crunch" ||
-      id === "core_bicycle" || id === "core_dead_bug" || id === "core_leg_raise" ||
-      id === "cardio_jumping_jacks" || id === "cardio_mountain_climber" ||
-      id === "cardio_burpee" || id.includes("lunge") || id === "legs_squat") return true;
-  if (id.includes("treadmill")) return hasTreadmill;
-  if (id.includes("cycle")) return hasCycle;
-  if (id.includes("leg_press")) return hasGym;
-  if (id.includes("db_") || id.includes("_db") || id.includes("lateral") ||
-      id.includes("front_raise") || id.includes("face_pull") || id.includes("dips")) return hasDumbbells || hasGym;
-  if (noEquip) return id.includes("squat") || id.includes("lunge") || id.includes("pushup") || id.includes("core") || id.includes("cardio");
-  return hasDumbbells || hasBarbell || hasGym;
+function entryToExercise(e: ExerciseEntry): Exercise {
+  return {
+    id: e.id,
+    name: e.name,
+    muscleGroup: e.primaryMuscle,
+    sets: e.sets,
+    reps: e.reps,
+    restSeconds: e.restSeconds,
+    notes: e.notes,
+  };
 }
 
-function getExercisesForMuscle(muscle: string, equipment: Equipment[], count: number, fitnessLevel: string): Exercise[] {
-  const pool = (exerciseDatabase[muscle] ?? []).filter((ex) => canUseEquipment(ex, equipment));
+function canUseEquipment(e: ExerciseEntry, equipment: Equipment[]): boolean {
+  const has = (eq: string) => equipment.includes(eq as Equipment);
+  const hasGym = has("barbell") || has("cable_machine") || has("squat_rack") || has("smith_machine");
+  const hasDumbbells = has("dumbbells") || has("kettlebells");
+  const noEquip = has("no_equipment");
+
+  if (e.equipment.includes("none")) return true;
+
+  if (noEquip) {
+    return e.equipment.includes("none");
+  }
+
+  return e.equipment.some((eq) => {
+    if (eq === "none") return true;
+    if (eq === "barbell") return has("barbell");
+    if (eq === "bench") return has("bench") || hasGym;
+    if (eq === "dumbbells") return hasDumbbells;
+    if (eq === "kettlebells") return has("kettlebells") || hasDumbbells;
+    if (eq === "pull_up_bar") return has("pull_up_bar") || hasGym;
+    if (eq === "cable_machine") return has("cable_machine") || has("squat_rack") || has("smith_machine");
+    if (eq === "squat_rack") return has("squat_rack") || has("smith_machine");
+    if (eq === "resistance_bands") return has("resistance_bands") || has("cable_machine") || hasGym;
+    if (eq === "treadmill") return has("treadmill");
+    if (eq === "cycle") return has("cycle");
+    if (eq === "dip_bars") return has("pull_up_bar") || hasGym;
+    if (eq === "box") return has("bench") || hasGym;
+    if (eq === "ab_wheel") return false;
+    return false;
+  });
+}
+
+const CATEGORY_KEYS: Record<string, string[]> = {
+  chest: ["Chest"],
+  back: ["Back"],
+  legs: ["Legs"],
+  shoulders: ["Shoulders"],
+  arms: ["Arms"],
+  core: ["Core"],
+  glutes: ["Glutes"],
+  cardio: ["Cardio"],
+};
+
+function getExercisesForCategory(
+  categoryKey: string,
+  equipment: Equipment[],
+  count: number,
+  fitnessLevel: string
+): Exercise[] {
+  const cats = CATEGORY_KEYS[categoryKey] ?? [categoryKey];
+  const pool = allExercises.filter(
+    (e) =>
+      cats.includes(e.category) &&
+      canUseEquipment(e, equipment) &&
+      (fitnessLevel === "beginner"
+        ? e.difficulty !== "advanced"
+        : fitnessLevel === "intermediate"
+        ? e.difficulty !== "advanced" || Math.random() > 0.5
+        : true)
+  );
   const shuffled = [...pool].sort(() => Math.random() - 0.5);
-  const selected = shuffled.slice(0, count);
-  return selected.map((ex) => {
-    let sets = ex.sets;
-    let reps = ex.reps;
-    if (fitnessLevel === "beginner") {
-      sets = Math.max(2, sets - 1);
-    } else if (fitnessLevel === "advanced") {
-      sets = sets + 1;
-    }
-    return { ...ex, sets };
+  return shuffled.slice(0, count).map((e) => {
+    let sets = e.sets;
+    if (fitnessLevel === "beginner") sets = Math.max(2, sets - 1);
+    if (fitnessLevel === "advanced") sets = sets + 1;
+    return { ...entryToExercise(e), sets };
   });
 }
 
 const workoutSplits: Record<number, { dayName: string; muscles: string[] }[]> = {
   2: [
     { dayName: "Upper Body", muscles: ["chest", "back", "shoulders", "arms"] },
-    { dayName: "Lower Body", muscles: ["legs", "core"] },
+    { dayName: "Lower Body", muscles: ["legs", "glutes", "core"] },
   ],
   3: [
     { dayName: "Push", muscles: ["chest", "shoulders", "arms"] },
     { dayName: "Pull", muscles: ["back", "arms"] },
-    { dayName: "Legs & Core", muscles: ["legs", "core"] },
+    { dayName: "Legs & Glutes", muscles: ["legs", "glutes", "core"] },
   ],
   4: [
     { dayName: "Chest & Triceps", muscles: ["chest", "arms"] },
     { dayName: "Back & Biceps", muscles: ["back", "arms"] },
     { dayName: "Shoulders & Core", muscles: ["shoulders", "core"] },
-    { dayName: "Legs", muscles: ["legs"] },
+    { dayName: "Legs & Glutes", muscles: ["legs", "glutes"] },
   ],
   5: [
     { dayName: "Chest", muscles: ["chest", "arms"] },
     { dayName: "Back", muscles: ["back"] },
     { dayName: "Shoulders", muscles: ["shoulders", "core"] },
     { dayName: "Arms", muscles: ["arms", "core"] },
-    { dayName: "Legs", muscles: ["legs"] },
+    { dayName: "Legs & Glutes", muscles: ["legs", "glutes"] },
   ],
   6: [
     { dayName: "Chest", muscles: ["chest"] },
     { dayName: "Back", muscles: ["back"] },
     { dayName: "Shoulders", muscles: ["shoulders"] },
     { dayName: "Arms", muscles: ["arms"] },
-    { dayName: "Legs", muscles: ["legs"] },
+    { dayName: "Legs & Glutes", muscles: ["legs", "glutes"] },
     { dayName: "Core & Cardio", muscles: ["core", "cardio"] },
   ],
 };
@@ -147,8 +128,8 @@ export function generateWorkoutPlan(profile: UserProfile): WorkoutPlan {
   const workoutDays: WorkoutDay[] = split.map((day, i) => {
     const exercises: Exercise[] = [];
     day.muscles.forEach((muscle) => {
-      const count = day.muscles.length === 1 ? 4 : day.muscles.length === 2 ? 3 : 2;
-      exercises.push(...getExercisesForMuscle(muscle, profile.equipment, count, profile.fitnessLevel));
+      const count = day.muscles.length === 1 ? 5 : day.muscles.length === 2 ? 3 : 2;
+      exercises.push(...getExercisesForCategory(muscle, profile.equipment, count, profile.fitnessLevel));
     });
     return {
       id: `day_${i}`,

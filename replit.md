@@ -29,13 +29,16 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - Greeting by time of day
 
 ### Workouts Tab
-- AI-generated workout plans using local exercise database OR Claude AI
+- AI-generated workout plans using 154+ exercise database (expanded from ~40) OR Claude AI
 - AI workout generation: daily (single optimized session) or scheduled (full weekly split)
-- Push/Pull/Legs, Upper/Lower, PPL, and 4/5/6-day bro splits
+- Push/Pull/Legs, Upper/Lower, PPL, and 4/5/6-day bro splits including Glutes
+- **Exercise Library** — browsable full catalog with category tabs, search, difficulty/type badges, detail expansion, and equipment filter
+- **Custom Plan Builder** — create named plans, add/remove workout days, pick exercises from library, set custom sets/reps/rest
+- **Plan Switcher** — switch between AI-generated plan and any custom plans
 - Per-exercise set logging with weight and rep inputs
 - Active session timer
 - PR tracking per exercise (highlighted with trophy icon)
-- Regenerate plan button + AI generate button
+- Regenerate plan button + AI generate button (sparkles)
 
 ### Diet Tab
 - AI-generated meal plans (breakfast/lunch/dinner/snack)
@@ -106,9 +109,13 @@ artifacts/mobile/
     AppContext.tsx         # Profile, health metrics, TDEE/macros, custom macros
     WorkoutContext.tsx     # Plans, sessions, PRs
     NutritionContext.tsx   # Meal plans, food log
+  screens/
+    ExerciseLibraryScreen.tsx  # Browsable exercise library (modal)
+    CustomPlanBuilderScreen.tsx # Custom plan creation/editing (modal)
   utils/
-    aiEngine.ts           # Local workout & meal plan generation
+    aiEngine.ts           # Local workout & meal plan generation (uses expanded DB)
     foodDatabase.ts       # 80+ foods, 11 categories with full macro data
+    exerciseDatabase.ts   # 154+ exercises with full metadata (category, equipment, difficulty, type)
     api.ts                # API helpers (recognizeFood, generateAIWorkout)
   constants/
     colors.ts             # Electric blue + dark charcoal theme
@@ -141,7 +148,10 @@ artifacts/api-server/
 
 All data is stored in AsyncStorage:
 - `@fitai_state` — profile (including targetWeightKg), onboarding flag, health metrics, streak, total workouts, custom macros
-- `@fitai_plan` — workout plan
+- `@fitai_plan` — AI-generated workout plan
+- `@fitai_custom_plans` — user-created custom workout plans (array)
+- `@fitai_active_plan_type` — "ai" or "custom"
+- `@fitai_active_custom_plan_id` — id of active custom plan (if any)
 - `@fitai_sessions` — workout session history (up to 200)
 - `@fitai_prs` — personal records per exercise
 - `@fitai_meal_plan` — generated meal plan
