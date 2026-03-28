@@ -38,6 +38,48 @@ export async function recognizeFood(imageBase64: string): Promise<{
   return response.json();
 }
 
+export async function generateAIMealPlan(
+  profile: any,
+  dietPrefs: {
+    dietType: string;
+    favoriteFoods: string;
+    mealSuggestions: string;
+    mealsPerDay: number;
+  }
+): Promise<{
+  meals: {
+    id: string;
+    name: string;
+    mealType: string;
+    calories: number;
+    protein: number;
+    carbs: number;
+    fats: number;
+    ingredients: string[];
+    instructions: string;
+  }[];
+  totalCalories: number;
+  totalProtein: number;
+  totalCarbs: number;
+  totalFats: number;
+  dietType: string;
+  summary: string;
+}> {
+  const base = getBaseUrl();
+  const response = await fetch(`${base}/api/ai/generate-meal-plan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ profile, dietPrefs }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: "Unknown error" }));
+    throw new Error(err.error || "Failed to generate meal plan");
+  }
+
+  return response.json();
+}
+
 export async function generateAIWorkout(
   profile: any,
   planType: "daily" | "scheduled"

@@ -22,9 +22,10 @@ import { MacroBar } from "@/components/MacroBar";
 import { MealCard } from "@/components/MealCard";
 import { FoodSearch } from "@/components/FoodSearch";
 import { generateMealPlan } from "@/utils/aiEngine";
-import { recognizeFood } from "@/utils/api";
+import { recognizeFood, generateAIMealPlan } from "@/utils/api";
 import { Colors } from "@/constants/colors";
 import type { FoodItem } from "@/utils/foodDatabase";
+import type { DietType } from "@/context/AppContext";
 
 type Tab = "plan" | "log";
 
@@ -40,6 +41,12 @@ export default function DietScreen() {
   const [foodSearchVisible, setFoodSearchVisible] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [quickLog, setQuickLog] = useState({ name: "", calories: "", protein: "", carbs: "", fats: "", mealType: "snack" as const });
+  const [aiMealModalVisible, setAiMealModalVisible] = useState(false);
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiDietType, setAiDietType] = useState<DietType>(appState.profile?.dietType || "balanced");
+  const [aiFavFoods, setAiFavFoods] = useState(appState.profile?.favoriteFoods || "");
+  const [aiSuggestions, setAiSuggestions] = useState(appState.profile?.mealSuggestions || "");
+  const [aiMealsPerDay, setAiMealsPerDay] = useState(4);
 
   const macros = calculateMacros();
   const consumed = getTodayTotals();
@@ -68,6 +75,45 @@ export default function DietScreen() {
     const newPlan = generateMealPlan(appState.profile);
     setMealPlan(newPlan);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  };
+
+  const handleAIMealPlan = async () => {
+    if (!appState.profile) return;
+    setAiGenerating(true);
+    try {
+      const result = await generateAIMealPlan(appState.profile, {
+        dietType: aiDietType,
+        favoriteFoods: aiFavFoods,
+        mealSuggestions: aiSuggestions,
+        mealsPerDay: aiMealsPerDay,
+      });
+      const convertedMeals = result.meals.map((m) => ({
+        id: m.id,
+        name: m.name,
+        mealType: m.mealType as "breakfast" | "lunch" | "dinner" | "snack",
+        calories: m.calories,
+        protein: m.protein,
+        carbs: m.carbs,
+        fats: m.fats,
+        description: m.ingredients?.join(", ") || "",
+      }));
+      setMealPlan({
+        id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+        meals: convertedMeals,
+        totalCalories: result.totalCalories,
+        totalProtein: result.totalProtein,
+        totalCarbs: result.totalCarbs,
+        totalFats: result.totalFats,
+        generatedAt: new Date().toISOString(),
+      });
+      setAiMealModalVisible(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert("Meal Plan Generated", result.summary || "Your personalized AI meal plan is ready!");
+    } catch (e: any) {
+      Alert.alert("Error", e.message || "Failed to generate meal plan. Please try again.");
+    } finally {
+      setAiGenerating(false);
+    }
   };
 
   const handleQuickLog = () => {
@@ -170,6 +216,13 @@ export default function DietScreen() {
               activeOpacity={0.8}
             >
               <Ionicons name="search" size={18} color={Colors.accent} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.iconBtn, { backgroundColor: "#FF6B35" + "20" }]}
+              onPress={() => setAiMealModalVisible(true)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="sparkles" size={18} color="#FF6B35" />
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.logBtn, { backgroundColor: Colors.accentGreen }]}
@@ -316,6 +369,98 @@ export default function DietScreen() {
         onSelect={handleFoodSelect}
         isDark={isDark}
       />
+
+      <Modal visible={aiMealModalVisible} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.aiModalContent, { backgroundColor: theme.surface }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: theme.text }]}>AI Meal Plan</Text>
+              <TouchableOpacity onPress={() => setAiMealModalVisible(false)}>
+                <Ionicons name="close" size={22} color={theme.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 480 }}>
+              <Text style={[styles.aiSectionLabel, { color: theme.textSecondary }]}>Diet Type</Text>
+              <View style={styles.aiDietGrid}>
+                {([
+                  { label: "Balanced", value: "balanced", icon: "pie-chart-outline" },
+                  { label: "Keto", value: "keto", icon: "flame-outline" },
+                  { label: "Low Carb", value: "low_carb", icon: "trending-down-outline" },
+                  { label: "High Protein", value: "high_protein", icon: "barbell-outline" },
+                  { label: "Mediterranean", value: "mediterranean", icon: "fish-outline" },
+                  { label: "Paleo", value: "paleo", icon: "leaf-outline" },
+                ] as { label: string; value: DietType; icon: string }[]).map((dt) => {
+                  const active = aiDietType === dt.value;
+                  return (
+                    <TouchableOpacity
+                      key={dt.value}
+                      style={[styles.aiDietChip, { backgroundColor: active ? Colors.primary + "20" : theme.card, borderColor: active ? Colors.primary : theme.border }]}
+                      onPress={() => { setAiDietType(dt.value); Haptics.selectionAsync(); }}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name={dt.icon as any} size={14} color={active ? Colors.primary : theme.textSecondary} />
+                      <Text style={[styles.aiDietChipText, { color: active ? Colors.primary : theme.text }]}>{dt.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <Text style={[styles.aiSectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Meals per Day</Text>
+              <View style={styles.aiMealsRow}>
+                {[3, 4, 5, 6].map((n) => (
+                  <TouchableOpacity
+                    key={n}
+                    style={[styles.aiMealCountBtn, { backgroundColor: aiMealsPerDay === n ? Colors.primary : theme.card, borderColor: aiMealsPerDay === n ? Colors.primary : theme.border }]}
+                    onPress={() => { setAiMealsPerDay(n); Haptics.selectionAsync(); }}
+                  >
+                    <Text style={[styles.aiMealCountText, { color: aiMealsPerDay === n ? "#000" : theme.text }]}>{n}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={[styles.aiSectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Favorite Foods</Text>
+              <TextInput
+                style={[styles.aiInput, { backgroundColor: theme.card, color: theme.text, borderColor: theme.border }]}
+                value={aiFavFoods}
+                onChangeText={setAiFavFoods}
+                placeholder="e.g. chicken, rice, eggs, salmon..."
+                placeholderTextColor={theme.textMuted}
+                multiline
+              />
+
+              <Text style={[styles.aiSectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Special Suggestions</Text>
+              <TextInput
+                style={[styles.aiInput, { backgroundColor: theme.card, color: theme.text, borderColor: theme.border }]}
+                value={aiSuggestions}
+                onChangeText={setAiSuggestions}
+                placeholder="e.g. easy recipes, meal prep, high fiber..."
+                placeholderTextColor={theme.textMuted}
+                multiline
+              />
+            </ScrollView>
+
+            <TouchableOpacity
+              style={[styles.aiGenerateBtn, aiGenerating && { opacity: 0.7 }]}
+              onPress={handleAIMealPlan}
+              disabled={aiGenerating}
+              activeOpacity={0.8}
+            >
+              {aiGenerating ? (
+                <View style={styles.aiGenRow}>
+                  <ActivityIndicator size="small" color="#000" />
+                  <Text style={styles.aiGenerateBtnText}>Generating with AI...</Text>
+                </View>
+              ) : (
+                <View style={styles.aiGenRow}>
+                  <Ionicons name="sparkles" size={18} color="#000" />
+                  <Text style={styles.aiGenerateBtnText}>Generate Meal Plan</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -407,4 +552,16 @@ const styles = StyleSheet.create({
   mealTypeText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
   submitBtn: { padding: 14, borderRadius: 12, alignItems: "center", marginTop: 8 },
   submitBtnText: { color: "#000", fontSize: 15, fontFamily: "Inter_700Bold" },
+  aiModalContent: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, gap: 4 },
+  aiSectionLabel: { fontSize: 12, fontFamily: "Inter_600SemiBold", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 },
+  aiDietGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  aiDietChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 10, borderWidth: 1 },
+  aiDietChipText: { fontSize: 12, fontFamily: "Inter_500Medium" },
+  aiMealsRow: { flexDirection: "row", gap: 10 },
+  aiMealCountBtn: { width: 48, height: 48, borderRadius: 12, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  aiMealCountText: { fontSize: 18, fontFamily: "Inter_700Bold" },
+  aiInput: { borderWidth: 1, borderRadius: 12, padding: 12, fontSize: 14, fontFamily: "Inter_400Regular", height: 60, textAlignVertical: "top" },
+  aiGenerateBtn: { backgroundColor: Colors.primary, borderRadius: 14, padding: 16, alignItems: "center", marginTop: 16 },
+  aiGenerateBtnText: { color: "#000", fontSize: 16, fontFamily: "Inter_700Bold" },
+  aiGenRow: { flexDirection: "row", alignItems: "center", gap: 8 },
 });

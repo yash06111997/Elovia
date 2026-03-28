@@ -14,10 +14,10 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 
 ### Onboarding (6 steps)
 - Personal info (name, age, gender, height, weight, target weight)
-- Fitness goals (fat loss, muscle gain, strength, endurance, maintenance, general fitness)
+- Fitness goals (fat loss, muscle gain, strength, endurance, maintenance, general fitness) + **goal timeline** (target weeks stepper with live calorie adjustment preview)
 - Workout preferences (gym/home/mixed, days per week, session duration)
 - Equipment selection (12 equipment types)
-- Diet & nutrition (vegetarian/vegan/non-veg/eggetarian, restrictions, dislikes)
+- Diet & nutrition (vegetarian/vegan/non-veg/eggetarian, **diet type** selection: balanced/keto/low carb/high protein/Mediterranean/paleo, favorite foods, restrictions, dislikes, meal suggestions)
 - Health habits (sleep hours, water intake, medical notes)
 
 ### Dashboard
@@ -41,8 +41,9 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - Regenerate plan button + AI generate button (sparkles)
 
 ### Diet Tab
-- AI-generated meal plans (breakfast/lunch/dinner/snack)
+- **AI-generated personalized meal plans** via Claude with diet type selection (balanced, keto, low carb, high protein, Mediterranean, paleo), favorite foods input, special suggestions, and meals-per-day selector
 - AI food photo recognition via camera (Claude vision → structured macros)
+- Local meal plan generation fallback
 - Comprehensive food database (80+ items, 11 categories) with search & category browsing
 - Food logging with quick-add modal or food database search
 - Daily macro progress tracking
@@ -58,7 +59,8 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 
 ### Profile Tab
 - Full profile view with all stats
-- Tap-to-edit height, weight, and target weight (NumberEditModal with stepper + keypad)
+- Tap-to-edit height, weight, target weight, and **target weeks** (NumberEditModal with stepper + keypad)
+- **Goal timeline tracking** — shows weekly rate, daily calorie adjustment based on weight delta and timeline
 - Target weight tracking with weight delta badge
 - Manual macro overrides (custom calories/protein/carbs/fats targets)
 - Body stats, TDEE, daily macro targets
@@ -116,7 +118,7 @@ artifacts/mobile/
     aiEngine.ts           # Local workout & meal plan generation (uses expanded DB)
     foodDatabase.ts       # 80+ foods, 11 categories with full macro data
     exerciseDatabase.ts   # 154+ exercises with full metadata (category, equipment, difficulty, type)
-    api.ts                # API helpers (recognizeFood, generateAIWorkout)
+    api.ts                # API helpers (recognizeFood, generateAIWorkout, generateAIMealPlan)
   constants/
     colors.ts             # Electric blue + dark charcoal theme
 
@@ -134,6 +136,7 @@ artifacts/api-server/
 
 - `POST /api/ai/recognize-food` — Send `{ imageBase64 }`, returns structured food analysis with macros
 - `POST /api/ai/generate-workout` — Send `{ profile, planType: "daily"|"scheduled" }`, returns workout plan
+- `POST /api/ai/generate-meal-plan` — Send `{ profile, dietPrefs: { dietType, favoriteFoods, mealSuggestions, mealsPerDay } }`, returns personalized meal plan with macros
 
 ## Design System
 

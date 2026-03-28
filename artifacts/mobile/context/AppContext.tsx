@@ -42,6 +42,16 @@ export type Equipment =
   | "smith_machine"
   | "no_equipment";
 
+export type DietType =
+  | "balanced"
+  | "keto"
+  | "low_carb"
+  | "high_protein"
+  | "mediterranean"
+  | "paleo"
+  | "vegetarian_focused"
+  | "custom";
+
 export interface UserProfile {
   name: string;
   age: number;
@@ -49,6 +59,7 @@ export interface UserProfile {
   heightCm: number;
   weightKg: number;
   targetWeightKg: number;
+  targetWeeks: number;
   goal: FitnessGoal;
   fitnessLevel: FitnessLevel;
   activityLevel: ActivityLevel;
@@ -58,8 +69,11 @@ export interface UserProfile {
   equipment: Equipment[];
   customEquipment: string;
   foodPreference: FoodPreference;
+  dietType: DietType;
+  favoriteFoods: string;
   dietaryRestrictions: string;
   dislikedFoods: string;
+  mealSuggestions: string;
   medicalNotes: string;
   sleepHours: number;
   waterIntakeLiters: number;
@@ -284,12 +298,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!p) return { calories: 2000, protein: 150, carbs: 200, fats: 70 };
 
     let calories = tdee;
-    if (p.goal === "fat_loss") calories = tdee - 400;
-    if (p.goal === "muscle_gain") calories = tdee + 300;
+    const weightDeltaKg = (p.targetWeightKg || p.weightKg) - p.weightKg;
+    const weeks = p.targetWeeks || 12;
+
+    if (weightDeltaKg !== 0 && weeks > 0) {
+      const totalKcalDelta = weightDeltaKg * 7700;
+      const dailyAdjustment = Math.round(totalKcalDelta / (weeks * 7));
+      const cappedAdjustment = Math.max(-1000, Math.min(1000, dailyAdjustment));
+      calories = tdee + cappedAdjustment;
+    } else {
+      if (p.goal === "fat_loss") calories = tdee - 400;
+      if (p.goal === "muscle_gain") calories = tdee + 300;
+    }
+
+    calories = Math.max(1200, calories);
 
     const protein = Math.round(p.weightKg * 2.0);
     const fats = Math.round((calories * 0.25) / 9);
-    const carbs = Math.round((calories - protein * 4 - fats * 9) / 4);
+    const carbs = Math.max(0, Math.round((calories - protein * 4 - fats * 9) / 4));
 
     return { calories, protein, carbs, fats };
   }, [state.profile, state.customMacros, calculateTDEE]);

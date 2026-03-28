@@ -36,7 +36,7 @@ const levelLabels: Record<string, string> = {
   advanced: "Advanced",
 };
 
-type EditField = "heightCm" | "weightKg" | "targetWeightKg" | null;
+type EditField = "heightCm" | "weightKg" | "targetWeightKg" | "targetWeeks" | null;
 
 export default function ProfileScreen() {
   const colorScheme = useColorScheme();
@@ -119,12 +119,16 @@ export default function ProfileScreen() {
     heightCm: { title: "Edit Height", unit: "cm", min: 100, max: 250, step: 1, value: profile.heightCm },
     weightKg: { title: "Edit Weight", unit: "kg", min: 30, max: 250, step: 0.5, value: profile.weightKg },
     targetWeightKg: { title: "Edit Target Weight", unit: "kg", min: 30, max: 250, step: 0.5, value: profile.targetWeightKg || profile.weightKg },
+    targetWeeks: { title: "Edit Target Weeks", unit: "weeks", min: 4, max: 52, step: 1, value: profile.targetWeeks || 12 },
   };
 
   const currentEditConfig = editField ? editFieldConfig[editField] : null;
 
   const weightDelta = (profile.targetWeightKg || profile.weightKg) - profile.weightKg;
   const weightDirection = weightDelta > 0 ? "gain" : weightDelta < 0 ? "lose" : "maintain";
+  const targetWeeks = profile.targetWeeks || 12;
+  const dailyCalAdjust = weightDelta !== 0 ? Math.max(-1000, Math.min(1000, Math.round((weightDelta * 7700) / (targetWeeks * 7)))) : 0;
+  const weeklyRateKg = weightDelta !== 0 ? (Math.abs(weightDelta) / targetWeeks).toFixed(2) : "0";
 
   return (
     <ScrollView
@@ -166,6 +170,16 @@ export default function ProfileScreen() {
           badge={weightDirection !== "maintain" ? `${Math.abs(weightDelta).toFixed(1)} kg to ${weightDirection}` : undefined}
           badgeColor={weightDirection === "lose" ? Colors.accent : weightDirection === "gain" ? Colors.accentGreen : undefined}
         />
+        {weightDirection !== "maintain" && (
+          <TappableRow
+            label="Timeline"
+            value={`${targetWeeks} weeks`}
+            theme={theme}
+            onPress={() => setEditField("targetWeeks")}
+            badge={`${weeklyRateKg} kg/wk • ${dailyCalAdjust > 0 ? "+" : ""}${dailyCalAdjust} kcal/day`}
+            badgeColor={Colors.primary}
+          />
+        )}
         <InfoRow label="BMI" value={`${(profile.weightKg / ((profile.heightCm / 100) ** 2)).toFixed(1)}`} theme={theme} />
         <InfoRow label="TDEE" value={`${tdee} kcal`} theme={theme} highlight />
       </SectionCard>

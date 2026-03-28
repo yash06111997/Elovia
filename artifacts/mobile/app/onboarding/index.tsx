@@ -13,7 +13,7 @@ import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { useApp, UserProfile, FitnessGoal, FitnessLevel, ActivityLevel, WorkoutPreference, FoodPreference, Equipment } from "@/context/AppContext";
+import { useApp, UserProfile, FitnessGoal, FitnessLevel, ActivityLevel, WorkoutPreference, FoodPreference, Equipment, DietType } from "@/context/AppContext";
 import { useWorkout } from "@/context/WorkoutContext";
 import { useNutrition } from "@/context/NutritionContext";
 import { generateWorkoutPlan, generateMealPlan } from "@/utils/aiEngine";
@@ -39,6 +39,7 @@ export default function OnboardingScreen() {
     heightCm: 170,
     weightKg: 70,
     targetWeightKg: 70,
+    targetWeeks: 12,
     goal: "general_fitness",
     fitnessLevel: "beginner",
     activityLevel: "moderately_active",
@@ -48,8 +49,11 @@ export default function OnboardingScreen() {
     equipment: ["dumbbells"],
     customEquipment: "",
     foodPreference: "non_vegetarian",
+    dietType: "balanced",
+    favoriteFoods: "",
     dietaryRestrictions: "",
     dislikedFoods: "",
+    mealSuggestions: "",
     medicalNotes: "",
     sleepHours: 7,
     waterIntakeLiters: 2,
@@ -227,6 +231,13 @@ function StepGoal({ form, update, isDark, theme }: any) {
     { label: "Very Active", value: "very_active" },
     { label: "Extra Active", value: "extra_active" },
   ];
+
+  const weightDelta = (form.targetWeightKg || form.weightKg || 70) - (form.weightKg || 70);
+  const weeks = form.targetWeeks || 12;
+  const dailyAdjust = weightDelta !== 0 ? Math.round((weightDelta * 7700) / (weeks * 7)) : 0;
+  const cappedAdjust = Math.max(-1000, Math.min(1000, dailyAdjust));
+  const weeklyRateKg = Math.abs(weightDelta) / weeks;
+
   return (
     <View style={styles.stepContent}>
       <Text style={[styles.sectionLabel, { color: theme.textSecondary }]}>Primary Goal</Text>
@@ -247,6 +258,25 @@ function StepGoal({ form, update, isDark, theme }: any) {
           {form.goal === g.value && <Ionicons name="checkmark-circle" size={20} color={Colors.primary} />}
         </TouchableOpacity>
       ))}
+
+      {weightDelta !== 0 && (
+        <>
+          <Text style={[styles.sectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Goal Timeline</Text>
+          <NumberStepper label="Target Weeks" value={form.targetWeeks ?? 12} min={4} max={52} step={1} onChange={(v: number) => update("targetWeeks", v)} theme={theme} />
+          <View style={[styles.timelineInfo, { backgroundColor: Colors.primary + "10", borderColor: Colors.primary + "30" }]}>
+            <Ionicons name="analytics-outline" size={18} color={Colors.primary} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.timelineText, { color: theme.text }]}>
+                {weightDelta > 0 ? "Gain" : "Lose"} {Math.abs(weightDelta).toFixed(1)} kg in {weeks} weeks
+              </Text>
+              <Text style={[styles.timelineDetail, { color: theme.textSecondary }]}>
+                {weeklyRateKg.toFixed(2)} kg/week • {cappedAdjust > 0 ? "+" : ""}{cappedAdjust} kcal/day {Math.abs(dailyAdjust) > 1000 ? "(capped)" : ""}
+              </Text>
+            </View>
+          </View>
+        </>
+      )}
+
       <Text style={[styles.sectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Fitness Level</Text>
       <ChipRow options={levels.map((l) => ({ label: l.label, value: l.value }))} selected={form.fitnessLevel} onSelect={(v: string) => update("fitnessLevel", v)} theme={theme} />
       <Text style={[styles.sectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Daily Activity Level</Text>
@@ -324,6 +354,14 @@ function StepDiet({ form, update, isDark, theme }: any) {
     { label: "Eggetarian", value: "eggetarian", icon: "egg-outline", desc: "Vegetarian + eggs" },
     { label: "Vegan", value: "vegan", icon: "flower-outline", desc: "No animal products" },
   ];
+  const dietTypes: { label: string; value: DietType; icon: string }[] = [
+    { label: "Balanced", value: "balanced", icon: "pie-chart-outline" },
+    { label: "Keto", value: "keto", icon: "flame-outline" },
+    { label: "Low Carb", value: "low_carb", icon: "trending-down-outline" },
+    { label: "High Protein", value: "high_protein", icon: "barbell-outline" },
+    { label: "Mediterranean", value: "mediterranean", icon: "fish-outline" },
+    { label: "Paleo", value: "paleo", icon: "leaf-outline" },
+  ];
   return (
     <View style={styles.stepContent}>
       <Text style={[styles.sectionLabel, { color: theme.textSecondary }]}>Food Preference</Text>
@@ -344,8 +382,29 @@ function StepDiet({ form, update, isDark, theme }: any) {
           {form.foodPreference === p.value && <Ionicons name="checkmark-circle" size={20} color="#00E676" />}
         </TouchableOpacity>
       ))}
+
+      <Text style={[styles.sectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Diet Type</Text>
+      <View style={styles.dietTypeGrid}>
+        {dietTypes.map((dt) => {
+          const active = form.dietType === dt.value;
+          return (
+            <TouchableOpacity
+              key={dt.value}
+              style={[styles.dietTypeBtn, { backgroundColor: active ? Colors.primary + "20" : theme.card, borderColor: active ? Colors.primary : theme.border }]}
+              onPress={() => { update("dietType", dt.value); Haptics.selectionAsync(); }}
+              activeOpacity={0.8}
+            >
+              <Ionicons name={dt.icon as any} size={16} color={active ? Colors.primary : theme.textSecondary} />
+              <Text style={[styles.dietTypeLabel, { color: active ? Colors.primary : theme.text }]}>{dt.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      <LabelInput label="Favorite foods" value={form.favoriteFoods} onChangeText={(v: string) => update("favoriteFoods", v)} placeholder="e.g. chicken, rice, eggs, salmon..." theme={theme} multiline />
       <LabelInput label="Dietary restrictions / allergies" value={form.dietaryRestrictions} onChangeText={(v: string) => update("dietaryRestrictions", v)} placeholder="e.g. gluten-free, nut allergy..." theme={theme} multiline />
       <LabelInput label="Foods you dislike" value={form.dislikedFoods} onChangeText={(v: string) => update("dislikedFoods", v)} placeholder="e.g. broccoli, tofu..." theme={theme} multiline />
+      <LabelInput label="Any meal plan suggestions?" value={form.mealSuggestions} onChangeText={(v: string) => update("mealSuggestions", v)} placeholder="e.g. prefer easy recipes, meal prep friendly..." theme={theme} multiline />
     </View>
   );
 }
@@ -447,6 +506,12 @@ const styles = StyleSheet.create({
   equipmentGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   equipBtn: { width: "47%", padding: 14, borderRadius: 12, borderWidth: 1, alignItems: "center", gap: 8 },
   equipLabel: { fontSize: 12, fontFamily: "Inter_500Medium", textAlign: "center" },
+  timelineInfo: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 12, borderWidth: 1 },
+  timelineText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  timelineDetail: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
+  dietTypeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  dietTypeBtn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, borderWidth: 1 },
+  dietTypeLabel: { fontSize: 13, fontFamily: "Inter_500Medium" },
   footer: { paddingHorizontal: 20, paddingTop: 12, borderTopWidth: 1 },
   nextBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: Colors.primary, borderRadius: 14, padding: 16, gap: 8 },
   nextBtnText: { color: "#000", fontSize: 16, fontFamily: "Inter_700Bold" },

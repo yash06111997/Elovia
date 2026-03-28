@@ -215,4 +215,135 @@ Create a ${profile.workoutDaysPerWeek}-day split optimized for ${profile.goal}. 
   }
 });
 
+router.post("/generate-meal-plan", async (req, res) => {
+  try {
+    const { profile, dietPrefs } = req.body;
+    if (!profile) {
+      res.status(400).json({ error: "profile is required" });
+      return;
+    }
+
+    const dp = dietPrefs || {};
+    const dietType = dp.dietType || "balanced";
+    const favoriteFoods = dp.favoriteFoods || "";
+    const mealSuggestions = dp.mealSuggestions || "";
+    const mealsPerDay = dp.mealsPerDay || 4;
+    const foodPreference = profile.foodPreference || "non_vegetarian";
+    const restrictions = profile.dietaryRestrictions || "";
+    const disliked = profile.dislikedFoods || "";
+
+    const weightDelta = (profile.targetWeightKg || profile.weightKg) - profile.weightKg;
+    const weeks = profile.targetWeeks || 12;
+    let dailyCalories = 2000;
+    const bmr = profile.gender === "male"
+      ? 10 * profile.weightKg + 6.25 * profile.heightCm - 5 * profile.age + 5
+      : 10 * profile.weightKg + 6.25 * profile.heightCm - 5 * profile.age - 161;
+    const activityMultipliers: Record<string, number> = {
+      sedentary: 1.2, lightly_active: 1.375, moderately_active: 1.55,
+      very_active: 1.725, extra_active: 1.9,
+    };
+    const tdee = Math.round(bmr * (activityMultipliers[profile.activityLevel] || 1.55));
+    if (weightDelta !== 0 && weeks > 0) {
+      const adj = Math.max(-1000, Math.min(1000, Math.round((weightDelta * 7700) / (weeks * 7))));
+      dailyCalories = Math.max(1200, tdee + adj);
+    } else {
+      dailyCalories = tdee;
+      if (profile.goal === "fat_loss") dailyCalories = tdee - 400;
+      if (profile.goal === "muscle_gain") dailyCalories = tdee + 300;
+    }
+
+    const prompt = `You are an expert nutritionist. Create a personalized daily meal plan for this person:
+
+Profile:
+- Name: ${profile.name}, Age: ${profile.age}, Gender: ${profile.gender}
+- Weight: ${profile.weightKg}kg, Target: ${profile.targetWeightKg || profile.weightKg}kg
+- Height: ${profile.heightCm}cm
+- Goal: ${profile.goal}
+- Activity: ${profile.activityLevel}
+- TDEE: ${tdee} kcal, Daily target: ${dailyCalories} kcal
+
+Diet Preferences:
+- Diet type: ${dietType}
+- Food preference: ${foodPreference}
+${restrictions ? `- Restrictions/allergies: ${restrictions}` : ""}
+${disliked ? `- Foods to avoid: ${disliked}` : ""}
+${favoriteFoods ? `- Favorite foods (try to include): ${favoriteFoods}` : ""}
+${mealSuggestions ? `- Special requests: ${mealSuggestions}` : ""}
+- Meals per day: ${mealsPerDay}
+
+Create exactly ${mealsPerDay} meals that total approximately ${dailyCalories} calories.
+${dietType === "keto" ? "Keep carbs under 25g total. High fat, moderate protein." : ""}
+${dietType === "low_carb" ? "Keep carbs under 100g total." : ""}
+${dietType === "high_protein" ? "Protein should be at least 35% of calories." : ""}
+${dietType === "mediterranean" ? "Focus on olive oil, fish, vegetables, whole grains, legumes." : ""}
+${dietType === "paleo" ? "No grains, dairy, legumes, or processed foods." : ""}
+
+Return ONLY valid JSON in this exact format:
+{
+  "meals": [
+    {
+      "name": "Meal Name",
+      "mealType": "breakfast|lunch|dinner|snack",
+      "calories": 500,
+      "protein": 35,
+      "carbs": 40,
+      "fats": 20,
+      "ingredients": ["ingredient 1", "ingredient 2"],
+      "instructions": "Brief preparation instructions"
+    }
+  ],
+  "totalCalories": ${dailyCalories},
+  "totalProtein": 150,
+  "totalCarbs": 200,
+  "totalFats": 65,
+  "dietType": "${dietType}",
+  "summary": "Brief overview of the meal plan"
+}
+
+Be creative with meals, use realistic portions, and make the plan delicious and practical.`;
+
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 4096,
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    const block = message.content[0];
+    const text = block.type === "text" ? block.text : "";
+
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      res.status(500).json({ error: "Failed to parse meal plan" });
+      return;
+    }
+    const parsed = JSON.parse(jsonMatch[0]);
+    if (!parsed.meals || !Array.isArray(parsed.meals)) {
+      res.status(500).json({ error: "Invalid meal plan response" });
+      return;
+    }
+    const mealTypeMap: Record<number, string> = { 0: "breakfast", 1: "lunch", 2: "dinner", 3: "snack" };
+    parsed.meals = parsed.meals.map((m: any, i: number) => ({
+      id: `ai_meal_${Date.now()}_${i}`,
+      name: m.name || `Meal ${i + 1}`,
+      mealType: m.mealType || mealTypeMap[i] || "snack",
+      calories: Number(m.calories) || 0,
+      protein: Number(m.protein) || 0,
+      carbs: Number(m.carbs) || 0,
+      fats: Number(m.fats) || 0,
+      ingredients: Array.isArray(m.ingredients) ? m.ingredients : [],
+      instructions: m.instructions || "",
+    }));
+    parsed.totalCalories = Number(parsed.totalCalories) || parsed.meals.reduce((s: number, m: any) => s + m.calories, 0);
+    parsed.totalProtein = Number(parsed.totalProtein) || parsed.meals.reduce((s: number, m: any) => s + m.protein, 0);
+    parsed.totalCarbs = Number(parsed.totalCarbs) || parsed.meals.reduce((s: number, m: any) => s + m.carbs, 0);
+    parsed.totalFats = Number(parsed.totalFats) || parsed.meals.reduce((s: number, m: any) => s + m.fats, 0);
+    parsed.dietType = parsed.dietType || dietType;
+    parsed.summary = parsed.summary || "AI-generated meal plan";
+    res.json(parsed);
+  } catch (error: any) {
+    console.error("Meal plan generation error:", error?.message);
+    res.status(500).json({ error: "Failed to generate meal plan" });
+  }
+});
+
 export default router;
