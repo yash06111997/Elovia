@@ -17,6 +17,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AppProvider } from "@/context/AppContext";
 import { WorkoutProvider } from "@/context/WorkoutContext";
 import { NutritionProvider } from "@/context/NutritionContext";
+import { HealthProvider } from "@/context/HealthContext";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -54,11 +55,13 @@ export default function RootLayout() {
           <AppProvider>
             <WorkoutProvider>
               <NutritionProvider>
-                <GestureHandlerRootView>
-                  <KeyboardProvider>
-                    <RootLayoutNav />
-                  </KeyboardProvider>
-                </GestureHandlerRootView>
+                <HealthProvider>
+                  <GestureHandlerRootView>
+                    <KeyboardProvider>
+                      <RootLayoutNav />
+                    </KeyboardProvider>
+                  </GestureHandlerRootView>
+                </HealthProvider>
               </NutritionProvider>
             </WorkoutProvider>
           </AppProvider>

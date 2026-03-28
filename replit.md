@@ -29,6 +29,7 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - Greeting by time of day
 
 ### Workouts Tab
+- **Plan/History toggle** — switch between workout plans and history views
 - AI-generated workout plans using 154+ exercise database (expanded from ~40) OR Claude AI
 - AI workout generation: daily (single optimized session) or scheduled (full weekly split)
 - Push/Pull/Legs, Upper/Lower, PPL, and 4/5/6-day bro splits including Glutes
@@ -39,9 +40,13 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - Active session timer
 - PR tracking per exercise (highlighted with trophy icon)
 - Regenerate plan button + AI generate button (sparkles)
+- **Workout History** — grouped-by-date expandable session cards with sets/reps/weight detail, aggregate stats (total sessions, minutes, exercises, volume kg)
 
 ### Diet Tab
+- **Plan switcher** — AI vs Custom meal plan toggle (mirrors workout dual-plan system)
 - **AI-generated personalized meal plans** via Claude with diet type selection (balanced, keto, low carb, high protein, Mediterranean, paleo), favorite foods input, special suggestions, and meals-per-day selector
+- **Custom Meal Plan System** — full CRUD for user-created meal plans with per-meal form (name, type, macros, description, ingredients), auto-calculated plan totals, edit/delete support
+- **CustomMealPlanBuilder** — full-screen modal for building meal plans with meal cards, summary row
 - AI food photo recognition via camera (Claude vision → structured macros)
 - Local meal plan generation fallback
 - Comprehensive food database (80+ items, 11 categories) with search & category browsing
@@ -65,6 +70,11 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - Manual macro overrides (custom calories/protein/carbs/fats targets)
 - Body stats, TDEE, daily macro targets
 - Fitness & diet profile summary
+- **Health Data Sync section** — Apple Health, Google Fit, Step Counter, GPS Tracking toggle cards
+- **Step tracking** with progress bar toward 10,000 goal
+- **GPS run tracking** — start/stop run with real-time distance tracking via expo-location, active run banner with pulse indicator
+- **Run history** — last run stats (distance, duration, calories)
+- Sync Now button with last-synced timestamp
 - Dark/light mode toggle
 - Reset all data option
 
@@ -82,6 +92,7 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - **expo-image-picker** (camera for food photo recognition)
 - **@expo-google-fonts/inter** (Inter 400/500/600/700)
 - **@anthropic-ai/sdk** (AI food recognition & workout generation via backend)
+- **expo-location** (GPS run tracking with foreground permissions)
 
 ## File Structure
 
@@ -110,10 +121,12 @@ artifacts/mobile/
   context/
     AppContext.tsx         # Profile, health metrics, TDEE/macros, custom macros
     WorkoutContext.tsx     # Plans, sessions, PRs
-    NutritionContext.tsx   # Meal plans, food log
+    NutritionContext.tsx   # Meal plans, food log, custom meal plans
+    HealthContext.tsx      # Health sync, step tracking, GPS run tracking
   screens/
     ExerciseLibraryScreen.tsx  # Browsable exercise library (modal)
     CustomPlanBuilderScreen.tsx # Custom plan creation/editing (modal)
+    CustomMealPlanBuilder.tsx  # Custom meal plan creation/editing (modal)
   utils/
     aiEngine.ts           # Local workout & meal plan generation (uses expanded DB)
     foodDatabase.ts       # 80+ foods, 11 categories with full macro data
@@ -160,6 +173,10 @@ All data is stored in AsyncStorage:
 - `@fitai_meal_plan` — generated meal plan
 - `@fitai_food_log` — food log entries (up to 500)
 - `@fitai_active_session` — current in-progress workout session
+- `@fitai_custom_meal_plans` — user-created custom meal plans (array)
+- `@fitai_active_meal_plan_type` — "ai" or "custom"
+- `@fitai_active_custom_meal_plan_id` — id of active custom meal plan
+- `@fitai_health_data` — health sync status, steps, run sessions
 
 ## Environment Variables
 

@@ -16,7 +16,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
-import { useNutrition, Meal, FoodLogEntry } from "@/context/NutritionContext";
+import { useNutrition, Meal, FoodLogEntry, CustomMealPlan } from "@/context/NutritionContext";
 import { useApp } from "@/context/AppContext";
 import { MacroBar } from "@/components/MacroBar";
 import { MealCard } from "@/components/MealCard";
@@ -24,6 +24,7 @@ import { FoodSearch } from "@/components/FoodSearch";
 import { generateMealPlan } from "@/utils/aiEngine";
 import { recognizeFood, generateAIMealPlan } from "@/utils/api";
 import { Colors } from "@/constants/colors";
+import { CustomMealPlanBuilder } from "@/screens/CustomMealPlanBuilder";
 import type { FoodItem } from "@/utils/foodDatabase";
 import type { DietType } from "@/context/AppContext";
 
@@ -34,26 +35,53 @@ export default function DietScreen() {
   const isDark = colorScheme === "dark";
   const theme = isDark ? Colors.dark : Colors.light;
   const insets = useSafeAreaInsets();
-  const { mealPlan, setMealPlan, getTodayLog, getTodayTotals, logFood, removeLogEntry } = useNutrition();
+  const {
+    mealPlan,
+    setMealPlan,
+    getTodayLog,
+    getTodayTotals,
+    logFood,
+    removeLogEntry,
+    customMealPlans,
+    activeMealPlanType,
+    activeCustomMealPlanId,
+    addCustomMealPlan,
+    updateCustomMealPlan,
+    deleteCustomMealPlan,
+    setActiveMealPlan,
+    getActiveMealPlanMeals,
+  } = useNutrition();
   const { state: appState, calculateMacros } = useApp();
   const [activeTab, setActiveTab] = useState<Tab>("plan");
   const [logModalVisible, setLogModalVisible] = useState(false);
   const [foodSearchVisible, setFoodSearchVisible] = useState(false);
   const [scanning, setScanning] = useState(false);
-  const [quickLog, setQuickLog] = useState({ name: "", calories: "", protein: "", carbs: "", fats: "", mealType: "snack" as const });
+  const [quickLog, setQuickLog] = useState<{ name: string; calories: string; protein: string; carbs: string; fats: string; mealType: "breakfast" | "lunch" | "dinner" | "snack" }>({ name: "", calories: "", protein: "", carbs: "", fats: "", mealType: "snack" });
   const [aiMealModalVisible, setAiMealModalVisible] = useState(false);
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiDietType, setAiDietType] = useState<DietType>(appState.profile?.dietType || "balanced");
   const [aiFavFoods, setAiFavFoods] = useState(appState.profile?.favoriteFoods || "");
   const [aiSuggestions, setAiSuggestions] = useState(appState.profile?.mealSuggestions || "");
   const [aiMealsPerDay, setAiMealsPerDay] = useState(4);
+  const [showPlanSwitcher, setShowPlanSwitcher] = useState(false);
+  const [showMealPlanBuilder, setShowMealPlanBuilder] = useState(false);
+  const [editingMealPlan, setEditingMealPlan] = useState<CustomMealPlan | undefined>(undefined);
 
   const macros = calculateMacros();
   const consumed = getTodayTotals();
   const todayLog = getTodayLog();
   const topPadding = Platform.OS === "web" ? 67 : insets.top + 12;
+  const activeMeals = getActiveMealPlanMeals();
 
   const loggedMealIds = todayLog.map((l) => l.mealId).filter(Boolean) as string[];
+
+  const activeCustomMealPlan = customMealPlans.find((p) => p.id === activeCustomMealPlanId) ?? null;
+  const displayPlanName =
+    activeMealPlanType === "custom" && activeCustomMealPlan
+      ? activeCustomMealPlan.name
+      : mealPlan
+      ? "AI Meal Plan"
+      : "No Plan";
 
   const handleLogMeal = (meal: Meal) => {
     logFood({
@@ -96,6 +124,7 @@ export default function DietScreen() {
         carbs: m.carbs,
         fats: m.fats,
         description: m.ingredients?.join(", ") || "",
+        ingredients: m.ingredients || [],
       }));
       setMealPlan({
         id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
@@ -152,18 +181,10 @@ export default function DietScreen() {
         Alert.alert("Permission needed", "Camera permission is required to scan food.");
         return;
       }
-
-      const result = await ImagePicker.launchCameraAsync({
-        base64: true,
-        quality: 0.7,
-        allowsEditing: true,
-      });
-
+      const result = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.7, allowsEditing: true });
       if (result.canceled || !result.assets[0]?.base64) return;
-
       setScanning(true);
       const analysis = await recognizeFood(result.assets[0].base64);
-
       analysis.foods.forEach((food) => {
         logFood({
           date: new Date().toISOString().split("T")[0],
@@ -176,17 +197,20 @@ export default function DietScreen() {
           servingSize: food.servingSize,
         });
       });
-
-      Alert.alert(
-        "Food Recognized",
-        `${analysis.description}\n\nAdded ${analysis.foods.length} item(s) totaling ${analysis.totalCalories} kcal.`
-      );
+      Alert.alert("Food Recognized", `${analysis.description}\n\nAdded ${analysis.foods.length} item(s) totaling ${analysis.totalCalories} kcal.`);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: any) {
       Alert.alert("Error", e.message || "Failed to analyze food photo.");
     } finally {
       setScanning(false);
     }
+  };
+
+  const handleDeleteCustomMealPlan = (id: string) => {
+    Alert.alert("Delete Plan", "Are you sure you want to delete this meal plan?", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: () => { deleteCustomMealPlan(id); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); } },
+    ]);
   };
 
   return (
@@ -267,23 +291,63 @@ export default function DietScreen() {
 
         {activeTab === "plan" && (
           <>
+            {/* Plan Switcher Header */}
+            <TouchableOpacity
+              style={[styles.planSwitcherRow, { backgroundColor: theme.card, borderColor: theme.border }]}
+              onPress={() => setShowPlanSwitcher(true)}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.planTypeIcon, {
+                backgroundColor: activeMealPlanType === "ai" ? Colors.accent + "20" : "#A78BFA20",
+              }]}>
+                <Ionicons
+                  name={activeMealPlanType === "ai" ? "sparkles" : "list"}
+                  size={16}
+                  color={activeMealPlanType === "ai" ? Colors.accent : "#A78BFA"}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.planNameText, { color: theme.text }]}>{displayPlanName}</Text>
+                <Text style={[styles.planMetaText, { color: theme.textSecondary }]}>
+                  {activeMeals.length} meal{activeMeals.length !== 1 ? "s" : ""}
+                  {" · "}
+                  {activeMealPlanType === "ai" ? "AI Generated" : "Custom"}
+                </Text>
+              </View>
+              <View style={[styles.switchBadge, { backgroundColor: Colors.primary + "20" }]}>
+                <Ionicons name="swap-horizontal" size={11} color={Colors.primary} />
+                <Text style={[styles.switchBadgeText, { color: Colors.primary }]}>Switch</Text>
+              </View>
+            </TouchableOpacity>
+
             <View style={styles.tabHeaderRow}>
               <Text style={[styles.sectionTitle, { color: theme.text }]}>
-                {mealPlan ? "Your Meal Plan" : "No Plan Yet"}
+                {activeMeals.length > 0 ? "Meals" : "No Plan Yet"}
               </Text>
-              {mealPlan && (
+              <View style={{ flexDirection: "row", gap: 8 }}>
                 <TouchableOpacity
-                  style={[styles.smallBtn, { borderColor: Colors.primary + "40" }]}
-                  onPress={handleRegenerate}
+                  style={[styles.smallBtn, { borderColor: "#A78BFA" + "40" }]}
+                  onPress={() => { setEditingMealPlan(undefined); setShowMealPlanBuilder(true); }}
                   activeOpacity={0.8}
                 >
-                  <Ionicons name="refresh" size={14} color={Colors.primary} />
-                  <Text style={[styles.smallBtnText, { color: Colors.primary }]}>Refresh</Text>
+                  <Ionicons name="add" size={14} color="#A78BFA" />
+                  <Text style={[styles.smallBtnText, { color: "#A78BFA" }]}>Custom</Text>
                 </TouchableOpacity>
-              )}
+                {activeMealPlanType === "ai" && mealPlan && (
+                  <TouchableOpacity
+                    style={[styles.smallBtn, { borderColor: Colors.primary + "40" }]}
+                    onPress={handleRegenerate}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="refresh" size={14} color={Colors.primary} />
+                    <Text style={[styles.smallBtnText, { color: Colors.primary }]}>Refresh</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
-            {mealPlan ? (
-              mealPlan.meals.map((meal) => (
+
+            {activeMeals.length > 0 ? (
+              activeMeals.map((meal) => (
                 <MealCard
                   key={meal.id}
                   meal={meal}
@@ -296,8 +360,67 @@ export default function DietScreen() {
               <View style={styles.emptyState}>
                 <Ionicons name="restaurant-outline" size={48} color={theme.textMuted} />
                 <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
-                  Complete onboarding to generate your meal plan
+                  Create a custom meal plan or generate one with AI
                 </Text>
+                <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
+                  <TouchableOpacity
+                    style={[styles.emptyActionBtn, { backgroundColor: "#A78BFA" }]}
+                    onPress={() => { setEditingMealPlan(undefined); setShowMealPlanBuilder(true); }}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="add" size={16} color="#000" />
+                    <Text style={styles.emptyActionText}>Custom Plan</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.emptyActionBtn, { backgroundColor: Colors.accent }]}
+                    onPress={() => setAiMealModalVisible(true)}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="sparkles" size={16} color="#000" />
+                    <Text style={styles.emptyActionText}>AI Plan</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {/* Custom Meal Plans Section */}
+            {customMealPlans.length > 0 && (
+              <View style={styles.customSection}>
+                <Text style={[styles.customSectionTitle, { color: theme.textSecondary }]}>CUSTOM MEAL PLANS</Text>
+                {customMealPlans.map((cp) => (
+                  <View key={cp.id} style={[styles.customPlanRow, {
+                    backgroundColor: theme.card,
+                    borderColor: activeCustomMealPlanId === cp.id && activeMealPlanType === "custom" ? Colors.primary : theme.border,
+                  }]}>
+                    <TouchableOpacity
+                      style={styles.customPlanInfo}
+                      onPress={() => setActiveMealPlan("custom", cp.id)}
+                      activeOpacity={0.8}
+                    >
+                      {activeCustomMealPlanId === cp.id && activeMealPlanType === "custom" && (
+                        <Ionicons name="checkmark-circle" size={18} color={Colors.primary} />
+                      )}
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.customPlanName, { color: theme.text }]}>{cp.name}</Text>
+                        <Text style={[styles.customPlanMeta, { color: theme.textMuted }]}>
+                          {cp.meals.length} meal{cp.meals.length !== 1 ? "s" : ""} · {cp.totalCalories} kcal
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => { setEditingMealPlan(cp); setShowMealPlanBuilder(true); }}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons name="create-outline" size={18} color={theme.textSecondary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => handleDeleteCustomMealPlan(cp.id)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons name="trash-outline" size={18} color="#FF5252" />
+                    </TouchableOpacity>
+                  </View>
+                ))}
               </View>
             )}
           </>
@@ -322,6 +445,66 @@ export default function DietScreen() {
         )}
       </ScrollView>
 
+      {/* Plan Switcher Modal */}
+      {showPlanSwitcher && (
+        <View style={styles.switcherOverlay}>
+          <TouchableOpacity style={styles.switcherBackdrop} onPress={() => setShowPlanSwitcher(false)} />
+          <View style={[styles.switcherSheet, { backgroundColor: theme.card }]}>
+            <Text style={[styles.switcherTitle, { color: theme.text }]}>Choose Meal Plan</Text>
+
+            {mealPlan && (
+              <TouchableOpacity
+                style={[styles.switcherOption, { borderColor: activeMealPlanType === "ai" ? Colors.primary : theme.border }]}
+                onPress={() => { setActiveMealPlan("ai"); setShowPlanSwitcher(false); }}
+                activeOpacity={0.8}
+              >
+                <View style={[styles.switcherIcon, { backgroundColor: Colors.accent + "20" }]}>
+                  <Ionicons name="sparkles" size={16} color={Colors.accent} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.switcherOptionName, { color: theme.text }]}>AI Meal Plan</Text>
+                  <Text style={[styles.switcherOptionMeta, { color: theme.textMuted }]}>
+                    AI Generated · {mealPlan.meals.length} meals · {mealPlan.totalCalories} kcal
+                  </Text>
+                </View>
+                {activeMealPlanType === "ai" && <Ionicons name="checkmark-circle" size={20} color={Colors.primary} />}
+              </TouchableOpacity>
+            )}
+
+            {customMealPlans.map((cp) => (
+              <TouchableOpacity
+                key={cp.id}
+                style={[styles.switcherOption, { borderColor: activeMealPlanType === "custom" && activeCustomMealPlanId === cp.id ? Colors.primary : theme.border }]}
+                onPress={() => { setActiveMealPlan("custom", cp.id); setShowPlanSwitcher(false); }}
+                activeOpacity={0.8}
+              >
+                <View style={[styles.switcherIcon, { backgroundColor: "#A78BFA20" }]}>
+                  <Ionicons name="list" size={16} color="#A78BFA" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.switcherOptionName, { color: theme.text }]}>{cp.name}</Text>
+                  <Text style={[styles.switcherOptionMeta, { color: theme.textMuted }]}>
+                    Custom · {cp.meals.length} meals · {cp.totalCalories} kcal
+                  </Text>
+                </View>
+                {activeMealPlanType === "custom" && activeCustomMealPlanId === cp.id && (
+                  <Ionicons name="checkmark-circle" size={20} color={Colors.primary} />
+                )}
+              </TouchableOpacity>
+            ))}
+
+            <TouchableOpacity
+              style={[styles.switcherNewBtn, { borderColor: theme.border }]}
+              onPress={() => { setShowPlanSwitcher(false); setEditingMealPlan(undefined); setShowMealPlanBuilder(true); }}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="add" size={16} color={theme.textSecondary} />
+              <Text style={[styles.switcherNewBtnText, { color: theme.textSecondary }]}>New Custom Meal Plan</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       <Modal visible={logModalVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: theme.surface }]}>
@@ -331,7 +514,6 @@ export default function DietScreen() {
                 <Ionicons name="close" size={22} color={theme.textSecondary} />
               </TouchableOpacity>
             </View>
-
             <QuickInput label="Food Name" value={quickLog.name} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, name: v }))} placeholder="e.g. Grilled chicken" theme={theme} />
             <View style={styles.macroInputRow}>
               <QuickInputSmall label="Calories" value={quickLog.calories} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, calories: v }))} theme={theme} />
@@ -341,7 +523,6 @@ export default function DietScreen() {
               <QuickInputSmall label="Carbs (g)" value={quickLog.carbs} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, carbs: v }))} theme={theme} />
               <QuickInputSmall label="Fats (g)" value={quickLog.fats} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, fats: v }))} theme={theme} />
             </View>
-
             <View style={styles.mealTypeRow}>
               {(["breakfast", "lunch", "dinner", "snack"] as const).map((type) => (
                 <TouchableOpacity
@@ -355,7 +536,6 @@ export default function DietScreen() {
                 </TouchableOpacity>
               ))}
             </View>
-
             <TouchableOpacity style={[styles.submitBtn, { backgroundColor: Colors.accentGreen }]} onPress={handleQuickLog} activeOpacity={0.8}>
               <Text style={styles.submitBtnText}>Add to Log</Text>
             </TouchableOpacity>
@@ -379,7 +559,6 @@ export default function DietScreen() {
                 <Ionicons name="close" size={22} color={theme.textSecondary} />
               </TouchableOpacity>
             </View>
-
             <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 480 }}>
               <Text style={[styles.aiSectionLabel, { color: theme.textSecondary }]}>Diet Type</Text>
               <View style={styles.aiDietGrid}>
@@ -405,7 +584,6 @@ export default function DietScreen() {
                   );
                 })}
               </View>
-
               <Text style={[styles.aiSectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Meals per Day</Text>
               <View style={styles.aiMealsRow}>
                 {[3, 4, 5, 6].map((n) => (
@@ -418,7 +596,6 @@ export default function DietScreen() {
                   </TouchableOpacity>
                 ))}
               </View>
-
               <Text style={[styles.aiSectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Favorite Foods</Text>
               <TextInput
                 style={[styles.aiInput, { backgroundColor: theme.card, color: theme.text, borderColor: theme.border }]}
@@ -428,7 +605,6 @@ export default function DietScreen() {
                 placeholderTextColor={theme.textMuted}
                 multiline
               />
-
               <Text style={[styles.aiSectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Special Suggestions</Text>
               <TextInput
                 style={[styles.aiInput, { backgroundColor: theme.card, color: theme.text, borderColor: theme.border }]}
@@ -439,7 +615,6 @@ export default function DietScreen() {
                 multiline
               />
             </ScrollView>
-
             <TouchableOpacity
               style={[styles.aiGenerateBtn, aiGenerating && { opacity: 0.7 }]}
               onPress={handleAIMealPlan}
@@ -461,6 +636,20 @@ export default function DietScreen() {
           </View>
         </View>
       </Modal>
+
+      <CustomMealPlanBuilder
+        visible={showMealPlanBuilder}
+        onClose={() => { setShowMealPlanBuilder(false); setEditingMealPlan(undefined); }}
+        onSave={(planData) => {
+          if (editingMealPlan) {
+            updateCustomMealPlan({ ...editingMealPlan, ...planData });
+          } else {
+            const saved = addCustomMealPlan(planData);
+            setActiveMealPlan("custom", saved.id);
+          }
+        }}
+        existingPlan={editingMealPlan}
+      />
     </View>
   );
 }
@@ -531,17 +720,41 @@ const styles = StyleSheet.create({
   tabBar: { flexDirection: "row", borderRadius: 12, borderWidth: 1, padding: 4, gap: 4 },
   tab: { flex: 1, paddingVertical: 8, borderRadius: 9, alignItems: "center" },
   tabText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  planSwitcherRow: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, gap: 12 },
+  planTypeIcon: { width: 38, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  planNameText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  planMetaText: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
+  switchBadge: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  switchBadgeText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
   tabHeaderRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   sectionTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold" },
   smallBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1 },
   smallBtnText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
   emptyState: { alignItems: "center", gap: 12, paddingVertical: 48 },
   emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", maxWidth: 280 },
+  emptyActionBtn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10 },
+  emptyActionText: { color: "#000", fontSize: 13, fontFamily: "Inter_700Bold" },
+  customSection: { gap: 8, marginTop: 4 },
+  customSectionTitle: { fontSize: 11, fontFamily: "Inter_600SemiBold", textTransform: "uppercase", letterSpacing: 0.8, paddingHorizontal: 2 },
+  customPlanRow: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, gap: 10 },
+  customPlanInfo: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
+  customPlanName: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  customPlanMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
   logEntry: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 12, borderWidth: 1, gap: 12 },
   logEntryName: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   logEntryMacros: { flexDirection: "row", gap: 10, marginTop: 4, flexWrap: "wrap" },
   logMacro: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
   removeBtn: { padding: 6 },
+  switcherOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "flex-end" },
+  switcherBackdrop: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.5)" },
+  switcherSheet: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, gap: 10, paddingBottom: 36 },
+  switcherTitle: { fontSize: 18, fontFamily: "Inter_700Bold", marginBottom: 4 },
+  switcherOption: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 14, borderWidth: 1 },
+  switcherIcon: { width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  switcherOptionName: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  switcherOptionMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
+  switcherNewBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, padding: 14, borderRadius: 14, borderWidth: 1, borderStyle: "dashed", marginTop: 4 },
+  switcherNewBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   modalOverlay: { flex: 1, backgroundColor: "#00000080", justifyContent: "flex-end" },
   modalContent: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, gap: 4 },
   modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },

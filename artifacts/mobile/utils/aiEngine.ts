@@ -320,7 +320,10 @@ export function generateMealPlan(profile: UserProfile): MealPlan {
   return {
     id: Date.now().toString(),
     meals,
-    ...totals,
+    totalCalories: totals.calories,
+    totalProtein: totals.protein,
+    totalCarbs: totals.carbs,
+    totalFats: totals.fats,
     generatedAt: new Date().toISOString(),
   };
 }

@@ -18,6 +18,7 @@ import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 import { useApp, CustomMacros } from "@/context/AppContext";
 import { useWorkout } from "@/context/WorkoutContext";
+import { useHealth } from "@/context/HealthContext";
 import { NumberEditModal } from "@/components/NumberEditModal";
 import { Colors } from "@/constants/colors";
 
@@ -45,6 +46,7 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { state: appState, calculateTDEE, calculateMacros, toggleColorScheme, updateProfileField, setCustomMacros } = useApp();
   const { sessions, personalRecords } = useWorkout();
+  const { healthData, toggleSync, syncHealthData, isTracking, startRunTracking, stopRunTracking, currentRun } = useHealth();
   const profile = appState.profile;
 
   const topPadding = Platform.OS === "web" ? 67 : insets.top + 12;
@@ -251,6 +253,135 @@ export default function ProfileScreen() {
         <InfoRow label="Water Goal" value={`${profile.waterIntakeLiters} L/day`} theme={theme} />
       </SectionCard>
 
+      <SectionCard title="Health Data Sync" isDark={isDark} theme={theme} subtitle="Connect devices & apps">
+        <View style={styles.healthSyncGrid}>
+          <HealthSyncCard
+            icon="logo-apple"
+            label="Apple Health"
+            connected={healthData.syncStatus.appleHealth}
+            onToggle={() => { toggleSync("appleHealth"); Haptics.selectionAsync(); }}
+            theme={theme}
+            color="#FF2D55"
+          />
+          <HealthSyncCard
+            icon="fitness-outline"
+            label="Google Fit"
+            connected={healthData.syncStatus.googleFit}
+            onToggle={() => { toggleSync("googleFit"); Haptics.selectionAsync(); }}
+            theme={theme}
+            color="#4285F4"
+          />
+          <HealthSyncCard
+            icon="footsteps-outline"
+            label="Step Counter"
+            connected={healthData.syncStatus.stepsEnabled}
+            onToggle={() => { toggleSync("stepsEnabled"); Haptics.selectionAsync(); }}
+            theme={theme}
+            color={Colors.accentGreen}
+          />
+          <HealthSyncCard
+            icon="navigate-outline"
+            label="GPS Tracking"
+            connected={healthData.syncStatus.locationEnabled}
+            onToggle={() => { toggleSync("locationEnabled"); Haptics.selectionAsync(); }}
+            theme={theme}
+            color={Colors.accent}
+          />
+        </View>
+
+        {healthData.todaySteps > 0 && (
+          <View style={[styles.stepsRow, { borderTopColor: theme.border }]}>
+            <Ionicons name="footsteps" size={18} color={Colors.accentGreen} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.stepsValue, { color: theme.text }]}>
+                {healthData.todaySteps.toLocaleString()} steps today
+              </Text>
+              <Text style={[styles.stepsGoal, { color: theme.textSecondary }]}>Goal: 10,000 steps</Text>
+            </View>
+            <View style={[styles.stepsProgress, { backgroundColor: isDark ? "#1A1A24" : "#E4E6F0" }]}>
+              <View style={[styles.stepsProgressFill, {
+                width: `${Math.min(100, (healthData.todaySteps / 10000) * 100)}%`,
+                backgroundColor: Colors.accentGreen,
+              }]} />
+            </View>
+          </View>
+        )}
+
+        {healthData.runSessions.length > 0 && (
+          <View style={[styles.recentRunRow, { borderTopColor: theme.border }]}>
+            <Ionicons name="walk-outline" size={18} color={Colors.accent} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.runLabel, { color: theme.text }]}>Last Run</Text>
+              <Text style={[styles.runMeta, { color: theme.textSecondary }]}>
+                {healthData.runSessions[healthData.runSessions.length - 1].distanceKm} km ·{" "}
+                {healthData.runSessions[healthData.runSessions.length - 1].durationMins} min ·{" "}
+                {healthData.runSessions[healthData.runSessions.length - 1].caloriesBurned} kcal
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {isTracking && currentRun && (
+          <View style={[styles.activeRunBanner, { backgroundColor: Colors.accentGreen + "15", borderColor: Colors.accentGreen + "40" }]}>
+            <View style={[styles.runPulse, { backgroundColor: Colors.accentGreen }]} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.activeRunTitle, { color: Colors.accentGreen }]}>Run in Progress</Text>
+              <Text style={[styles.activeRunMeta, { color: theme.text }]}>
+                {currentRun.distanceKm.toFixed(2)} km · {currentRun.route.length} GPS points
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.stopRunBtn, { backgroundColor: Colors.accentRed }]}
+              onPress={() => {
+                const session = stopRunTracking();
+                if (session) {
+                  Alert.alert("Run Complete", `${session.distanceKm} km in ${session.durationMins} min\n${session.caloriesBurned} calories burned`);
+                }
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              }}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="stop" size={14} color="#FFF" />
+              <Text style={styles.stopRunBtnText}>Stop</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        <View style={styles.healthActions}>
+          {!isTracking && (
+            <TouchableOpacity
+              style={[styles.healthActionBtn, { backgroundColor: Colors.accentGreen + "20", borderColor: Colors.accentGreen + "40" }]}
+              onPress={() => {
+                startRunTracking();
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                Alert.alert("Run Started", "GPS tracking is active. Go for your run! Come back here to stop and save.");
+              }}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="walk" size={16} color={Colors.accentGreen} />
+              <Text style={[styles.healthActionText, { color: Colors.accentGreen }]}>Start Run</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={[styles.healthActionBtn, { backgroundColor: Colors.primary + "20", borderColor: Colors.primary + "40" }]}
+            onPress={() => {
+              syncHealthData();
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            }}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="sync" size={16} color={Colors.primary} />
+            <Text style={[styles.healthActionText, { color: Colors.primary }]}>Sync Now</Text>
+          </TouchableOpacity>
+        </View>
+
+        {healthData.lastSynced && (
+          <Text style={[styles.lastSynced, { color: theme.textMuted }]}>
+            Last synced: {new Date(healthData.lastSynced).toLocaleString()}
+          </Text>
+        )}
+      </SectionCard>
+
       <SectionCard title="Settings" isDark={isDark} theme={theme}>
         <View style={styles.settingRow}>
           <View style={styles.settingLeft}>
@@ -386,6 +517,27 @@ function TappableRow({ label, value, theme, onPress, badge, badgeColor }: any) {
   );
 }
 
+function HealthSyncCard({ icon, label, connected, onToggle, theme, color }: any) {
+  return (
+    <TouchableOpacity
+      style={[styles.healthCard, {
+        backgroundColor: connected ? color + "15" : theme.card,
+        borderColor: connected ? color + "40" : theme.border,
+      }]}
+      onPress={onToggle}
+      activeOpacity={0.7}
+    >
+      <Ionicons name={icon} size={22} color={connected ? color : theme.textMuted} />
+      <Text style={[styles.healthCardLabel, { color: connected ? color : theme.textSecondary }]} numberOfLines={1}>{label}</Text>
+      <View style={[styles.healthCardStatus, { backgroundColor: connected ? color : theme.border }]}>
+        <Text style={[styles.healthCardStatusText, { color: connected ? "#FFF" : theme.textMuted }]}>
+          {connected ? "On" : "Off"}
+        </Text>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
 function StatItem({ label, value, theme }: any) {
   return (
     <View style={styles.statItem}>
@@ -450,4 +602,27 @@ const styles = StyleSheet.create({
   macroCancelText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   macroSaveBtn: { flex: 2, padding: 14, borderRadius: 12, alignItems: "center" },
   macroSaveText: { color: "#000", fontSize: 15, fontFamily: "Inter_700Bold" },
+  healthSyncGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingTop: 4 },
+  healthCard: { width: "48%" as any, padding: 12, borderRadius: 12, borderWidth: 1, alignItems: "center", gap: 6 },
+  healthCardLabel: { fontSize: 12, fontFamily: "Inter_600SemiBold", textAlign: "center" },
+  healthCardStatus: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
+  healthCardStatusText: { fontSize: 10, fontFamily: "Inter_700Bold" },
+  stepsRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 12, marginTop: 8, borderTopWidth: 1 },
+  stepsValue: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  stepsGoal: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 1 },
+  stepsProgress: { width: 60, height: 6, borderRadius: 3, overflow: "hidden" },
+  stepsProgressFill: { height: "100%", borderRadius: 3 },
+  recentRunRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 12, marginTop: 8, borderTopWidth: 1 },
+  runLabel: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  runMeta: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 1 },
+  activeRunBanner: { flexDirection: "row", alignItems: "center", padding: 12, borderRadius: 12, borderWidth: 1, gap: 10, marginTop: 8 },
+  runPulse: { width: 10, height: 10, borderRadius: 5 },
+  activeRunTitle: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  activeRunMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 1 },
+  stopRunBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
+  stopRunBtnText: { color: "#FFF", fontSize: 12, fontFamily: "Inter_700Bold" },
+  healthActions: { flexDirection: "row", gap: 8, marginTop: 10 },
+  healthActionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, padding: 12, borderRadius: 10, borderWidth: 1 },
+  healthActionText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  lastSynced: { fontSize: 11, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 6 },
 });
