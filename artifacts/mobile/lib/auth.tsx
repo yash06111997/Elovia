@@ -1,12 +1,12 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
-import * as AuthSession from "expo-auth-session";
-import * as WebBrowser from "expo-web-browser";
-import * as SecureStore from "expo-secure-store";
-
-WebBrowser.maybeCompleteAuthSession();
-
-const AUTH_TOKEN_KEY = "auth_session_token";
-const ISSUER_URL = process.env.EXPO_PUBLIC_ISSUER_URL ?? "https://replit.com/oidc";
+import {
+  GoogleAuthProvider,
+  signInWithPopup,
+  onAuthStateChanged,
+  signOut,
+  type User as FirebaseUser,
+} from "firebase/auth";
+import { auth } from "./firebase";
 
 interface User {
   id: string;
@@ -22,6 +22,7 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   login: () => Promise<void>;
   logout: () => Promise<void>;
+  getIdToken: () => Promise<string | null>;
 }
 
 const AuthContext = createContext<AuthContextValue>({
@@ -30,7 +31,20 @@ const AuthContext = createContext<AuthContextValue>({
   isAuthenticated: false,
   login: async () => {},
   logout: async () => {},
+  getIdToken: async () => null,
 });
+
+function firebaseUserToUser(fbUser: FirebaseUser): User {
+  const displayName = fbUser.displayName || "";
+  const nameParts = displayName.split(" ");
+  return {
+    id: fbUser.uid,
+    email: fbUser.email,
+    firstName: nameParts[0] || null,
+    lastName: nameParts.slice(1).join(" ") || null,
+    profileImageUrl: fbUser.photoURL,
+  };
+}
 
 function getApiBaseUrl(): string {
   if (process.env.EXPO_PUBLIC_DOMAIN) {
@@ -39,126 +53,42 @@ function getApiBaseUrl(): string {
   return "";
 }
 
-function getClientId(): string {
-  return process.env.EXPO_PUBLIC_REPL_ID || "";
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const discovery = AuthSession.useAutoDiscovery(ISSUER_URL);
-
-  const redirectUri = AuthSession.makeRedirectUri();
-
-  const [request, response, promptAsync] = AuthSession.useAuthRequest(
-    {
-      clientId: getClientId(),
-      scopes: ["openid", "email", "profile", "offline_access"],
-      redirectUri,
-      prompt: AuthSession.Prompt.Login,
-    },
-    discovery,
-  );
-
-  const fetchUser = useCallback(async () => {
-    try {
-      const token = await SecureStore.getItemAsync(AUTH_TOKEN_KEY);
-      if (!token) {
-        setUser(null);
-        setIsLoading(false);
-        return;
-      }
-
-      const apiBase = getApiBaseUrl();
-      const res = await fetch(`${apiBase}/api/auth/user`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
-
-      if (data.user) {
-        setUser(data.user);
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
+      if (fbUser) {
+        setUser(firebaseUserToUser(fbUser));
       } else {
-        await SecureStore.deleteItemAsync(AUTH_TOKEN_KEY);
         setUser(null);
       }
-    } catch {
-      setUser(null);
-    } finally {
       setIsLoading(false);
-    }
+    });
+    return unsubscribe;
   }, []);
 
-  useEffect(() => {
-    fetchUser();
-  }, [fetchUser]);
-
-  useEffect(() => {
-    if (response?.type !== "success" || !request?.codeVerifier) return;
-
-    const { code, state } = response.params;
-
-    (async () => {
-      try {
-        const apiBase = getApiBaseUrl();
-        if (!apiBase) {
-          console.error("API base URL is not configured.");
-          return;
-        }
-
-        const exchangeRes = await fetch(`${apiBase}/api/mobile-auth/token-exchange`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            code,
-            code_verifier: request.codeVerifier,
-            redirect_uri: redirectUri,
-            state,
-            nonce: request.nonce,
-          }),
-        });
-
-        if (!exchangeRes.ok) {
-          console.error("Token exchange failed:", exchangeRes.status);
-          setIsLoading(false);
-          return;
-        }
-
-        const data = await exchangeRes.json();
-        if (data.token) {
-          await SecureStore.setItemAsync(AUTH_TOKEN_KEY, data.token);
-          setIsLoading(true);
-          await fetchUser();
-        }
-      } catch (err) {
-        console.error("Token exchange error:", err);
-        setIsLoading(false);
-      }
-    })();
-  }, [response, request, redirectUri, fetchUser]);
+  const getIdToken = useCallback(async (): Promise<string | null> => {
+    if (!auth.currentUser) return null;
+    return auth.currentUser.getIdToken();
+  }, []);
 
   const login = useCallback(async () => {
     try {
-      await promptAsync();
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
     } catch (err) {
       console.error("Login error:", err);
     }
-  }, [promptAsync]);
+  }, []);
 
   const logout = useCallback(async () => {
     try {
-      const token = await SecureStore.getItemAsync(AUTH_TOKEN_KEY);
-      if (token) {
-        const apiBase = getApiBaseUrl();
-        await fetch(`${apiBase}/api/mobile-auth/logout`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-        });
-      }
-    } catch {
-    } finally {
-      await SecureStore.deleteItemAsync(AUTH_TOKEN_KEY);
+      await signOut(auth);
       setUser(null);
+    } catch (err) {
+      console.error("Logout error:", err);
     }
   }, []);
 
@@ -170,6 +100,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated: !!user,
         login,
         logout,
+        getIdToken,
       }}
     >
       {children}

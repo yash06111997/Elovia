@@ -81,9 +81,9 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - Reset all data option
 
 ### Authentication
-- OIDC-based auth via Replit provider (supports Google login)
-- Mobile: expo-auth-session with PKCE flow → token exchange → secure token storage
-- Server: openid-client, cookie-based sessions stored in PostgreSQL
+- Firebase Auth with Google Sign-In provider
+- Mobile: Firebase JS SDK with `signInWithPopup` (Google provider)
+- Server: Firebase Admin SDK (`firebase-admin`) verifies ID tokens via Bearer header
 - User data persistence: all AsyncStorage keys synced to PostgreSQL user_data table
 
 ## Tech Stack
@@ -101,12 +101,8 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - **@expo-google-fonts/inter** (Inter 400/500/600/700)
 - **@anthropic-ai/sdk** (AI food recognition & workout generation via backend)
 - **expo-location** (GPS run tracking with foreground permissions)
-- **expo-auth-session** (OIDC authentication with PKCE)
-- **expo-secure-store** (secure token storage)
-- **expo-web-browser** (auth browser flow)
-- **expo-crypto** (PKCE code verifier generation)
-- **openid-client** (server-side OIDC validation)
-- **cookie-parser** (session cookie handling)
+- **firebase** (Firebase JS SDK — Auth with Google Sign-In)
+- **firebase-admin** (server-side Firebase token verification)
 
 ## File Structure
 
@@ -133,7 +129,8 @@ artifacts/mobile/
     FoodSearch.tsx        # Food database browser with search & categories
     ErrorBoundary.tsx     # Error boundary
   lib/
-    auth.tsx              # AuthProvider with expo-auth-session OIDC flow
+    firebase.ts           # Firebase app + auth initialization
+    auth.tsx              # AuthProvider with Firebase Google Sign-In
   context/
     AppContext.tsx         # Profile, health metrics, TDEE/macros, custom macros
     WorkoutContext.tsx     # Plans, sessions, PRs
@@ -153,15 +150,15 @@ artifacts/mobile/
 
 artifacts/api-server/
   src/
-    app.ts                # Express app with CORS, cookie-parser, auth middleware, JSON (20mb)
+    app.ts                # Express app with CORS, Firebase auth middleware, JSON (20mb)
     lib/
-      auth.ts             # OIDC config, session CRUD (PostgreSQL), token management
+      auth.ts             # Firebase Admin SDK init, token verification
     middlewares/
-      authMiddleware.ts   # Loads user from session, patches req.isAuthenticated()
+      authMiddleware.ts   # Verifies Firebase ID token from Bearer header
     routes/
       index.ts            # Route registry
       health.ts           # Health check
-      auth.ts             # OIDC login/callback/logout + mobile token exchange
+      auth.ts             # GET /api/auth/user + user upsert
       userData.ts         # GET/POST /api/user-data (cloud data sync)
       ai/
         index.ts          # AI routes: /api/ai/recognize-food, /api/ai/generate-workout
@@ -169,12 +166,7 @@ artifacts/api-server/
 
 ## API Endpoints
 
-- `GET /api/auth/user` — Returns current authenticated user or `{ user: null }`
-- `GET /api/login` — Redirects to OIDC provider for login
-- `GET /api/callback` — OIDC callback, creates session, redirects
-- `GET /api/logout` — Clears session, redirects to OIDC logout
-- `POST /api/mobile-auth/token-exchange` — Exchange mobile OIDC code for session token
-- `POST /api/mobile-auth/logout` — Delete mobile session
+- `GET /api/auth/user` — Returns current authenticated user or `{ user: null }` (Firebase ID token via Bearer header)
 - `GET /api/user-data` — Fetch user's synced app data (authenticated)
 - `POST /api/user-data` — Save user's app data to database (authenticated)
 - `POST /api/ai/recognize-food` — Send `{ imageBase64 }`, returns structured food analysis with macros

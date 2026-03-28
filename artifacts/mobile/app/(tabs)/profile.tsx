@@ -49,7 +49,7 @@ export default function ProfileScreen() {
   const { state: appState, calculateTDEE, calculateMacros, toggleColorScheme, updateProfileField, setCustomMacros } = useApp();
   const { sessions, personalRecords } = useWorkout();
   const { healthData, toggleSync, syncHealthData, isTracking, startRunTracking, stopRunTracking, currentRun } = useHealth();
-  const { user, isAuthenticated, isLoading: authLoading, login, logout } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, login, logout, getIdToken } = useAuth();
   const [syncing, setSyncing] = useState(false);
   const profile = appState.profile;
 
@@ -60,8 +60,7 @@ export default function ProfileScreen() {
 
   const getAuthToken = async () => {
     try {
-      const SecureStore = await import("expo-secure-store");
-      return await SecureStore.getItemAsync("auth_session_token");
+      return await getIdToken();
     } catch {
       return null;
     }
