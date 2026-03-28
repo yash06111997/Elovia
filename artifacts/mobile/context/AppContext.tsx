@@ -48,6 +48,7 @@ export interface UserProfile {
   gender: "male" | "female" | "other";
   heightCm: number;
   weightKg: number;
+  targetWeightKg: number;
   goal: FitnessGoal;
   fitnessLevel: FitnessLevel;
   activityLevel: ActivityLevel;
@@ -62,6 +63,14 @@ export interface UserProfile {
   medicalNotes: string;
   sleepHours: number;
   waterIntakeLiters: number;
+}
+
+export interface CustomMacros {
+  enabled: boolean;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fats: number;
 }
 
 export interface HealthMetric {
@@ -80,11 +89,13 @@ export interface AppState {
   currentStreak: number;
   totalWorkouts: number;
   colorScheme: "dark" | "light";
+  customMacros: CustomMacros | null;
 }
 
 interface AppContextType {
   state: AppState;
   setProfile: (profile: UserProfile) => void;
+  updateProfileField: (key: keyof UserProfile, value: any) => void;
   completeOnboarding: () => void;
   addHealthMetric: (metric: HealthMetric) => void;
   getTodayMetric: () => HealthMetric | null;
@@ -98,29 +109,8 @@ interface AppContextType {
     carbs: number;
     fats: number;
   };
+  setCustomMacros: (macros: CustomMacros | null) => void;
 }
-
-const defaultProfile: UserProfile = {
-  name: "",
-  age: 25,
-  gender: "male",
-  heightCm: 175,
-  weightKg: 75,
-  goal: "general_fitness",
-  fitnessLevel: "beginner",
-  activityLevel: "moderately_active",
-  workoutPreference: "gym",
-  workoutDaysPerWeek: 3,
-  workoutDurationMins: 45,
-  equipment: ["dumbbells"],
-  customEquipment: "",
-  foodPreference: "non_vegetarian",
-  dietaryRestrictions: "",
-  dislikedFoods: "",
-  medicalNotes: "",
-  sleepHours: 7,
-  waterIntakeLiters: 2,
-};
 
 const defaultState: AppState = {
   profile: null,
@@ -129,6 +119,7 @@ const defaultState: AppState = {
   currentStreak: 0,
   totalWorkouts: 0,
   colorScheme: "dark",
+  customMacros: null,
 };
 
 const AppContext = createContext<AppContextType | null>(null);
@@ -163,6 +154,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const setProfile = useCallback((profile: UserProfile) => {
     setState((prev) => {
       const next = { ...prev, profile };
+      saveState(next);
+      return next;
+    });
+  }, []);
+
+  const updateProfileField = useCallback((key: keyof UserProfile, value: any) => {
+    setState((prev) => {
+      if (!prev.profile) return prev;
+      const next = { ...prev, profile: { ...prev.profile, [key]: value } };
       saveState(next);
       return next;
     });
@@ -238,6 +238,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const setCustomMacros = useCallback((macros: CustomMacros | null) => {
+    setState((prev) => {
+      const next = { ...prev, customMacros: macros };
+      saveState(next);
+      return next;
+    });
+  }, []);
+
   const calculateTDEE = useCallback((): number => {
     const p = state.profile;
     if (!p) return 2000;
@@ -262,6 +270,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     carbs: number;
     fats: number;
   } => {
+    if (state.customMacros?.enabled) {
+      return {
+        calories: state.customMacros.calories,
+        protein: state.customMacros.protein,
+        carbs: state.customMacros.carbs,
+        fats: state.customMacros.fats,
+      };
+    }
+
     const p = state.profile;
     const tdee = calculateTDEE();
     if (!p) return { calories: 2000, protein: 150, carbs: 200, fats: 70 };
@@ -275,7 +292,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const carbs = Math.round((calories - protein * 4 - fats * 9) / 4);
 
     return { calories, protein, carbs, fats };
-  }, [state.profile, calculateTDEE]);
+  }, [state.profile, state.customMacros, calculateTDEE]);
 
   if (!loaded) return null;
 
@@ -284,6 +301,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       value={{
         state,
         setProfile,
+        updateProfileField,
         completeOnboarding,
         addHealthMetric,
         getTodayMetric,
@@ -292,6 +310,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         toggleColorScheme,
         calculateTDEE,
         calculateMacros,
+        setCustomMacros,
       }}
     >
       {children}

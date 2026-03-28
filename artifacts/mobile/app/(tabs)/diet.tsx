@@ -9,16 +9,22 @@ import {
   Platform,
   Modal,
   useColorScheme,
+  ActivityIndicator,
+  Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import * as ImagePicker from "expo-image-picker";
 import { useNutrition, Meal, FoodLogEntry } from "@/context/NutritionContext";
 import { useApp } from "@/context/AppContext";
 import { MacroBar } from "@/components/MacroBar";
 import { MealCard } from "@/components/MealCard";
+import { FoodSearch } from "@/components/FoodSearch";
 import { generateMealPlan } from "@/utils/aiEngine";
+import { recognizeFood } from "@/utils/api";
 import { Colors } from "@/constants/colors";
+import type { FoodItem } from "@/utils/foodDatabase";
 
 type Tab = "plan" | "log";
 
@@ -31,6 +37,8 @@ export default function DietScreen() {
   const { state: appState, calculateMacros } = useApp();
   const [activeTab, setActiveTab] = useState<Tab>("plan");
   const [logModalVisible, setLogModalVisible] = useState(false);
+  const [foodSearchVisible, setFoodSearchVisible] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [quickLog, setQuickLog] = useState({ name: "", calories: "", protein: "", carbs: "", fats: "", mealType: "snack" as const });
 
   const macros = calculateMacros();
@@ -78,26 +86,102 @@ export default function DietScreen() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
+  const handleFoodSelect = (food: FoodItem, servings: number) => {
+    logFood({
+      date: new Date().toISOString().split("T")[0],
+      name: food.name,
+      calories: Math.round(food.calories * servings),
+      protein: Math.round(food.protein * servings),
+      carbs: Math.round(food.carbs * servings),
+      fats: Math.round(food.fats * servings),
+      mealType: "snack",
+      servingSize: `${servings} x ${food.servingSize}`,
+    });
+  };
+
+  const handleScanFood = async () => {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert("Permission needed", "Camera permission is required to scan food.");
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        base64: true,
+        quality: 0.7,
+        allowsEditing: true,
+      });
+
+      if (result.canceled || !result.assets[0]?.base64) return;
+
+      setScanning(true);
+      const analysis = await recognizeFood(result.assets[0].base64);
+
+      analysis.foods.forEach((food) => {
+        logFood({
+          date: new Date().toISOString().split("T")[0],
+          name: food.name,
+          calories: food.calories,
+          protein: food.protein,
+          carbs: food.carbs,
+          fats: food.fats,
+          mealType: "snack",
+          servingSize: food.servingSize,
+        });
+      });
+
+      Alert.alert(
+        "Food Recognized",
+        `${analysis.description}\n\nAdded ${analysis.foods.length} item(s) totaling ${analysis.totalCalories} kcal.`
+      );
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: any) {
+      Alert.alert("Error", e.message || "Failed to analyze food photo.");
+    } finally {
+      setScanning(false);
+    }
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <ScrollView
         contentContainerStyle={[styles.content, { paddingTop: topPadding, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 80 }]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
         <View style={styles.headerRow}>
           <Text style={[styles.screenTitle, { color: theme.text }]}>Nutrition</Text>
-          <TouchableOpacity
-            style={[styles.logBtn, { backgroundColor: Colors.accentGreen }]}
-            onPress={() => setLogModalVisible(true)}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="add" size={16} color="#000" />
-            <Text style={styles.logBtnText}>Log Food</Text>
-          </TouchableOpacity>
+          <View style={styles.headerActions}>
+            <TouchableOpacity
+              style={[styles.iconBtn, { backgroundColor: Colors.primary + "20" }]}
+              onPress={handleScanFood}
+              activeOpacity={0.8}
+              disabled={scanning}
+            >
+              {scanning ? (
+                <ActivityIndicator size="small" color={Colors.primary} />
+              ) : (
+                <Ionicons name="camera" size={18} color={Colors.primary} />
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.iconBtn, { backgroundColor: Colors.accent + "20" }]}
+              onPress={() => setFoodSearchVisible(true)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="search" size={18} color={Colors.accent} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.logBtn, { backgroundColor: Colors.accentGreen }]}
+              onPress={() => setLogModalVisible(true)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="add" size={16} color="#000" />
+              <Text style={styles.logBtnText}>Log</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* Macro Progress */}
         <View style={[styles.macroCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
           <View style={styles.macroCardHeader}>
             <Text style={[styles.cardTitle, { color: theme.text }]}>Daily Progress</Text>
@@ -113,7 +197,6 @@ export default function DietScreen() {
           <MacroBar label="Fats" current={consumed.fats} target={macros.fats} color={Colors.accentGreen} isDark={isDark} />
         </View>
 
-        {/* Tabs */}
         <View style={[styles.tabBar, { backgroundColor: theme.card, borderColor: theme.border }]}>
           {(["plan", "log"] as Tab[]).map((tab) => (
             <TouchableOpacity
@@ -174,7 +257,7 @@ export default function DietScreen() {
               <View style={styles.emptyState}>
                 <Ionicons name="clipboard-outline" size={48} color={theme.textMuted} />
                 <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
-                  No food logged today. Tap "Log Food" to add meals.
+                  No food logged today. Tap the camera, search, or "Log" to add meals.
                 </Text>
               </View>
             ) : (
@@ -186,7 +269,6 @@ export default function DietScreen() {
         )}
       </ScrollView>
 
-      {/* Quick Log Modal */}
       <Modal visible={logModalVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: theme.surface }]}>
@@ -227,6 +309,13 @@ export default function DietScreen() {
           </View>
         </View>
       </Modal>
+
+      <FoodSearch
+        visible={foodSearchVisible}
+        onClose={() => setFoodSearchVisible(false)}
+        onSelect={handleFoodSelect}
+        isDark={isDark}
+      />
     </View>
   );
 }
@@ -285,7 +374,9 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { paddingHorizontal: 16, gap: 14 },
   headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   screenTitle: { fontSize: 24, fontFamily: "Inter_700Bold" },
+  iconBtn: { width: 38, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   logBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 },
   logBtnText: { color: "#000", fontSize: 13, fontFamily: "Inter_700Bold" },
   macroCard: { borderRadius: 16, borderWidth: 1, padding: 16, gap: 12 },

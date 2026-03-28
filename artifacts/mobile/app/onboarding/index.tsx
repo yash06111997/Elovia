@@ -38,6 +38,7 @@ export default function OnboardingScreen() {
     gender: "male",
     heightCm: 170,
     weightKg: 70,
+    targetWeightKg: 70,
     goal: "general_fitness",
     fitnessLevel: "beginner",
     activityLevel: "moderately_active",
@@ -200,6 +201,7 @@ function StepPersonal({ form, update, isDark, theme }: any) {
       </View>
       <NumberStepper label="Height (cm)" value={form.heightCm} min={100} max={250} step={1} onChange={(v: number) => update("heightCm", v)} theme={theme} />
       <NumberStepper label="Weight (kg)" value={form.weightKg} min={30} max={250} step={0.5} onChange={(v: number) => update("weightKg", v)} theme={theme} />
+      <NumberStepper label="Target Weight (kg)" value={form.targetWeightKg} min={30} max={250} step={0.5} onChange={(v: number) => update("targetWeightKg", v)} theme={theme} />
     </View>
   );
 }
