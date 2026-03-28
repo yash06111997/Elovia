@@ -11,7 +11,8 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Colors } from "@/constants/colors";
-import { foodDatabase, foodCategories, searchFoods, getFoodsByCategory, FoodItem } from "@/utils/foodDatabase";
+import { foodCategories, searchFoods, getFoodsByCategory, FoodItem } from "@/utils/foodDatabase";
+import { useApp } from "@/context/AppContext";
 
 interface Props {
   visible: boolean;
@@ -22,16 +23,18 @@ interface Props {
 
 export function FoodSearch({ visible, onClose, onSelect, isDark }: Props) {
   const theme = isDark ? Colors.dark : Colors.light;
+  const { state: appState } = useApp();
+  const dietaryPreference = appState.profile?.foodPreference;
   const [query, setQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedFood, setSelectedFood] = useState<FoodItem | null>(null);
   const [servings, setServings] = useState("1");
 
   const results = useMemo(() => {
-    if (query.trim()) return searchFoods(query);
-    if (selectedCategory) return getFoodsByCategory(selectedCategory);
+    if (query.trim()) return searchFoods(query, dietaryPreference);
+    if (selectedCategory) return getFoodsByCategory(selectedCategory, dietaryPreference);
     return [];
-  }, [query, selectedCategory]);
+  }, [query, selectedCategory, dietaryPreference]);
 
   const handleSelect = (food: FoodItem) => {
     setSelectedFood(food);
@@ -101,7 +104,7 @@ export function FoodSearch({ visible, onClose, onSelect, isDark }: Props) {
                   <Ionicons name="restaurant-outline" size={18} color={Colors.primary} />
                   <Text style={[styles.categoryName, { color: theme.text }]}>{item}</Text>
                   <Text style={[styles.categoryCount, { color: theme.textSecondary }]}>
-                    {getFoodsByCategory(item).length} items
+                    {getFoodsByCategory(item, dietaryPreference).length} items
                   </Text>
                   <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
                 </TouchableOpacity>
