@@ -55,6 +55,9 @@
     "zod-validation-error": "^3.4.0"
   },
   "dependencies": {
+    "expo-auth-session": "56.0.0-canary-20260305-5163746",
+    "expo-crypto": "56.0.0-canary-20260305-5163746",
+    "expo-web-browser": "56.0.0-canary-20260305-5163746",
     "firebase": "^12.11.0"
   }
 }

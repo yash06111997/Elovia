@@ -1,12 +1,19 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import { Platform } from "react-native";
 import {
   GoogleAuthProvider,
-  signInWithPopup,
+  signInWithCredential,
   onAuthStateChanged,
   signOut,
   type User as FirebaseUser,
 } from "firebase/auth";
+import * as Google from "expo-auth-session/providers/google";
+import * as WebBrowser from "expo-web-browser";
 import { auth } from "./firebase";
+
+if (Platform.OS !== "web") {
+  WebBrowser.maybeCompleteAuthSession();
+}
 
 interface User {
   id: string;
@@ -46,16 +53,19 @@ function firebaseUserToUser(fbUser: FirebaseUser): User {
   };
 }
 
-function getApiBaseUrl(): string {
-  if (process.env.EXPO_PUBLIC_DOMAIN) {
-    return `https://${process.env.EXPO_PUBLIC_DOMAIN}`;
-  }
-  return "";
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+  const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
+  const androidClientId = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID;
+
+  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
+    webClientId: webClientId || undefined,
+    iosClientId: iosClientId || webClientId || undefined,
+    androidClientId: androidClientId || webClientId || undefined,
+  });
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
@@ -69,6 +79,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return unsubscribe;
   }, []);
 
+  useEffect(() => {
+    if (response?.type === "success") {
+      const { id_token } = response.params;
+      const credential = GoogleAuthProvider.credential(id_token);
+      signInWithCredential(auth, credential).catch((err) => {
+        console.error("Firebase credential sign-in error:", err);
+      });
+    }
+  }, [response]);
+
   const getIdToken = useCallback(async (): Promise<string | null> => {
     if (!auth.currentUser) return null;
     return auth.currentUser.getIdToken();
@@ -76,12 +96,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async () => {
     try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
+      if (Platform.OS === "web") {
+        const { signInWithPopup } = await import("firebase/auth");
+        const provider = new GoogleAuthProvider();
+        await signInWithPopup(auth, provider);
+      } else {
+        await promptAsync();
+      }
     } catch (err) {
       console.error("Login error:", err);
     }
-  }, []);
+  }, [promptAsync]);
 
   const logout = useCallback(async () => {
     try {
