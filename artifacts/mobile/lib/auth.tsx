@@ -80,20 +80,48 @@ function getErrorMessage(err: unknown): string {
   return "Sign-in failed. Please try again.";
 }
 
+async function handleIdToken(idToken: string) {
+  const credential = GoogleAuthProvider.credential(idToken);
+  await signInWithCredential(auth, credential);
+}
+
+function loginWithPopupWindow(authUrl: string, state: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const popup = window.open(authUrl, "fitai-auth", "width=500,height=600,menubar=no,toolbar=no");
+    if (!popup) {
+      reject(new Error("Popup was blocked. Please allow popups and try again."));
+      return;
+    }
+
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === "fitai-auth" && event.data?.state === state) {
+        window.removeEventListener("message", handler);
+        clearInterval(checkClosed);
+        if (event.data.idToken) {
+          resolve(event.data.idToken);
+        } else {
+          reject(new Error(event.data.error || "Sign-in failed."));
+        }
+      }
+    };
+    window.addEventListener("message", handler);
+
+    const checkClosed = setInterval(() => {
+      if (popup.closed) {
+        clearInterval(checkClosed);
+        window.removeEventListener("message", handler);
+        reject(new Error("Sign-in was cancelled."));
+      }
+    }, 500);
+  });
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
-    if ((Platform.OS as string) === "web") {
-      import("firebase/auth").then(({ getRedirectResult }) => {
-        getRedirectResult(auth).catch((err) => {
-          console.error("getRedirectResult error:", err);
-        });
-      });
-    }
-
     const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
       if (fbUser) {
         setUser(firebaseUserToUser(fbUser));
@@ -113,25 +141,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async () => {
     setAuthError(null);
     try {
-      if (Platform.OS === "web") {
-        const { signInWithPopup, signInWithRedirect } = await import("firebase/auth");
-        const provider = new GoogleAuthProvider();
-        provider.addScope("email");
-        provider.addScope("profile");
-        try {
-          await signInWithPopup(auth, provider);
-        } catch (popupErr: unknown) {
-          const code = popupErr && typeof popupErr === "object" && "code" in popupErr
-            ? (popupErr as { code: string }).code
-            : "";
-          if (code === "auth/popup-blocked") {
-            await signInWithRedirect(auth, provider);
-          } else {
-            throw popupErr;
-          }
-        }
+      const state = Crypto.randomUUID();
+
+      if ((Platform.OS as string) === "web") {
+        const authUrl = `${API_BASE}/api/auth/google-mobile?mode=popup&state=${encodeURIComponent(state)}`;
+        const idToken = await loginWithPopupWindow(authUrl, state);
+        await handleIdToken(idToken);
       } else {
-        const state = Crypto.randomUUID();
         const returnUrl = Linking.createURL("auth");
         const authUrl = `${API_BASE}/api/auth/google-mobile?returnUrl=${encodeURIComponent(returnUrl)}&state=${encodeURIComponent(state)}`;
 
@@ -148,18 +164,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (!returnedState || returnedState !== state) {
             const msg = "Security check failed. Please try signing in again.";
             setAuthError(msg);
-            if ((Platform.OS as string) !== "web") Alert.alert("Sign-In Error", msg);
+            Alert.alert("Sign-In Error", msg);
             return;
           }
           const rawToken = result.url.match(/[?&]idToken=([^&]+)/)?.[1];
           const idToken = rawToken ? decodeURIComponent(rawToken) : null;
           if (idToken) {
-            const credential = GoogleAuthProvider.credential(idToken);
-            await signInWithCredential(auth, credential);
+            await handleIdToken(idToken);
           } else {
             const msg = "No authentication token received. Please try again.";
             setAuthError(msg);
-            if ((Platform.OS as string) !== "web") Alert.alert("Sign-In Error", msg);
+            Alert.alert("Sign-In Error", msg);
           }
         } else if (result.type !== "success") {
           setAuthError("Sign-in did not complete. Please try again.");

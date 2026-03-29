@@ -20,35 +20,40 @@ router.get("/auth/user", (req: Request, res: Response) => {
 });
 
 router.get("/auth/google-mobile", (req: Request, res: Response) => {
-  const rawReturnUrl = (req.query.returnUrl as string) || "mobile://auth";
+  const mode = (req.query.mode as string) || "redirect";
+  const rawReturnUrl = (req.query.returnUrl as string) || "";
 
-  const mobileSchemes = ["mobile://", "exp://", "exps://"];
-  const isMobileScheme = mobileSchemes.some((scheme) => rawReturnUrl.startsWith(scheme));
+  if (mode === "redirect" && rawReturnUrl) {
+    const mobileSchemes = ["mobile://", "exp://", "exps://"];
+    const isMobileScheme = mobileSchemes.some((scheme) => rawReturnUrl.startsWith(scheme));
 
-  let isHttpsAllowed = false;
-  if (rawReturnUrl.startsWith("https://") || rawReturnUrl.startsWith("http://localhost")) {
-    try {
-      const parsedUrl = new URL(rawReturnUrl);
-      const replitDevDomain = process.env.REPLIT_DEV_DOMAIN || "";
-      const allowedHttpHosts = [
-        "localhost",
-        ...(replitDevDomain ? [replitDevDomain] : []),
-      ];
-      isHttpsAllowed = allowedHttpHosts.some(
-        (host) => parsedUrl.hostname === host || parsedUrl.hostname.endsWith(`.${host}`)
-      );
-    } catch {
-      isHttpsAllowed = false;
+    let isHttpsAllowed = false;
+    if (rawReturnUrl.startsWith("https://") || rawReturnUrl.startsWith("http://localhost")) {
+      try {
+        const parsedUrl = new URL(rawReturnUrl);
+        const replitDevDomain = process.env.REPLIT_DEV_DOMAIN || "";
+        const allowedHttpHosts = [
+          "localhost",
+          ...(replitDevDomain ? [replitDevDomain] : []),
+        ];
+        isHttpsAllowed = allowedHttpHosts.some(
+          (host) => parsedUrl.hostname === host || parsedUrl.hostname.endsWith(`.${host}`)
+        );
+      } catch {
+        isHttpsAllowed = false;
+      }
+    }
+
+    if (!isMobileScheme && !isHttpsAllowed) {
+      res.status(400).json({ error: "Invalid return URL scheme" });
+      return;
     }
   }
 
-  if (!isMobileScheme && !isHttpsAllowed) {
-    res.status(400).json({ error: "Invalid return URL scheme" });
-    return;
-  }
   const returnUrl = rawReturnUrl.replace(/['"\\<>]/g, "");
   const rawState = (req.query.state as string) || "";
   const state = rawState.replace(/['"\\<>]/g, "");
+  const isPopup = mode === "popup";
 
   const googleClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_WEB_CLIENT_ID || "";
 
@@ -79,7 +84,6 @@ router.get("/auth/google-mobile", (req: Request, res: Response) => {
     #g_id_onload, .g_id_signin { display: flex; justify-content: center; }
     .status { margin-top: 20px; color: #00D4FF; font-size: 14px; min-height: 20px; }
     .error { color: #FF4444; }
-    .loading { color: #999; margin-top: 20px; }
   </style>
 </head>
 <body>
@@ -106,15 +110,25 @@ router.get("/auth/google-mobile", (req: Request, res: Response) => {
   <script>
     var RETURN_URL = '${returnUrl}';
     var STATE = '${state}';
+    var IS_POPUP = ${isPopup};
 
     function handleCredentialResponse(response) {
       var status = document.getElementById('status');
       if (response && response.credential) {
         status.textContent = 'Success! Returning to app...';
-        var separator = RETURN_URL.indexOf('?') !== -1 ? '&' : '?';
-        var url = RETURN_URL + separator + 'idToken=' + encodeURIComponent(response.credential);
-        if (STATE) { url += '&state=' + encodeURIComponent(STATE); }
-        window.location.href = url;
+        if (IS_POPUP && window.opener) {
+          window.opener.postMessage({
+            type: 'fitai-auth',
+            idToken: response.credential,
+            state: STATE
+          }, '*');
+          window.close();
+        } else if (RETURN_URL) {
+          var separator = RETURN_URL.indexOf('?') !== -1 ? '&' : '?';
+          var url = RETURN_URL + separator + 'idToken=' + encodeURIComponent(response.credential);
+          if (STATE) { url += '&state=' + encodeURIComponent(STATE); }
+          window.location.href = url;
+        }
       } else {
         status.textContent = 'Sign-in failed. Please try again.';
         status.className = 'status error';
