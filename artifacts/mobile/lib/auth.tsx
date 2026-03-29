@@ -7,13 +7,10 @@ import {
   signOut,
   type User as FirebaseUser,
 } from "firebase/auth";
-import * as Google from "expo-auth-session/providers/google";
 import * as WebBrowser from "expo-web-browser";
+import * as Linking from "expo-linking";
+import * as Crypto from "expo-crypto";
 import { auth } from "./firebase";
-
-if (Platform.OS !== "web") {
-  WebBrowser.maybeCompleteAuthSession();
-}
 
 interface User {
   id: string;
@@ -53,19 +50,13 @@ function firebaseUserToUser(fbUser: FirebaseUser): User {
   };
 }
 
+const API_BASE = process.env.EXPO_PUBLIC_DOMAIN
+  ? `https://${process.env.EXPO_PUBLIC_DOMAIN}`
+  : "";
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-
-  const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
-  const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
-  const androidClientId = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID;
-
-  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
-    webClientId: webClientId || undefined,
-    iosClientId: iosClientId || webClientId || undefined,
-    androidClientId: androidClientId || webClientId || undefined,
-  });
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
@@ -79,16 +70,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return unsubscribe;
   }, []);
 
-  useEffect(() => {
-    if (response?.type === "success") {
-      const { id_token } = response.params;
-      const credential = GoogleAuthProvider.credential(id_token);
-      signInWithCredential(auth, credential).catch((err) => {
-        console.error("Firebase credential sign-in error:", err);
-      });
-    }
-  }, [response]);
-
   const getIdToken = useCallback(async (): Promise<string | null> => {
     if (!auth.currentUser) return null;
     return auth.currentUser.getIdToken();
@@ -101,12 +82,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const provider = new GoogleAuthProvider();
         await signInWithPopup(auth, provider);
       } else {
-        await promptAsync();
+        const state = Crypto.randomUUID();
+        const returnUrl = Linking.createURL("auth");
+        const authUrl = `${API_BASE}/api/auth/google-mobile?returnUrl=${encodeURIComponent(returnUrl)}&state=${encodeURIComponent(state)}`;
+
+        const result = await WebBrowser.openAuthSessionAsync(authUrl, returnUrl);
+
+        if (result.type === "success" && result.url) {
+          const returnedState = result.url.match(/[?&]state=([^&]+)/)?.[1];
+          if (returnedState && decodeURIComponent(returnedState) !== state) {
+            console.error("Auth state mismatch");
+            return;
+          }
+          const rawToken = result.url.match(/[?&]idToken=([^&]+)/)?.[1];
+          const idToken = rawToken ? decodeURIComponent(rawToken) : null;
+          if (idToken) {
+            const credential = GoogleAuthProvider.credential(idToken);
+            await signInWithCredential(auth, credential);
+          }
+        }
       }
     } catch (err) {
       console.error("Login error:", err);
     }
-  }, [promptAsync]);
+  }, []);
 
   const logout = useCallback(async () => {
     try {

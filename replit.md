@@ -87,9 +87,11 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 
 ### Authentication
 - Firebase Auth with Google Sign-In provider
-- Mobile: Firebase JS SDK with `signInWithPopup` (Google provider)
+- **Native mobile**: Server-hosted auth page approach — opens `WebBrowser.openAuthSessionAsync` to `/api/auth/google-mobile` which does `signInWithRedirect` via Firebase JS SDK, then returns the ID token to the app via deep link (`Linking.createURL`)
+- **Web**: Firebase JS SDK `signInWithPopup` directly
 - Server: Firebase Admin SDK (`firebase-admin`) verifies ID tokens via Bearer header
 - User data persistence: all AsyncStorage keys synced to PostgreSQL user_data table
+- **IMPORTANT**: The Replit dev domain must be added to Firebase Console → Authentication → Settings → Authorized domains for the sign-in redirect to work
 
 ## Tech Stack
 
@@ -163,7 +165,7 @@ artifacts/api-server/
     routes/
       index.ts            # Route registry
       health.ts           # Health check
-      auth.ts             # GET /api/auth/user + user upsert
+      auth.ts             # GET /api/auth/user + GET /api/auth/google-mobile (server-hosted Google sign-in for native)
       userData.ts         # GET/POST /api/user-data (cloud data sync)
       ai/
         index.ts          # AI routes: /api/ai/recognize-food, /api/ai/generate-workout
