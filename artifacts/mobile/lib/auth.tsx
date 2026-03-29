@@ -9,8 +9,15 @@ import {
 } from "firebase/auth";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
-import * as Crypto from "expo-crypto";
 import { auth } from "./firebase";
+
+function generateUUID(): string {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 
 interface User {
   id: string;
@@ -141,7 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async () => {
     setAuthError(null);
     try {
-      const state = Crypto.randomUUID();
+      const state = generateUUID();
 
       if ((Platform.OS as string) === "web") {
         const authUrl = `${API_BASE}/api/auth/google-mobile?mode=popup&state=${encodeURIComponent(state)}`;
