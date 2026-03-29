@@ -21,9 +21,28 @@ router.get("/auth/user", (req: Request, res: Response) => {
 
 router.get("/auth/google-mobile", (req: Request, res: Response) => {
   const rawReturnUrl = (req.query.returnUrl as string) || "mobile://auth";
-  const allowedSchemes = ["mobile://", "exp://", "exps://"];
-  const isAllowed = allowedSchemes.some((scheme) => rawReturnUrl.startsWith(scheme));
-  if (!isAllowed) {
+
+  const mobileSchemes = ["mobile://", "exp://", "exps://"];
+  const isMobileScheme = mobileSchemes.some((scheme) => rawReturnUrl.startsWith(scheme));
+
+  let isHttpsAllowed = false;
+  if (rawReturnUrl.startsWith("https://") || rawReturnUrl.startsWith("http://localhost")) {
+    try {
+      const parsedUrl = new URL(rawReturnUrl);
+      const replitDevDomain = process.env.REPLIT_DEV_DOMAIN || "";
+      const allowedHttpHosts = [
+        "localhost",
+        ...(replitDevDomain ? [replitDevDomain] : []),
+      ];
+      isHttpsAllowed = allowedHttpHosts.some(
+        (host) => parsedUrl.hostname === host || parsedUrl.hostname.endsWith(`.${host}`)
+      );
+    } catch {
+      isHttpsAllowed = false;
+    }
+  }
+
+  if (!isMobileScheme && !isHttpsAllowed) {
     res.status(400).json({ error: "Invalid return URL scheme" });
     return;
   }
@@ -99,7 +118,7 @@ router.get("/auth/google-mobile", (req: Request, res: Response) => {
 
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js';
-    import { getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult } from 'https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js';
+    import { getAuth, GoogleAuthProvider, signInWithPopup } from 'https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js';
 
     const firebaseConfig = ${JSON.stringify(firebaseConfig)};
     const app = initializeApp(firebaseConfig);
@@ -114,30 +133,38 @@ router.get("/auth/google-mobile", (req: Request, res: Response) => {
       window.location.href = url;
     }
 
-    getRedirectResult(auth).then(async (result) => {
-      if (result && result.user) {
-        const status = document.getElementById('status');
-        status.textContent = 'Success! Returning to app...';
-        const idToken = await result.user.getIdToken();
-        redirectToApp(idToken);
-      }
-    }).catch((err) => {
-      console.error('Redirect result error:', err);
-    });
-
     window.doSignIn = async function() {
       const btn = document.getElementById('signInBtn');
       const status = document.getElementById('status');
       btn.disabled = true;
-      status.textContent = 'Redirecting to Google...';
+      status.textContent = 'Opening Google sign-in...';
       status.className = 'status';
 
       try {
         const provider = new GoogleAuthProvider();
-        await signInWithRedirect(auth, provider);
+        provider.addScope('email');
+        provider.addScope('profile');
+        const result = await signInWithPopup(auth, provider);
+        if (result && result.user) {
+          status.textContent = 'Success! Returning to app...';
+          const idToken = await result.user.getIdToken();
+          redirectToApp(idToken);
+        } else {
+          throw new Error('No user returned from sign-in');
+        }
       } catch (err) {
         console.error('Sign-in error:', err);
-        status.textContent = err.message || 'Sign-in failed. Please try again.';
+        let message = 'Sign-in failed. Please try again.';
+        if (err.code === 'auth/popup-blocked') {
+          message = 'Popup was blocked. Please allow popups for this site and try again.';
+        } else if (err.code === 'auth/popup-closed-by-user') {
+          message = 'Sign-in was cancelled. Please try again.';
+        } else if (err.code === 'auth/network-request-failed') {
+          message = 'Network error. Please check your connection and try again.';
+        } else if (err.message) {
+          message = err.message;
+        }
+        status.textContent = message;
         status.className = 'status error';
         btn.disabled = false;
       }

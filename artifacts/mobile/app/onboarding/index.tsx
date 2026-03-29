@@ -30,7 +30,7 @@ export default function OnboardingScreen() {
   const { setProfile, completeOnboarding } = useApp();
   const { setPlan } = useWorkout();
   const { setMealPlan } = useNutrition();
-  const { isAuthenticated, login, user } = useAuth();
+  const { isAuthenticated, login, user, authError } = useAuth();
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(false);
 
@@ -99,7 +99,7 @@ export default function OnboardingScreen() {
   const renderStep = () => {
     switch (step) {
       case 0:
-        return <StepWelcome isAuthenticated={isAuthenticated} login={login} user={user} isDark={isDark} theme={theme} />;
+        return <StepWelcome isAuthenticated={isAuthenticated} login={login} user={user} authError={authError} isDark={isDark} theme={theme} />;
       case 1:
         return <StepPersonal form={form} update={update} isDark={isDark} theme={theme} />;
       case 2:
@@ -184,7 +184,7 @@ export default function OnboardingScreen() {
   );
 }
 
-function StepWelcome({ isAuthenticated, login, user, isDark, theme }: any) {
+function StepWelcome({ isAuthenticated, login, user, authError, isDark, theme }: any) {
   return (
     <View style={styles.stepContent}>
       <View style={styles.welcomeIconWrap}>
@@ -235,6 +235,9 @@ function StepWelcome({ isAuthenticated, login, user, isDark, theme }: any) {
             <Ionicons name="logo-google" size={20} color="#4285F4" />
             <Text style={[styles.googleSignInText, { color: theme.text }]}>Sign in with Google</Text>
           </TouchableOpacity>
+          {authError ? (
+            <Text style={[styles.skipAuthText, { color: "#FF4444", marginTop: 8 }]}>{authError}</Text>
+          ) : null}
           <Text style={[styles.skipAuthText, { color: theme.textMuted }]}>
             Optional — you can sign in later from your Profile
           </Text>
