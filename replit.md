@@ -90,11 +90,11 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - **Native mobile**: Server-hosted auth page approach — opens `WebBrowser.openAuthSessionAsync` to `/api/auth/google-mobile` which does `signInWithRedirect` via Firebase JS SDK, then returns the ID token to the app via deep link (`Linking.createURL`)
 - **Web**: Firebase JS SDK `signInWithPopup` directly
 - Server: Firebase Admin SDK (`firebase-admin`) verifies ID tokens via Bearer header
-- **Cloud data storage**: Firebase Firestore — user data stored in `users/{uid}` documents
-- **Data sync**: Backup/Restore buttons on Profile tab write/read all AsyncStorage data to/from Firestore
-- **Firestore security rules**: Only authenticated users can read/write their own document (`request.auth.uid == userId`)
+- **Cloud data storage**: Firebase Realtime Database — user data stored at `users/{uid}` path
+- **Database URL**: `https://fitness-app-e0aab-default-rtdb.asia-southeast1.firebasedatabase.app`
+- **Data sync**: Backup/Restore buttons on Profile tab write/read all AsyncStorage data to/from Realtime Database
+- **Database security rules**: Only authenticated users can read/write their own data (`$uid === auth.uid`) — see `artifacts/mobile/database.rules.json`
 - **IMPORTANT**: The Replit dev domain must be added to Firebase Console → Authentication → Settings → Authorized domains for the sign-in redirect to work
-- **IMPORTANT**: Firestore must be enabled in Firebase Console and security rules deployed (see `artifacts/mobile/firestore.rules`)
 
 ## Tech Stack
 
@@ -139,9 +139,9 @@ artifacts/mobile/
     FoodSearch.tsx        # Food database browser with search & categories
     ErrorBoundary.tsx     # Error boundary
   lib/
-    firebase.ts           # Firebase app + auth + Firestore initialization
+    firebase.ts           # Firebase app + auth + Realtime Database initialization
     auth.tsx              # AuthProvider with Firebase Google Sign-In
-    firebaseSync.ts       # Firestore backup/restore — reads/writes all AsyncStorage data to users/{uid}
+    firebaseSync.ts       # Realtime Database backup/restore — reads/writes all AsyncStorage data to users/{uid}
   context/
     AppContext.tsx         # Profile, health metrics, TDEE/macros, custom macros
     WorkoutContext.tsx     # Plans, sessions, PRs
@@ -216,4 +216,5 @@ All data is stored in AsyncStorage:
 - `AI_INTEGRATIONS_ANTHROPIC_BASE_URL` — Auto-set by Replit AI Integrations
 - `AI_INTEGRATIONS_ANTHROPIC_API_KEY` — Auto-set by Replit AI Integrations
 - `EXPO_PUBLIC_DOMAIN` — Set to $REPLIT_DEV_DOMAIN for mobile API connectivity
+- `EXPO_PUBLIC_FIREBASE_DATABASE_URL` — Firebase Realtime Database URL
 - `SESSION_SECRET` — For session management

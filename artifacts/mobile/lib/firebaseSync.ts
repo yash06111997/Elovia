@@ -1,4 +1,4 @@
-import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { ref, set, get, serverTimestamp } from "firebase/database";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { db } from "./firebase";
 
@@ -67,23 +67,23 @@ export async function backupToFirestore(userId: string): Promise<void> {
 
   data.updatedAt = serverTimestamp();
 
-  const userDocRef = doc(db, "users", userId);
-  await setDoc(userDocRef, data, { merge: true });
+  const userRef = ref(db, `users/${userId}`);
+  await set(userRef, data);
 }
 
 export async function restoreFromFirestore(userId: string): Promise<boolean> {
-  const userDocRef = doc(db, "users", userId);
-  const snapshot = await getDoc(userDocRef);
+  const userRef = ref(db, `users/${userId}`);
+  const snapshot = await get(userRef);
 
   if (!snapshot.exists()) {
     return false;
   }
 
-  const data = snapshot.data();
+  const data = snapshot.val();
   const pairs: [string, string][] = [];
 
-  for (const [asyncKey, firestoreField] of Object.entries(FIELD_MAP)) {
-    const value = data[firestoreField];
+  for (const [asyncKey, firebaseField] of Object.entries(FIELD_MAP)) {
+    const value = data[firebaseField];
     if (value === undefined || value === null) continue;
 
     if (JSON_FIELDS.has(asyncKey)) {
@@ -101,7 +101,7 @@ export async function restoreFromFirestore(userId: string): Promise<boolean> {
 }
 
 export async function checkFirestoreDataExists(userId: string): Promise<boolean> {
-  const userDocRef = doc(db, "users", userId);
-  const snapshot = await getDoc(userDocRef);
+  const userRef = ref(db, `users/${userId}`);
+  const snapshot = await get(userRef);
   return snapshot.exists();
 }
