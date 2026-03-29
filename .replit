@@ -41,7 +41,7 @@ EXPO_PUBLIC_FIREBASE_PROJECT_ID = "fitness-app-e0aab"
 EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET = "fitness-app-e0aab.firebasestorage.app"
 EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID = "940364649286"
 EXPO_PUBLIC_FIREBASE_APP_ID = "1:940364649286:web:5a8f2d468b027f98574b47"
-EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID = "152747355446-655j4sfgrlnirp9dcke8gu6f83fnie5a.apps.googleusercontent.com"
+EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID = "940364649286-esb4opj7ri6bcfec9cs2mpib5u6sa3rl.apps.googleusercontent.com"
 EXPO_PUBLIC_FIREBASE_DATABASE_URL = "https://fitness-app-e0aab-default-rtdb.asia-southeast1.firebasedatabase.app"
 
 [nix]
