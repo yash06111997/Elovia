@@ -21,6 +21,7 @@ import { useApp, CustomMacros, FitnessGoal, FitnessLevel, ActivityLevel, Workout
 import { useWorkout } from "@/context/WorkoutContext";
 import { useHealth } from "@/context/HealthContext";
 import { useAuth } from "@/lib/auth";
+import { backupToFirestore, restoreFromFirestore } from "@/lib/firebaseSync";
 import { NumberEditModal } from "@/components/NumberEditModal";
 import { Colors } from "@/constants/colors";
 
@@ -86,104 +87,37 @@ export default function ProfileScreen() {
   const { state: appState, calculateTDEE, calculateMacros, toggleColorScheme, updateProfileField, setCustomMacros } = useApp();
   const { sessions, personalRecords } = useWorkout();
   const { healthData, toggleSync, syncHealthData, isTracking, startRunTracking, stopRunTracking, currentRun } = useHealth();
-  const { user, isAuthenticated, isLoading: authLoading, login, logout, getIdToken } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, login, logout } = useAuth();
   const [syncing, setSyncing] = useState(false);
   const profile = appState.profile;
 
-  const getApiBase = () => {
-    if (process.env.EXPO_PUBLIC_DOMAIN) return `https://${process.env.EXPO_PUBLIC_DOMAIN}`;
-    return "";
-  };
-
-  const getAuthToken = async () => {
-    try {
-      return await getIdToken();
-    } catch {
-      return null;
-    }
-  };
-
   const uploadData = async () => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || !user) return;
     setSyncing(true);
     try {
-      const token = await getAuthToken();
-      const keys = [
-        "@fitai_state", "@fitai_plan", "@fitai_custom_plans", "@fitai_active_plan_type",
-        "@fitai_active_custom_plan_id", "@fitai_sessions", "@fitai_prs", "@fitai_meal_plan",
-        "@fitai_food_log", "@fitai_custom_meal_plans", "@fitai_active_meal_plan_type",
-        "@fitai_active_custom_meal_plan_id", "@fitai_health_data",
-      ];
-      const values = await AsyncStorage.multiGet(keys);
-      const parse = (k: string) => { const v = values.find(([key]) => key === k)?.[1]; return v ? JSON.parse(v) : null; };
-
-      const body = {
-        appState: parse("@fitai_state"),
-        workoutPlan: parse("@fitai_plan"),
-        customPlans: parse("@fitai_custom_plans"),
-        activePlanType: values.find(([k]) => k === "@fitai_active_plan_type")?.[1] || null,
-        activeCustomPlanId: values.find(([k]) => k === "@fitai_active_custom_plan_id")?.[1] || null,
-        sessions: parse("@fitai_sessions"),
-        personalRecords: parse("@fitai_prs"),
-        mealPlan: parse("@fitai_meal_plan"),
-        foodLog: parse("@fitai_food_log"),
-        customMealPlans: parse("@fitai_custom_meal_plans"),
-        activeMealPlanType: values.find(([k]) => k === "@fitai_active_meal_plan_type")?.[1] || null,
-        activeCustomMealPlanId: values.find(([k]) => k === "@fitai_active_custom_meal_plan_id")?.[1] || null,
-        healthData: parse("@fitai_health_data"),
-      };
-
-      const res = await fetch(`${getApiBase()}/api/user-data`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify(body),
-      });
-      if (res.ok) {
-        Alert.alert("Backup Complete", "Your data has been saved to your account.");
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      } else {
-        Alert.alert("Backup Failed", "Could not save data. Please try again.");
-      }
+      await backupToFirestore(user.id);
+      Alert.alert("Backup Complete", "Your data has been saved to Firebase.");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: any) {
-      Alert.alert("Error", e.message || "Failed to back up data.");
+      Alert.alert("Backup Failed", e.message || "Could not save data. Please try again.");
     } finally {
       setSyncing(false);
     }
   };
 
   const downloadData = async () => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || !user) return;
     setSyncing(true);
     try {
-      const token = await getAuthToken();
-      const res = await fetch(`${getApiBase()}/api/user-data`, {
-        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      });
-      const json = await res.json();
-      if (!json.data) {
+      const found = await restoreFromFirestore(user.id);
+      if (!found) {
         Alert.alert("No Data", "No saved data found on your account.");
-        return;
+      } else {
+        Alert.alert("Restore Complete", "Your data has been restored. Please restart the app to see changes.");
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
-      const d = json.data;
-      const pairs: [string, string][] = [];
-      if (d.appState) pairs.push(["@fitai_state", JSON.stringify(d.appState)]);
-      if (d.workoutPlan) pairs.push(["@fitai_plan", JSON.stringify(d.workoutPlan)]);
-      if (d.customPlans) pairs.push(["@fitai_custom_plans", JSON.stringify(d.customPlans)]);
-      if (d.activePlanType) pairs.push(["@fitai_active_plan_type", d.activePlanType]);
-      if (d.activeCustomPlanId) pairs.push(["@fitai_active_custom_plan_id", d.activeCustomPlanId]);
-      if (d.sessions) pairs.push(["@fitai_sessions", JSON.stringify(d.sessions)]);
-      if (d.personalRecords) pairs.push(["@fitai_prs", JSON.stringify(d.personalRecords)]);
-      if (d.mealPlan) pairs.push(["@fitai_meal_plan", JSON.stringify(d.mealPlan)]);
-      if (d.foodLog) pairs.push(["@fitai_food_log", JSON.stringify(d.foodLog)]);
-      if (d.customMealPlans) pairs.push(["@fitai_custom_meal_plans", JSON.stringify(d.customMealPlans)]);
-      if (d.activeMealPlanType) pairs.push(["@fitai_active_meal_plan_type", d.activeMealPlanType]);
-      if (d.activeCustomMealPlanId) pairs.push(["@fitai_active_custom_meal_plan_id", d.activeCustomMealPlanId]);
-      if (d.healthData) pairs.push(["@fitai_health_data", JSON.stringify(d.healthData)]);
-      if (pairs.length > 0) await AsyncStorage.multiSet(pairs);
-      Alert.alert("Restore Complete", "Your data has been restored. Please restart the app to see changes.");
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: any) {
-      Alert.alert("Error", e.message || "Failed to restore data.");
+      Alert.alert("Restore Failed", e.message || "Failed to restore data.");
     } finally {
       setSyncing(false);
     }

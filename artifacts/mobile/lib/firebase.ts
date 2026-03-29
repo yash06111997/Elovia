@@ -1,5 +1,6 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getAuth, initializeAuth, getReactNativePersistence } from "firebase/auth";
+import { getFirestore } from "firebase/firestore";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
 
@@ -27,4 +28,6 @@ if (getApps().length === 1 && Platform.OS !== "web") {
   auth = getAuth(app);
 }
 
-export { app, auth };
+const db = getFirestore(app);
+
+export { app, auth, db };

@@ -90,8 +90,11 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - **Native mobile**: Server-hosted auth page approach — opens `WebBrowser.openAuthSessionAsync` to `/api/auth/google-mobile` which does `signInWithRedirect` via Firebase JS SDK, then returns the ID token to the app via deep link (`Linking.createURL`)
 - **Web**: Firebase JS SDK `signInWithPopup` directly
 - Server: Firebase Admin SDK (`firebase-admin`) verifies ID tokens via Bearer header
-- User data persistence: all AsyncStorage keys synced to PostgreSQL user_data table
+- **Cloud data storage**: Firebase Firestore — user data stored in `users/{uid}` documents
+- **Data sync**: Backup/Restore buttons on Profile tab write/read all AsyncStorage data to/from Firestore
+- **Firestore security rules**: Only authenticated users can read/write their own document (`request.auth.uid == userId`)
 - **IMPORTANT**: The Replit dev domain must be added to Firebase Console → Authentication → Settings → Authorized domains for the sign-in redirect to work
+- **IMPORTANT**: Firestore must be enabled in Firebase Console and security rules deployed (see `artifacts/mobile/firestore.rules`)
 
 ## Tech Stack
 
@@ -136,8 +139,9 @@ artifacts/mobile/
     FoodSearch.tsx        # Food database browser with search & categories
     ErrorBoundary.tsx     # Error boundary
   lib/
-    firebase.ts           # Firebase app + auth initialization
+    firebase.ts           # Firebase app + auth + Firestore initialization
     auth.tsx              # AuthProvider with Firebase Google Sign-In
+    firebaseSync.ts       # Firestore backup/restore — reads/writes all AsyncStorage data to users/{uid}
   context/
     AppContext.tsx         # Profile, health metrics, TDEE/macros, custom macros
     WorkoutContext.tsx     # Plans, sessions, PRs
