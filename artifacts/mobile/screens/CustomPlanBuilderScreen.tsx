@@ -8,7 +8,6 @@ import {
   TextInput,
   Modal,
   Alert,
-  useColorScheme,
   Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -18,6 +17,7 @@ import { CustomWorkoutPlan, WorkoutDay, Exercise } from "@/context/WorkoutContex
 import { ExerciseEntry } from "@/utils/exerciseDatabase";
 import { ExerciseLibraryScreen } from "@/screens/ExerciseLibraryScreen";
 import { Colors } from "@/constants/colors";
+import { useTheme } from "@/hooks/useTheme";
 
 interface Props {
   visible: boolean;
@@ -56,9 +56,7 @@ export function CustomPlanBuilderScreen({
   existingPlan,
   userEquipment = [],
 }: Props) {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === "dark";
-  const theme = isDark ? Colors.dark : Colors.light;
+  const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
 
   const initDays = (): DraftDay[] => {

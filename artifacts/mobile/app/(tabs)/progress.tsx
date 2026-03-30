@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   Platform,
-  useColorScheme,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -16,13 +15,12 @@ import { useNutrition } from "@/context/NutritionContext";
 import { useApp } from "@/context/AppContext";
 import { MacroBar } from "@/components/MacroBar";
 import { Colors } from "@/constants/colors";
+import { useTheme } from "@/hooks/useTheme";
 
 type Tab = "strength" | "nutrition" | "body";
 
 export default function ProgressScreen() {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === "dark";
-  const theme = isDark ? Colors.dark : Colors.light;
+  const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
   const { sessions, personalRecords, getWeeklyCompletion, plan } = useWorkout();
   const { getWeeklyCalories } = useNutrition();

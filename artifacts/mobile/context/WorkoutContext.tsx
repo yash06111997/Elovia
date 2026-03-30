@@ -85,6 +85,7 @@ interface WorkoutContextType {
   completeSession: (durationMins: number) => void;
   getExerciseHistory: (exerciseId: string) => SetLog[];
   getPersonalRecord: (exerciseId: string) => PersonalRecord | null;
+  getLastPerformance: (exerciseId: string) => { date: string; sets: SetLog[] } | null;
   todaySession: WorkoutSession | null;
   getWeeklyCompletion: () => number;
   addCustomPlan: (plan: Omit<CustomWorkoutPlan, "id" | "createdAt" | "updatedAt">) => CustomWorkoutPlan;
@@ -248,6 +249,22 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
     [personalRecords]
   );
 
+  const getLastPerformance = useCallback(
+    (exerciseId: string): { date: string; sets: SetLog[] } | null => {
+      const completedSessions = [...sessions]
+        .filter((s) => s.completed)
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      for (const session of completedSessions) {
+        const log = session.exerciseLogs.find((l) => l.exerciseId === exerciseId);
+        if (log && log.sets.some((s) => s.completed)) {
+          return { date: log.date || session.date, sets: log.sets };
+        }
+      }
+      return null;
+    },
+    [sessions]
+  );
+
   const todaySession = sessions.find(
     (s) => s.date === new Date().toISOString().split("T")[0]
   ) ?? null;
@@ -350,6 +367,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
         completeSession,
         getExerciseHistory,
         getPersonalRecord,
+        getLastPerformance,
         todaySession,
         getWeeklyCompletion,
         addCustomPlan,

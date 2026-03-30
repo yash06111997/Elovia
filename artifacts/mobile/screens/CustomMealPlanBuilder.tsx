@@ -8,7 +8,6 @@ import {
   TextInput,
   Modal,
   Platform,
-  useColorScheme,
   Alert,
   KeyboardAvoidingView,
 } from "react-native";
@@ -16,6 +15,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Colors } from "@/constants/colors";
+import { useTheme } from "@/hooks/useTheme";
 import type { Meal, CustomMealPlan } from "@/context/NutritionContext";
 
 interface Props {
@@ -34,9 +34,7 @@ const MEAL_TYPE_ICONS: Record<string, string> = {
 };
 
 export function CustomMealPlanBuilder({ visible, onClose, onSave, existingPlan }: Props) {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === "dark";
-  const theme = isDark ? Colors.dark : Colors.light;
+  const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
 
   const [planName, setPlanName] = useState(existingPlan?.name || "");

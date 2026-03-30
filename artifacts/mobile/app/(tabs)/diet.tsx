@@ -8,7 +8,6 @@ import {
   TextInput,
   Platform,
   Modal,
-  useColorScheme,
   ActivityIndicator,
   Alert,
 } from "react-native";
@@ -27,13 +26,12 @@ import { Colors } from "@/constants/colors";
 import { CustomMealPlanBuilder } from "@/screens/CustomMealPlanBuilder";
 import type { FoodItem } from "@/utils/foodDatabase";
 import type { DietType } from "@/context/AppContext";
+import { useTheme } from "@/hooks/useTheme";
 
 type Tab = "plan" | "log";
 
 export default function DietScreen() {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === "dark";
-  const theme = isDark ? Colors.dark : Colors.light;
+  const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
   const {
     mealPlan,
@@ -52,7 +50,8 @@ export default function DietScreen() {
     getActiveMealPlanMeals,
   } = useNutrition();
   const { state: appState, calculateMacros } = useApp();
-  const [activeTab, setActiveTab] = useState<Tab>("plan");
+  const hasPlan = !!(mealPlan || customMealPlans.length > 0);
+  const [activeTab, setActiveTab] = useState<Tab>(hasPlan ? "plan" : "log");
   const [logModalVisible, setLogModalVisible] = useState(false);
   const [foodSearchVisible, setFoodSearchVisible] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -358,28 +357,48 @@ export default function DietScreen() {
               ))
             ) : (
               <View style={styles.emptyState}>
-                <Ionicons name="restaurant-outline" size={48} color={theme.textMuted} />
-                <Text style={[styles.emptyText, { color: theme.textSecondary }]}>
-                  Create a custom meal plan or generate one with AI
-                </Text>
-                <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
-                  <TouchableOpacity
-                    style={[styles.emptyActionBtn, { backgroundColor: "#A78BFA" }]}
-                    onPress={() => { setEditingMealPlan(undefined); setShowMealPlanBuilder(true); }}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons name="add" size={16} color="#000" />
-                    <Text style={styles.emptyActionText}>Custom Plan</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.emptyActionBtn, { backgroundColor: Colors.accent }]}
-                    onPress={() => setAiMealModalVisible(true)}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons name="sparkles" size={16} color="#000" />
-                    <Text style={styles.emptyActionText}>AI Plan</Text>
-                  </TouchableOpacity>
-                </View>
+                <TouchableOpacity
+                  style={[styles.dietOptionCard, { backgroundColor: theme.card, borderColor: theme.border }]}
+                  onPress={() => { setEditingMealPlan(undefined); setShowMealPlanBuilder(true); }}
+                  activeOpacity={0.8}
+                >
+                  <View style={[styles.dietOptionIcon, { backgroundColor: "#A78BFA20" }]}>
+                    <Ionicons name="create-outline" size={26} color="#A78BFA" />
+                  </View>
+                  <View style={styles.dietOptionContent}>
+                    <Text style={[styles.dietOptionTitle, { color: theme.text }]}>Custom Meal Plan</Text>
+                    <Text style={[styles.dietOptionDesc, { color: theme.textSecondary }]}>
+                      Create your own meals with custom macros and ingredients.
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={theme.textMuted} />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.dietOptionCard, { backgroundColor: theme.card, borderColor: Colors.accent + "40" }]}
+                  onPress={() => setAiMealModalVisible(true)}
+                  activeOpacity={0.8}
+                >
+                  <View style={[styles.dietOptionIcon, { backgroundColor: Colors.accent + "20" }]}>
+                    <Ionicons name="sparkles" size={26} color={Colors.accent} />
+                  </View>
+                  <View style={styles.dietOptionContent}>
+                    <Text style={[styles.dietOptionTitle, { color: theme.text }]}>AI Meal Plan</Text>
+                    <Text style={[styles.dietOptionDesc, { color: theme.textSecondary }]}>
+                      Get a personalized plan based on your goals, diet type, and food preferences.
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={theme.textMuted} />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.dietQuickGenBtn, { backgroundColor: isDark ? "#1A1A24" : "#F0F0F8", borderColor: theme.border }]}
+                  onPress={handleRegenerate}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="flash-outline" size={16} color={Colors.primary} />
+                  <Text style={[styles.dietQuickGenText, { color: Colors.primary }]}>Quick Generate from Profile</Text>
+                </TouchableOpacity>
               </View>
             )}
 
@@ -730,10 +749,14 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold" },
   smallBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1 },
   smallBtnText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
-  emptyState: { alignItems: "center", gap: 12, paddingVertical: 48 },
-  emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", maxWidth: 280 },
-  emptyActionBtn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 10 },
-  emptyActionText: { color: "#000", fontSize: 13, fontFamily: "Inter_700Bold" },
+  emptyState: { gap: 14, paddingVertical: 8 },
+  dietOptionCard: { flexDirection: "row", alignItems: "center", padding: 18, borderRadius: 16, borderWidth: 1, gap: 14 },
+  dietOptionIcon: { width: 50, height: 50, borderRadius: 14, alignItems: "center", justifyContent: "center" },
+  dietOptionContent: { flex: 1, gap: 4 },
+  dietOptionTitle: { fontSize: 16, fontFamily: "Inter_700Bold" },
+  dietOptionDesc: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 18 },
+  dietQuickGenBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, padding: 14, borderRadius: 12, borderWidth: 1 },
+  dietQuickGenText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   customSection: { gap: 8, marginTop: 4 },
   customSectionTitle: { fontSize: 11, fontFamily: "Inter_600SemiBold", textTransform: "uppercase", letterSpacing: 0.8, paddingHorizontal: 2 },
   customPlanRow: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, gap: 10 },

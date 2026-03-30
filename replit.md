@@ -30,6 +30,7 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - Greeting by time of day
 
 ### Workouts Tab
+- **Clean empty state** — two prominent cards: "Custom Self Tracking" and "AI Powered Workout" + quick generate option
 - **Plan/History toggle** — switch between workout plans and history views
 - AI-generated workout plans using 154+ exercise database (expanded from ~40) OR Claude AI
 - AI workout generation: daily (single optimized session) or scheduled (full weekly split)
@@ -38,12 +39,15 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - **Custom Plan Builder** — create named plans, add/remove workout days, pick exercises from library, set custom sets/reps/rest
 - **Plan Switcher** — switch between AI-generated plan and any custom plans
 - Per-exercise set logging with weight and rep inputs
+- **Exercise performance tracking** — each exercise card shows best PR (trophy) and last session's performance with set-by-set breakdown
+- **New PR notification** — animated flash banner + haptic feedback + alert when a personal record is broken during a workout
 - Active session timer
-- PR tracking per exercise (highlighted with trophy icon)
+- **Smart placeholders** — weight/rep inputs show last session values as placeholders
 - Regenerate plan button + AI generate button (sparkles)
 - **Workout History** — grouped-by-date expandable session cards with sets/reps/weight detail, aggregate stats (total sessions, minutes, exercises, volume kg)
 
 ### Diet Tab
+- **Clean empty state** — defaults to "Today's Log" tab when no plan exists; plan tab shows two option cards (Custom Meal Plan, AI Meal Plan) + quick generate
 - **Plan switcher** — AI vs Custom meal plan toggle (mirrors workout dual-plan system)
 - **AI-generated personalized meal plans** via Claude with diet type selection (balanced, keto, low carb, high protein, Mediterranean, paleo), favorite foods input, special suggestions, and meals-per-day selector
 - **Custom Meal Plan System** — full CRUD for user-created meal plans with per-meal form (name, type, macros, description, ingredients), auto-calculated plan totals, edit/delete support
@@ -82,7 +86,7 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - Sync Now button with last-synced timestamp
 - **Account section** — Sign in with Google (via OIDC), user profile display, cloud backup/restore buttons
 - **Data sync** — Upload/download all app data (profile, workouts, meals, health) to/from server database
-- Dark/light mode toggle
+- Dark/light mode toggle — uses `useTheme` hook (reads from AppContext, not system preference) across all screens
 - Reset all data option
 
 ### Authentication

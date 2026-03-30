@@ -7,7 +7,6 @@ import {
   ScrollView,
   TextInput,
   Platform,
-  useColorScheme,
 } from "react-native";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -19,13 +18,12 @@ import { useNutrition } from "@/context/NutritionContext";
 import { useAuth } from "@/lib/auth";
 import { generateWorkoutPlan, generateMealPlan } from "@/utils/aiEngine";
 import { Colors } from "@/constants/colors";
+import { useTheme } from "@/hooks/useTheme";
 
 const TOTAL_STEPS = 7;
 
 export default function OnboardingScreen() {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === "dark";
-  const theme = isDark ? Colors.dark : Colors.light;
+  const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
   const { setProfile, completeOnboarding } = useApp();
   const { setPlan } = useWorkout();
@@ -519,9 +517,13 @@ function NumberStepper({ label, value, min, max, step, onChange, theme }: any) {
     }
   };
 
+  const startEditing = () => { setTextVal(String(value)); setEditing(true); };
+
   return (
     <View style={styles.field}>
-      <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>{label}</Text>
+      <TouchableOpacity onPress={startEditing} activeOpacity={0.7}>
+        <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>{label}</Text>
+      </TouchableOpacity>
       <View style={styles.stepper}>
         <TouchableOpacity
           style={[styles.stepBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
@@ -543,7 +545,7 @@ function NumberStepper({ label, value, min, max, step, onChange, theme }: any) {
         ) : (
           <TouchableOpacity
             style={[styles.stepValue, { backgroundColor: theme.card, borderColor: theme.border }]}
-            onPress={() => { setTextVal(String(value)); setEditing(true); }}
+            onPress={startEditing}
             activeOpacity={0.7}
           >
             <Text style={[styles.stepValueText, { color: theme.text }]}>{value}</Text>

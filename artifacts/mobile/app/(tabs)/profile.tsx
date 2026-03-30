@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   TextInput,
   Platform,
-  useColorScheme,
   Alert,
   Switch,
   Modal,
@@ -24,6 +23,7 @@ import { useAuth } from "@/lib/auth";
 import { backupToFirestore, restoreFromFirestore } from "@/lib/firebaseSync";
 import { NumberEditModal } from "@/components/NumberEditModal";
 import { Colors } from "@/constants/colors";
+import { useTheme } from "@/hooks/useTheme";
 
 const goalLabels: Record<string, string> = {
   fat_loss: "Fat Loss",
@@ -80,9 +80,7 @@ type EditField = "heightCm" | "weightKg" | "targetWeightKg" | "targetWeeks" | "a
 type EditSection = "fitness" | "diet" | "equipment" | "health" | "name" | null;
 
 export default function ProfileScreen() {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === "dark";
-  const theme = isDark ? Colors.dark : Colors.light;
+  const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
   const { state: appState, calculateTDEE, calculateMacros, toggleColorScheme, updateProfileField, setCustomMacros } = useApp();
   const { sessions, personalRecords } = useWorkout();

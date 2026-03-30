@@ -8,7 +8,6 @@ import {
   TextInput,
   Modal,
   FlatList,
-  useColorScheme,
   Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -19,6 +18,7 @@ import {
   ExerciseEntry,
 } from "@/utils/exerciseDatabase";
 import { Colors } from "@/constants/colors";
+import { useTheme } from "@/hooks/useTheme";
 
 interface Props {
   visible: boolean;
@@ -47,9 +47,7 @@ export function ExerciseLibraryScreen({
   selectionMode = false,
   userEquipment = [],
 }: Props) {
-  const colorScheme = useColorScheme();
-  const isDark = colorScheme === "dark";
-  const theme = isDark ? Colors.dark : Colors.light;
+  const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
 
   const [selectedCategory, setSelectedCategory] = useState<string>("All");
