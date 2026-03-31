@@ -9,7 +9,11 @@ import {
 } from "firebase/auth";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { auth } from "./firebase";
+
+const AUTH_STORAGE_KEY = "@fitai_auth_user";
+const AUTH_TOKEN_KEY = "@fitai_auth_token";
 
 function generateUUID(): string {
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
@@ -59,6 +63,36 @@ function firebaseUserToUser(fbUser: FirebaseUser): User {
   };
 }
 
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = parts[1];
+    const padded = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = atob(padded);
+    return JSON.parse(decoded);
+  } catch {
+    return null;
+  }
+}
+
+function idTokenToUser(idToken: string): User | null {
+  const payload = decodeJwtPayload(idToken);
+  if (!payload) return null;
+  const sub = (payload.sub as string) || (payload.user_id as string) || "";
+  const email = (payload.email as string) || null;
+  const name = (payload.name as string) || "";
+  const picture = (payload.picture as string) || null;
+  const nameParts = name.split(" ");
+  return {
+    id: sub,
+    email,
+    firstName: nameParts[0] || null,
+    lastName: nameParts.slice(1).join(" ") || null,
+    profileImageUrl: picture,
+  };
+}
+
 const API_BASE = process.env.EXPO_PUBLIC_DOMAIN
   ? `https://${process.env.EXPO_PUBLIC_DOMAIN}`
   : "";
@@ -87,7 +121,7 @@ function getErrorMessage(err: unknown): string {
   return "Sign-in failed. Please try again.";
 }
 
-async function handleIdToken(idToken: string) {
+async function handleIdTokenWeb(idToken: string) {
   const credential = GoogleAuthProvider.credential(idToken);
   await signInWithCredential(auth, credential);
 }
@@ -127,33 +161,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [storedToken, setStoredToken] = useState<string | null>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
-      if (fbUser) {
-        setUser(firebaseUserToUser(fbUser));
-      } else {
-        setUser(null);
-      }
-      setIsLoading(false);
-    });
-    return unsubscribe;
+    if (Platform.OS === "web") {
+      const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
+        if (fbUser) {
+          setUser(firebaseUserToUser(fbUser));
+        } else {
+          setUser(null);
+        }
+        setIsLoading(false);
+      });
+      return unsubscribe;
+    } else {
+      AsyncStorage.multiGet([AUTH_STORAGE_KEY, AUTH_TOKEN_KEY])
+        .then(([userEntry, tokenEntry]) => {
+          const savedUser = userEntry[1];
+          const savedToken = tokenEntry[1];
+          if (savedUser) {
+            try {
+              setUser(JSON.parse(savedUser));
+              if (savedToken) setStoredToken(savedToken);
+            } catch {
+              setUser(null);
+            }
+          }
+          setIsLoading(false);
+        })
+        .catch(() => {
+          setIsLoading(false);
+        });
+    }
   }, []);
 
   const getIdToken = useCallback(async (): Promise<string | null> => {
-    if (!auth.currentUser) return null;
-    return auth.currentUser.getIdToken();
-  }, []);
+    if (Platform.OS === "web") {
+      if (!auth.currentUser) return null;
+      return auth.currentUser.getIdToken();
+    }
+    return storedToken;
+  }, [storedToken]);
 
   const login = useCallback(async () => {
     setAuthError(null);
     try {
       const state = generateUUID();
 
-      if ((Platform.OS as string) === "web") {
+      if (Platform.OS === "web") {
         const authUrl = `${API_BASE}/api/auth/google-mobile?mode=popup&state=${encodeURIComponent(state)}`;
         const idToken = await loginWithPopupWindow(authUrl, state);
-        await handleIdToken(idToken);
+        await handleIdTokenWeb(idToken);
       } else {
         const returnUrl = Linking.createURL("auth");
         const authUrl = `${API_BASE}/api/auth/google-mobile?returnUrl=${encodeURIComponent(returnUrl)}&state=${encodeURIComponent(state)}`;
@@ -177,7 +235,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const rawToken = result.url.match(/[?&]idToken=([^&]+)/)?.[1];
           const idToken = rawToken ? decodeURIComponent(rawToken) : null;
           if (idToken) {
-            await handleIdToken(idToken);
+            const parsedUser = idTokenToUser(idToken);
+            if (parsedUser) {
+              setUser(parsedUser);
+              setStoredToken(idToken);
+              await AsyncStorage.multiSet([
+                [AUTH_STORAGE_KEY, JSON.stringify(parsedUser)],
+                [AUTH_TOKEN_KEY, idToken],
+              ]);
+            } else {
+              const msg = "Could not read account info. Please try again.";
+              setAuthError(msg);
+              Alert.alert("Sign-In Error", msg);
+            }
           } else {
             const msg = "No authentication token received. Please try again.";
             setAuthError(msg);
@@ -191,7 +261,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.error("Login error:", err);
       const msg = getErrorMessage(err);
       setAuthError(msg);
-      if ((Platform.OS as string) !== "web") {
+      if (Platform.OS !== "web") {
         Alert.alert("Sign-In Error", msg);
       }
     }
@@ -199,14 +269,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
-      await signOut(auth);
+      if (Platform.OS === "web") {
+        await signOut(auth);
+      }
       setUser(null);
+      setStoredToken(null);
       setAuthError(null);
+      await AsyncStorage.multiRemove([AUTH_STORAGE_KEY, AUTH_TOKEN_KEY]);
     } catch (err) {
       console.error("Logout error:", err);
       const msg = getErrorMessage(err);
       setAuthError(msg);
-      if ((Platform.OS as string) !== "web") {
+      if (Platform.OS !== "web") {
         Alert.alert("Sign-Out Error", msg);
       }
     }

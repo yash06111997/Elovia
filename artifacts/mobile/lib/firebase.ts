@@ -16,18 +16,26 @@ const firebaseConfig = {
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-let auth: ReturnType<typeof getAuth>;
-if (getApps().length === 1 && Platform.OS !== "web") {
+function getFirebaseAuth() {
+  if (Platform.OS === "web") {
+    return getAuth(app);
+  }
   try {
-    auth = initializeAuth(app, {
+    return initializeAuth(app, {
       persistence: getReactNativePersistence(AsyncStorage),
     });
-  } catch {
-    auth = getAuth(app);
+  } catch (e: unknown) {
+    const error = e as { code?: string; message?: string };
+    if (error.code === "auth/already-initialized" ||
+        (error.message && error.message.includes("already initialized"))) {
+      const existingAuth = getAuth(app);
+      return existingAuth;
+    }
+    return getAuth(app);
   }
-} else {
-  auth = getAuth(app);
 }
+
+const auth = getFirebaseAuth();
 
 const db = getDatabase(app);
 
