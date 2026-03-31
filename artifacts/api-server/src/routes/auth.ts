@@ -19,6 +19,10 @@ router.get("/auth/user", (req: Request, res: Response) => {
   });
 });
 
+function getServerDomain(): string {
+  return process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS?.split(",")[0] || "";
+}
+
 const pendingAuthStates = new Map<string, { returnUrl: string; mode: string; expiresAt: number }>();
 
 setInterval(() => {
@@ -41,10 +45,10 @@ router.get("/auth/google-mobile", (req: Request, res: Response) => {
     if (rawReturnUrl.startsWith("https://") || rawReturnUrl.startsWith("http://localhost")) {
       try {
         const parsedUrl = new URL(rawReturnUrl);
-        const replitDevDomain = process.env.REPLIT_DEV_DOMAIN || "";
+        const serverDomain = getServerDomain();
         const allowedHttpHosts = [
           "localhost",
-          ...(replitDevDomain ? [replitDevDomain] : []),
+          ...(serverDomain ? [serverDomain] : []),
         ];
         isHttpsAllowed = allowedHttpHosts.some(
           (host) => parsedUrl.hostname === host || parsedUrl.hostname.endsWith(`.${host}`)
@@ -64,8 +68,8 @@ router.get("/auth/google-mobile", (req: Request, res: Response) => {
   const state = rawState.replace(/['"\\<>]/g, "");
 
   const googleClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_WEB_CLIENT_ID || "";
-  const replitDevDomain = process.env.REPLIT_DEV_DOMAIN || "";
-  const callbackUrl = `https://${replitDevDomain}/api/auth/google-callback`;
+  const serverDomain = getServerDomain();
+  const callbackUrl = `https://${serverDomain}/api/auth/google-callback`;
 
   const oauthState = `${state}|${Date.now()}`;
   pendingAuthStates.set(oauthState, {
@@ -110,8 +114,8 @@ router.get("/auth/google-callback", async (req: Request, res: Response) => {
 
   const googleClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_WEB_CLIENT_ID || "";
   const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
-  const replitDevDomain = process.env.REPLIT_DEV_DOMAIN || "";
-  const callbackUrl = `https://${replitDevDomain}/api/auth/google-callback`;
+  const serverDomain = getServerDomain();
+  const callbackUrl = `https://${serverDomain}/api/auth/google-callback`;
 
   try {
     const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
