@@ -20,6 +20,7 @@ import { useApp, CustomMacros, FitnessGoal, FitnessLevel, ActivityLevel, Workout
 import { useWorkout } from "@/context/WorkoutContext";
 import { useHealth } from "@/context/HealthContext";
 import { useAuth } from "@/lib/auth";
+import { useSubscription } from "@/context/SubscriptionContext";
 import { backupToFirestore, restoreFromFirestore } from "@/lib/firebaseSync";
 import { NumberEditModal } from "@/components/NumberEditModal";
 import { Colors } from "@/constants/colors";
@@ -86,6 +87,7 @@ export default function ProfileScreen() {
   const { sessions, personalRecords } = useWorkout();
   const { healthData, toggleSync, syncHealthData, isTracking, startRunTracking, stopRunTracking, currentRun } = useHealth();
   const { user, isAuthenticated, isLoading: authLoading, login, logout } = useAuth();
+  const { state: subState, isPremium, isTrialActive, isFree, daysRemaining, trialEndDate, restorePurchases } = useSubscription();
   const [syncing, setSyncing] = useState(false);
   const profile = appState.profile;
 
@@ -464,6 +466,53 @@ export default function ProfileScreen() {
             Last synced: {new Date(healthData.lastSynced).toLocaleString()}
           </Text>
         )}
+      </SectionCard>
+
+      <SectionCard title="Subscription" isDark={isDark} theme={theme} subtitle={isTrialActive ? `Premium Trial · ${daysRemaining} days left` : isPremium ? "Premium" : "Free Plan"}>
+        <View style={{ gap: 12 }}>
+          <View style={[styles.planStatusRow, { backgroundColor: isPremium ? Colors.primary + "12" : theme.cardElevated }]}>
+            <View style={[styles.planStatusIcon, { backgroundColor: isPremium ? Colors.primary + "20" : theme.border }]}>
+              <Ionicons name={isPremium ? "diamond" : "person-outline"} size={18} color={isPremium ? Colors.primary : theme.textSecondary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.planStatusLabel, { color: theme.text }]}>
+                {isTrialActive ? "Premium Trial" : isPremium ? "Premium" : "Free Plan"}
+              </Text>
+              {isTrialActive && trialEndDate && (
+                <Text style={[styles.planStatusSub, { color: theme.textSecondary }]}>
+                  Trial ends {trialEndDate}
+                </Text>
+              )}
+              {subState.status === "active" && subState.renewalDate && (
+                <Text style={[styles.planStatusSub, { color: theme.textSecondary }]}>
+                  Renews {new Date(subState.renewalDate).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                </Text>
+              )}
+            </View>
+          </View>
+
+          {isFree && (
+            <TouchableOpacity
+              style={[styles.loginBtn, { backgroundColor: Colors.primary }]}
+              onPress={() => { router.push("/paywall"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); }}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="diamond" size={18} color="#000" />
+              <Text style={styles.loginBtnText}>Upgrade to Premium</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
+            onPress={async () => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              await restorePurchases();
+              Alert.alert("Restore", "Purchase restore complete.");
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.planStatusSub, { color: Colors.primary, textAlign: "center" }]}>Restore Purchases</Text>
+          </TouchableOpacity>
+        </View>
       </SectionCard>
 
       <SectionCard title="Account" isDark={isDark} theme={theme} subtitle={isAuthenticated ? user?.email || "Signed in" : "Sign in to save your data"}>
@@ -1127,4 +1176,8 @@ const styles = StyleSheet.create({
   optionChip: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, borderWidth: 1, flexDirection: "row", alignItems: "center", gap: 6 },
   optionChipText: { fontSize: 13, fontFamily: "Inter_500Medium" },
   editTextInput: { borderWidth: 1, borderRadius: 10, padding: 12, fontSize: 14, fontFamily: "Inter_400Regular", minHeight: 60, textAlignVertical: "top" },
+  planStatusRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 12 },
+  planStatusIcon: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  planStatusLabel: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  planStatusSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
 });

@@ -19,6 +19,7 @@ import { AppProvider } from "@/context/AppContext";
 import { WorkoutProvider } from "@/context/WorkoutContext";
 import { NutritionProvider } from "@/context/NutritionContext";
 import { HealthProvider } from "@/context/HealthContext";
+import { SubscriptionProvider } from "@/context/SubscriptionContext";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -29,6 +30,7 @@ function RootLayoutNav() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="onboarding/index" options={{ headerShown: false, presentation: "fullScreenModal" }} />
+      <Stack.Screen name="paywall" options={{ headerShown: false, presentation: "modal" }} />
     </Stack>
   );
 }
@@ -55,17 +57,19 @@ export default function RootLayout() {
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
             <AppProvider>
-              <WorkoutProvider>
-                <NutritionProvider>
-                  <HealthProvider>
-                    <GestureHandlerRootView>
-                      <KeyboardProvider>
-                        <RootLayoutNav />
-                      </KeyboardProvider>
-                    </GestureHandlerRootView>
-                  </HealthProvider>
-                </NutritionProvider>
-              </WorkoutProvider>
+              <SubscriptionProvider>
+                <WorkoutProvider>
+                  <NutritionProvider>
+                    <HealthProvider>
+                      <GestureHandlerRootView>
+                        <KeyboardProvider>
+                          <RootLayoutNav />
+                        </KeyboardProvider>
+                      </GestureHandlerRootView>
+                    </HealthProvider>
+                  </NutritionProvider>
+                </WorkoutProvider>
+              </SubscriptionProvider>
             </AppProvider>
           </AuthProvider>
         </QueryClientProvider>

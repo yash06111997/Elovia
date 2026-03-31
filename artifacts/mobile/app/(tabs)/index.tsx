@@ -9,9 +9,12 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
+import * as Haptics from "expo-haptics";
 import { useApp } from "@/context/AppContext";
 import { useWorkout } from "@/context/WorkoutContext";
 import { useNutrition } from "@/context/NutritionContext";
+import { useSubscription } from "@/context/SubscriptionContext";
 import { MacroBar } from "@/components/MacroBar";
 import { StatCard } from "@/components/StatCard";
 import { ProgressRing } from "@/components/ProgressRing";
@@ -24,6 +27,7 @@ export default function DashboardScreen() {
   const { state: appState, calculateMacros, getTodayMetric, updateTodayMetric } = useApp();
   const { plan, getWeeklyCompletion, sessions, personalRecords } = useWorkout();
   const { getTodayTotals, getTodayLog } = useNutrition();
+  const { isPremium, isTrialActive, isFree, daysRemaining } = useSubscription();
 
   const profile = appState.profile;
   const macros = calculateMacros();
@@ -72,6 +76,47 @@ export default function DashboardScreen() {
           </View>
         </View>
       </View>
+
+      {isTrialActive && (
+        <TouchableOpacity
+          style={[styles.subBanner, { backgroundColor: Colors.primary + "15", borderColor: Colors.primary + "30" }]}
+          onPress={() => { router.push("/paywall"); Haptics.selectionAsync(); }}
+          activeOpacity={0.8}
+        >
+          <View style={styles.subBannerLeft}>
+            <Ionicons name="diamond" size={16} color={Colors.primary} />
+            <Text style={[styles.subBannerText, { color: Colors.primary }]}>
+              {daysRemaining} day{daysRemaining !== 1 ? "s" : ""} left in Premium
+            </Text>
+          </View>
+          <Text style={[styles.subBannerSub, { color: theme.textSecondary }]}>
+            Make the most of your plan
+          </Text>
+        </TouchableOpacity>
+      )}
+      {isFree && !isTrialActive && (
+        <TouchableOpacity
+          style={[styles.subBanner, { backgroundColor: Colors.accentYellow + "12", borderColor: Colors.accentYellow + "30" }]}
+          onPress={() => { router.push("/paywall"); Haptics.selectionAsync(); }}
+          activeOpacity={0.8}
+        >
+          <View style={styles.subBannerLeft}>
+            <Ionicons name="lock-open-outline" size={16} color={Colors.accentYellow} />
+            <Text style={[styles.subBannerText, { color: theme.text }]}>
+              Unlock Premium
+            </Text>
+          </View>
+          <Text style={[styles.subBannerSub, { color: theme.textSecondary }]}>
+            Advanced workouts, nutrition, and tracking
+          </Text>
+        </TouchableOpacity>
+      )}
+      {isPremium && !isTrialActive && (
+        <View style={[styles.premiumBadgeRow, { backgroundColor: Colors.accentGreen + "12", borderColor: Colors.accentGreen + "30" }]}>
+          <Ionicons name="diamond" size={14} color={Colors.accentGreen} />
+          <Text style={[styles.premiumBadgeText, { color: Colors.accentGreen }]}>Premium Active</Text>
+        </View>
+      )}
 
       {/* Calorie Ring */}
       <View style={[styles.calorieCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
@@ -276,4 +321,10 @@ const styles = StyleSheet.create({
   targetDot: { width: 8, height: 8, borderRadius: 4 },
   targetLabel: { fontSize: 10, fontFamily: "Inter_500Medium" },
   targetValue: { fontSize: 14, fontFamily: "Inter_700Bold" },
+  subBanner: { borderRadius: 12, borderWidth: 1, padding: 14, gap: 4 },
+  subBannerLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
+  subBannerText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  subBannerSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginLeft: 24 },
+  premiumBadgeRow: { flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 10, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 8, alignSelf: "flex-start" },
+  premiumBadgeText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
 });

@@ -17,6 +17,8 @@ import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import { useNutrition, Meal, FoodLogEntry, CustomMealPlan } from "@/context/NutritionContext";
 import { useApp } from "@/context/AppContext";
+import { useSubscription } from "@/context/SubscriptionContext";
+import { router } from "expo-router";
 import { MacroBar } from "@/components/MacroBar";
 import { MealCard } from "@/components/MealCard";
 import { FoodSearch } from "@/components/FoodSearch";
@@ -50,6 +52,7 @@ export default function DietScreen() {
     getActiveMealPlanMeals,
   } = useNutrition();
   const { state: appState, calculateMacros } = useApp();
+  const { canAccess } = useSubscription();
   const hasPlan = !!(mealPlan || customMealPlans.length > 0);
   const [activeTab, setActiveTab] = useState<Tab>(hasPlan ? "plan" : "log");
   const [logModalVisible, setLogModalVisible] = useState(false);
@@ -242,7 +245,13 @@ export default function DietScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.iconBtn, { backgroundColor: "#FF6B35" + "20" }]}
-              onPress={() => setAiMealModalVisible(true)}
+              onPress={() => {
+                if (!canAccess("ai_meal_plan")) {
+                  router.push("/paywall");
+                  return;
+                }
+                setAiMealModalVisible(true);
+              }}
               activeOpacity={0.8}
             >
               <Ionicons name="sparkles" size={18} color="#FF6B35" />
@@ -335,7 +344,13 @@ export default function DietScreen() {
                 {activeMealPlanType === "ai" && mealPlan && (
                   <TouchableOpacity
                     style={[styles.smallBtn, { borderColor: Colors.primary + "40" }]}
-                    onPress={handleRegenerate}
+                    onPress={() => {
+                      if (!canAccess("ai_meal_plan")) {
+                        router.push("/paywall");
+                        return;
+                      }
+                      handleRegenerate();
+                    }}
                     activeOpacity={0.8}
                   >
                     <Ionicons name="refresh" size={14} color={Colors.primary} />
@@ -376,7 +391,13 @@ export default function DietScreen() {
 
                 <TouchableOpacity
                   style={[styles.dietOptionCard, { backgroundColor: theme.card, borderColor: Colors.accent + "40" }]}
-                  onPress={() => setAiMealModalVisible(true)}
+                  onPress={() => {
+                    if (!canAccess("ai_meal_plan")) {
+                      router.push("/paywall");
+                      return;
+                    }
+                    setAiMealModalVisible(true);
+                  }}
                   activeOpacity={0.8}
                 >
                   <View style={[styles.dietOptionIcon, { backgroundColor: Colors.accent + "20" }]}>
@@ -388,12 +409,23 @@ export default function DietScreen() {
                       Get a personalized plan based on your goals, diet type, and food preferences.
                     </Text>
                   </View>
+                  {!canAccess("ai_meal_plan") && (
+                    <View style={{ backgroundColor: Colors.accent + "20", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, marginRight: 4 }}>
+                      <Text style={{ fontSize: 9, fontFamily: "Inter_700Bold", color: Colors.accent }}>PREMIUM</Text>
+                    </View>
+                  )}
                   <Ionicons name="chevron-forward" size={20} color={theme.textMuted} />
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   style={[styles.dietQuickGenBtn, { backgroundColor: isDark ? "#1A1A24" : "#F0F0F8", borderColor: theme.border }]}
-                  onPress={handleRegenerate}
+                  onPress={() => {
+                    if (!canAccess("ai_meal_plan")) {
+                      router.push("/paywall");
+                      return;
+                    }
+                    handleRegenerate();
+                  }}
                   activeOpacity={0.8}
                 >
                   <Ionicons name="flash-outline" size={16} color={Colors.primary} />

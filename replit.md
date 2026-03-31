@@ -123,16 +123,17 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 ```
 artifacts/mobile/
   app/
-    _layout.tsx           # Root layout with all providers
+    _layout.tsx           # Root layout with all providers (including SubscriptionProvider)
+    paywall.tsx           # Paywall / pricing screen (modal)
     (tabs)/
-      _layout.tsx         # 5-tab layout with AppGuard onboarding redirect
-      index.tsx           # Dashboard
-      workouts.tsx        # Workout plans & logging (+ AI generation)
-      diet.tsx            # Nutrition tracking (+ food search + camera scan)
+      _layout.tsx         # 5-tab layout with AppGuard + TrialExpiredModal
+      index.tsx           # Dashboard (+ subscription banner)
+      workouts.tsx        # Workout plans & logging (+ AI generation, premium-gated)
+      diet.tsx            # Nutrition tracking (+ food search + camera scan, premium-gated)
       progress.tsx        # Analytics
-      profile.tsx         # Profile & settings (+ editable stats + custom macros)
+      profile.tsx         # Profile & settings (+ subscription section)
     onboarding/
-      index.tsx           # 7-step onboarding flow (Welcome + 6 setup steps, keyboard-editable number steppers)
+      index.tsx           # 7-step onboarding flow (starts trial on completion)
   components/
     ProgressRing.tsx      # SVG circular progress
     MacroBar.tsx          # Animated macro progress bar
@@ -141,6 +142,8 @@ artifacts/mobile/
     MealCard.tsx          # Meal with log action
     NumberEditModal.tsx   # Tap-to-edit modal with stepper + keypad
     FoodSearch.tsx        # Food database browser with search & categories
+    PremiumLock.tsx       # Wraps premium features with lock overlay + upgrade prompt
+    TrialExpiredModal.tsx # Shown when 15-day trial ends
     ErrorBoundary.tsx     # Error boundary
   lib/
     firebase.ts           # Firebase app + auth + Realtime Database initialization
@@ -197,6 +200,42 @@ artifacts/api-server/
 - **Font**: Inter (400/500/600/700)
 - Both **dark and light** modes supported
 
+## Subscription / Freemium Model
+
+### Architecture
+- **Config**: `constants/subscription.ts` — all plan config, pricing, copy text, feature keys, trial duration
+- **Context**: `context/SubscriptionContext.tsx` — trial logic, plan detection, feature gating, AsyncStorage persistence
+- **Paywall**: `app/paywall.tsx` — modal screen with feature list, plan cards, FAQ, trust elements
+- **Trial Expired**: `components/TrialExpiredModal.tsx` — shown automatically when trial ends
+- **Premium Lock**: `components/PremiumLock.tsx` — wraps premium features with upgrade prompt overlay
+
+### How It Works
+1. **New user completes onboarding** → `startTrial()` called → 15-day premium trial begins
+2. **During trial** → all features unlocked, dashboard shows "X days left in Premium" banner
+3. **Trial expires** → auto-downgrade to Free, trial expired modal shown once, AI features gated
+4. **Free user taps locked feature** → redirected to paywall screen
+5. **User upgrades** → premium status persisted, all features unlocked
+
+### Trial Duration Control
+- Change `TRIAL_DURATION_DAYS` in `constants/subscription.ts` (default: 15)
+
+### Feature Gating
+- AI Workout: gated in `workouts.tsx` — "AI Powered Workout" button + "Quick Generate"
+- AI Meal Plan: gated in `diet.tsx` — "AI Meal Plan" button + "Quick Generate"
+- Features show "PREMIUM" badge when locked
+- `canAccess(featureKey)` helper used throughout
+
+### Apple & Google Subscription Setup (Future)
+1. Open `constants/subscription.ts`
+2. Update `PRODUCT_IDS.apple.monthly` and `.yearly` with real App Store product IDs
+3. Update `PRODUCT_IDS.google.monthly` and `.yearly` with real Play Store product IDs
+4. Update `PRICING` with real prices
+5. Integrate RevenueCat or StoreKit/Play Billing in `SubscriptionContext.tsx`'s `upgradePlan()` and `restorePurchases()` functions
+6. Replace the demo purchase logic with real IAP validation
+
+### AsyncStorage Keys
+- `@fitai_subscription` — subscription state (status, trial dates, platform, renewal)
+
 ## Local Data Persistence
 
 All data is stored in AsyncStorage:
@@ -214,6 +253,7 @@ All data is stored in AsyncStorage:
 - `@fitai_active_meal_plan_type` — "ai" or "custom"
 - `@fitai_active_custom_meal_plan_id` — id of active custom meal plan
 - `@fitai_health_data` — health sync status, steps, run sessions
+- `@fitai_subscription` — subscription status, trial dates, plan type
 
 ## Environment Variables
 

@@ -15,6 +15,7 @@ import * as Haptics from "expo-haptics";
 import { useApp, UserProfile, FitnessGoal, FitnessLevel, ActivityLevel, WorkoutPreference, FoodPreference, Equipment, DietType } from "@/context/AppContext";
 import { useWorkout } from "@/context/WorkoutContext";
 import { useNutrition } from "@/context/NutritionContext";
+import { useSubscription } from "@/context/SubscriptionContext";
 import { useAuth } from "@/lib/auth";
 import { generateWorkoutPlan, generateMealPlan } from "@/utils/aiEngine";
 import { Colors } from "@/constants/colors";
@@ -28,6 +29,7 @@ export default function OnboardingScreen() {
   const { setProfile, completeOnboarding } = useApp();
   const { setPlan } = useWorkout();
   const { setMealPlan } = useNutrition();
+  const { startTrial } = useSubscription();
   const { isAuthenticated, login, user, authError } = useAuth();
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -90,6 +92,7 @@ export default function OnboardingScreen() {
     const mealPlan = generateMealPlan(profile);
     setPlan(workoutPlan);
     setMealPlan(mealPlan);
+    startTrial();
     completeOnboarding();
     router.replace("/(tabs)");
   };

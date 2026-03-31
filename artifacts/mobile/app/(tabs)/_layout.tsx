@@ -4,14 +4,22 @@ import { Tabs, router } from "expo-router";
 import { Icon, Label, NativeTabs } from "expo-router/unstable-native-tabs";
 import { SymbolView } from "expo-symbols";
 import { Feather, Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { Platform, StyleSheet, View } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useApp } from "@/context/AppContext";
+import { useSubscription } from "@/context/SubscriptionContext";
+import { TrialExpiredModal } from "@/components/TrialExpiredModal";
 import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
 
+const TRIAL_EXPIRED_SHOWN_KEY = "@fitai_trial_expired_shown";
+
 function AppGuard({ children }: { children: React.ReactNode }) {
   const { state } = useApp();
+  const { state: subState, isFree } = useSubscription();
+  const [showTrialExpired, setShowTrialExpired] = useState(false);
+  const [trialExpiredChecked, setTrialExpiredChecked] = useState(false);
 
   useEffect(() => {
     if (!state.onboardingComplete) {
@@ -19,8 +27,30 @@ function AppGuard({ children }: { children: React.ReactNode }) {
     }
   }, [state.onboardingComplete]);
 
+  useEffect(() => {
+    if (!subState.trialUsed || !isFree || !subState.trialEndsAt || trialExpiredChecked) return;
+    const endTime = new Date(subState.trialEndsAt).getTime();
+    if (Date.now() < endTime) return;
+
+    AsyncStorage.getItem(TRIAL_EXPIRED_SHOWN_KEY).then((val) => {
+      setTrialExpiredChecked(true);
+      if (val !== "true") {
+        setShowTrialExpired(true);
+        AsyncStorage.setItem(TRIAL_EXPIRED_SHOWN_KEY, "true");
+      }
+    });
+  }, [subState, isFree, trialExpiredChecked]);
+
   if (!state.onboardingComplete) return null;
-  return <>{children}</>;
+  return (
+    <>
+      {children}
+      <TrialExpiredModal
+        visible={showTrialExpired}
+        onDismiss={() => setShowTrialExpired(false)}
+      />
+    </>
+  );
 }
 
 function NativeTabLayout() {
