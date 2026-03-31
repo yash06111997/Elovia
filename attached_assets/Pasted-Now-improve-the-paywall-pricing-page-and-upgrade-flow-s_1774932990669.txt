@@ -1,0 +1,142 @@
+Now improve the paywall, pricing page, and upgrade flow so it converts users better while still feeling premium, trustworthy, and not pushy.
+
+I want the app’s monetization UI and copy to feel like a real fitness/lifestyle startup app.
+
+OBJECTIVE:
+Increase conversion from free trial users to paid subscribers after the 15-day premium trial.
+
+TONE:
+- premium
+- modern
+- motivational
+- clean
+- trustworthy
+- not spammy
+- not overly salesy
+
+PLEASE UPDATE THE FOLLOWING:
+
+1. PAYWALL SCREEN COPY
+Create better text for the premium trial screen.
+
+Headline options like:
+- Start your 15-day Premium Trial
+- Unlock your best routine
+- Your complete fitness and lifestyle coach
+
+Subheadline should explain the value clearly:
+- personalized workouts
+- personalized nutrition
+- progress analytics
+- premium tracking
+- all in one place
+
+Add premium feature bullets such as:
+- AI workout plans made for your goal and equipment
+- Personalized meal and macro guidance
+- Advanced progress tracking and personal records
+- Health insights like heart rate, activity, and movement tracking
+- Smarter recommendations as you improve
+
+Buttons:
+- Start 15-Day Free Trial
+- Continue with Free
+- Restore Purchases
+
+Add plan cards for:
+- Monthly Premium
+- Yearly Premium
+Make the yearly plan visually highlighted as “Best Value”
+
+2. POST-TRIAL EXPIRY SCREEN
+Design a clean screen or modal shown when the 15-day premium trial ends.
+
+Text should communicate:
+- the trial has ended
+- premium features are now locked
+- free plan is still available
+- user can upgrade anytime
+
+Suggested text:
+Headline:
+- Your Premium trial has ended
+
+Body:
+- Keep your momentum going with unlimited workouts, nutrition guidance, and advanced progress insights.
+- You can continue on the Free plan or upgrade anytime.
+
+Buttons:
+- Upgrade to Premium
+- Continue with Free
+
+3. DASHBOARD UPGRADE BANNERS
+Improve banners shown in dashboard based on plan status.
+
+If in trial:
+- “You have 9 days left in Premium”
+- “Make the most of your personalized plan”
+
+If free after expiry:
+- “Unlock Premium to continue advanced workout, nutrition, and tracking features”
+
+If premium:
+- show premium badge and no upgrade push
+
+4. PROFILE / SETTINGS COPY
+Make the current plan area look polished.
+
+Examples:
+- Current Plan: Premium Trial
+- Current Plan: Free
+- Current Plan: Premium
+
+Also show:
+- Trial ends on [date]
+- Next billing date [placeholder if needed]
+- Manage Subscription
+- Restore Purchases
+
+5. FEATURE LOCK MESSAGES
+When a free user taps a locked premium feature, show elegant lock text such as:
+- This feature is part of Premium
+- Upgrade to unlock advanced coaching, analytics, and tracking
+
+Add button:
+- View Premium
+
+6. PRICING PAGE STRUCTURE
+Create a visually strong pricing page with:
+- Premium headline
+- feature comparison between Free and Premium
+- monthly plan card
+- yearly plan card
+- annual savings highlight
+- FAQ section placeholders:
+  - Can I cancel anytime?
+  - What happens after the 15-day trial?
+  - Will I lose my progress if I stay on Free?
+  - How do I restore purchases?
+
+7. TRUST ELEMENTS
+Add trust-building details to the paywall:
+- Your data stays private
+- Cancel anytime
+- Progress history stays saved
+- Personalized for your goals, preferences, and equipment
+
+8. UX IMPROVEMENTS
+Please make sure:
+- the paywall is clean and premium-looking
+- the CTA is clear
+- the yearly plan stands out
+- the free option is available but less prominent
+- the UI feels motivating and fitness/lifestyle oriented
+
+9. DELIVERABLES
+Please:
+- update the relevant UI screens
+- update copy text
+- improve layout and hierarchy
+- show me which files were changed
+- explain which text I can edit later easily
+- keep all pricing text in a central config/constants file so I can edit the wording later without searching everywhere
