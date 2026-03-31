@@ -1,6 +1,6 @@
 kind = "mobile"
 previewPath = "/"
-title = "FitAI - Health & Fitness"
+title = "Elovia — Fitness, food, and life in balance"
 version = "1.0.0"
 id = "artifacts/mobile"
 router = "expo-domain"

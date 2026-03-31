@@ -1,4 +1,4 @@
-# FitAI - Health & Fitness App
+# Elovia — Fitness, food, and life in balance
 
 A production-ready mobile health and fitness app built with Expo (React Native) with AI-powered features.
 

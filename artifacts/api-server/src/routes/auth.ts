@@ -150,7 +150,7 @@ router.get("/auth/google-callback", async (req: Request, res: Response) => {
 <body><script>
 if (window.opener) {
   window.opener.postMessage({
-    type: 'fitai-auth',
+    type: 'elovia-auth',
     idToken: ${JSON.stringify(idToken)},
     state: ${JSON.stringify(appState)}
   }, '*');

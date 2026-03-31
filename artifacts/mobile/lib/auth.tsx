@@ -128,14 +128,14 @@ async function handleIdTokenWeb(idToken: string) {
 
 function loginWithPopupWindow(authUrl: string, state: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const popup = window.open(authUrl, "fitai-auth", "width=500,height=600,menubar=no,toolbar=no");
+    const popup = window.open(authUrl, "elovia-auth", "width=500,height=600,menubar=no,toolbar=no");
     if (!popup) {
       reject(new Error("Popup was blocked. Please allow popups and try again."));
       return;
     }
 
     const handler = (event: MessageEvent) => {
-      if (event.data?.type === "fitai-auth" && event.data?.state === state) {
+      if ((event.data?.type === "elovia-auth" || event.data?.type === "fitai-auth") && event.data?.state === state) {
         window.removeEventListener("message", handler);
         clearInterval(checkClosed);
         if (event.data.idToken) {

@@ -6,12 +6,12 @@ export type SubscriptionPlatform = "apple" | "google" | "none";
 
 export const PRODUCT_IDS = {
   apple: {
-    monthly: "com.fitai.premium.monthly",
-    yearly: "com.fitai.premium.yearly",
+    monthly: "com.elovia.premium.monthly",
+    yearly: "com.elovia.premium.yearly",
   },
   google: {
-    monthly: "fitai_premium_monthly",
-    yearly: "fitai_premium_yearly",
+    monthly: "elovia_premium_monthly",
+    yearly: "elovia_premium_yearly",
   },
 };
 
