@@ -1,0 +1,129 @@
+Configure my app with a freemium subscription model with a 15-day full premium trial.
+
+I am a non-technical founder, so please implement this in a clean, scalable, production-ready way and explain where each part is added.
+
+APP BUSINESS MODEL:
+- The app should be free to download and sign up for
+- Every new user should get 15 days of full Premium access
+- During the 15-day trial, all premium features should be unlocked
+- After 15 days, premium features should be locked automatically unless the user has an active paid subscription
+- After trial expiry, the user should move to a limited Free plan
+- Each user should get this free trial only once
+
+PLANS:
+1. Free Plan
+- limited workout recommendations
+- limited diet recommendations
+- basic dashboard
+- basic progress tracking
+
+2. Premium Plan
+- unlimited AI workout recommendations
+- unlimited AI diet plans
+- advanced analytics
+- advanced progress tracking
+- premium health tracking features
+- all locked premium tools
+
+TRIAL LOGIC:
+- Start the 15-day trial for every new user after signup
+- Store the trial start date and trial expiry date in the database
+- On every app launch, check whether the user is:
+  1. in trial
+  2. free
+  3. premium subscriber
+- If the trial is active, show full premium access
+- If the trial has expired and there is no active subscription, automatically downgrade the user to Free
+- Trial must only be available once per account
+
+SUBSCRIPTION LOGIC:
+- Prepare the app for Apple App Store subscriptions and Google Play subscriptions
+- Add placeholders/config for:
+  - premium_monthly
+  - premium_yearly
+- Add subscription status handling:
+  - active
+  - expired
+  - cancelled
+  - in_trial
+  - free
+- Add a Restore Purchases function
+- Add backend logic to sync premium status with the database
+- Structure the code so I can later connect actual Apple and Google product IDs easily
+
+DATABASE CHANGES:
+Add the required fields/tables for:
+- plan_type
+- subscription_status
+- subscription_platform
+- trial_used
+- trial_started_at
+- trial_ends_at
+- premium_access_until
+- renewal_date
+- purchase_token or transaction reference if needed
+
+UI / UX CHANGES:
+Please create and connect the following:
+
+1. PAYWALL SCREEN
+- Title: Start your 15-day Premium Trial
+- Show Monthly and Yearly premium options
+- Show key premium features
+- Show “No charge during trial” style placeholder text
+- Add button: Start Free Trial
+- Add button: Continue with Free
+- Add button: Restore Purchases
+
+2. DASHBOARD BANNER
+- Show trial countdown, for example:
+  “12 days left in your Premium trial”
+- If user is premium, show Premium badge
+- If user is free after trial expiry, show Upgrade prompt
+
+3. PROFILE / SETTINGS
+- Show current plan
+- Show trial status
+- Show renewal date if subscribed
+- Add Manage Subscription section placeholder
+- Add Restore Purchases button
+
+4. TRIAL EXPIRY FLOW
+- When trial ends, show a screen or modal:
+  “Your Premium trial has ended”
+  “Upgrade to continue using all premium features”
+- Give options:
+  - Upgrade Now
+  - Continue with Free
+
+FEATURE GATING:
+Implement feature gating across the app:
+- Free users can only access limited features
+- Trial users get full premium access
+- Premium subscribers get full premium access
+- Lock premium features gracefully with upgrade prompts
+
+TECHNICAL REQUIREMENTS:
+- Keep the code modular and production-oriented
+- Clearly separate:
+  - frontend UI
+  - subscription logic
+  - backend access control
+  - database models
+- Add comments and simple explanations for a non-technical founder
+- Create a central config file for plan and trial settings so I can change trial duration later from 15 days to something else if needed
+
+IMPORTANT:
+Do not just make UI placeholders.
+Actually wire the logic so the app can:
+- detect trial vs free vs premium
+- show/hide features correctly
+- downgrade automatically after trial ends
+- support future App Store / Play Store subscription integration
+
+DELIVERABLES:
+1. Implement the feature
+2. Show me what files were changed
+3. Explain in simple language how the trial works
+4. Tell me exactly where I will later add Apple and Google subscription product IDs
+5. Add test/demo logic so I can preview the full flow even before store billing is connected
