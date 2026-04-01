@@ -82,7 +82,8 @@ export async function generateAIMealPlan(
 
 export async function generateAIWorkout(
   profile: any,
-  planType: "daily" | "scheduled"
+  planType: "daily" | "scheduled",
+  preferences?: { bodyParts?: string[]; message?: string }
 ): Promise<{
   days: any[];
   name: string;
@@ -92,7 +93,7 @@ export async function generateAIWorkout(
   const response = await fetch(`${base}/api/ai/generate-workout`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ profile, planType }),
+    body: JSON.stringify({ profile, planType, preferences }),
   });
 
   if (!response.ok) {

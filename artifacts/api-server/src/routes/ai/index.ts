@@ -95,11 +95,22 @@ Be accurate with nutritional estimates. If you cannot identify the food clearly,
 
 router.post("/generate-workout", async (req, res) => {
   try {
-    const { profile, planType } = req.body;
+    const { profile, planType, preferences } = req.body;
     if (!profile) {
       res.status(400).json({ error: "profile is required" });
       return;
     }
+
+    const userPrefs = preferences || {};
+    const bodyPartLine = userPrefs.bodyParts?.length
+      ? `\nTarget body parts (USER PRIORITY): ${userPrefs.bodyParts.join(", ")}`
+      : "";
+    const messageLine = userPrefs.message?.trim()
+      ? `\nUser's special instructions: "${userPrefs.message.trim()}"`
+      : "";
+    const prefsBlock = (bodyPartLine || messageLine)
+      ? `\n--- USER PREFERENCES (prioritize these) ---${bodyPartLine}${messageLine}\n---`
+      : "";
 
     const prompt = planType === "daily"
       ? `Create a single day workout for this person:
@@ -109,7 +120,7 @@ Goal: ${profile.goal}, Level: ${profile.fitnessLevel}
 Workout preference: ${profile.workoutPreference}
 Available equipment: ${profile.equipment?.join(", ") || "no equipment"}
 Session duration: ${profile.workoutDurationMins} minutes
-
+${prefsBlock}
 Create ONE workout day optimized for their goal. Return ONLY valid JSON:
 {
   "days": [
@@ -143,7 +154,7 @@ Days per week: ${profile.workoutDaysPerWeek}
 Available equipment: ${profile.equipment?.join(", ") || "no equipment"}
 Session duration: ${profile.workoutDurationMins} minutes
 Medical notes: ${profile.medicalNotes || "none"}
-
+${prefsBlock}
 Create a ${profile.workoutDaysPerWeek}-day split optimized for ${profile.goal}. Include 4-6 exercises per day. Return ONLY valid JSON:
 {
   "days": [

@@ -9,6 +9,7 @@ import {
   Alert,
   ActivityIndicator,
   Modal,
+  TextInput,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -64,6 +65,7 @@ export default function WorkoutsScreen() {
   const [showPlanSwitcher, setShowPlanSwitcher] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("plan");
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
+  const [aiPreferences, setAiPreferences] = useState<{ bodyParts: string[]; message: string }>({ bodyParts: [], message: "" });
 
   const topPadding = Platform.OS === "web" ? 67 : insets.top + 12;
   const activeDays = getActivePlanDays();
@@ -105,7 +107,10 @@ export default function WorkoutsScreen() {
     if (!appState.profile) return;
     setAiLoading(true);
     try {
-      const result = await generateAIWorkout(appState.profile, aiPlanType);
+      const result = await generateAIWorkout(appState.profile, aiPlanType, {
+        bodyParts: aiPreferences.bodyParts,
+        message: aiPreferences.message,
+      });
       const uid = () => Date.now().toString() + Math.random().toString(36).substr(2, 9);
       setPlan({
         id: uid(),
@@ -255,6 +260,8 @@ export default function WorkoutsScreen() {
           loading={aiLoading}
           theme={theme}
           isDark={isDark}
+          preferences={aiPreferences}
+          setPreferences={setAiPreferences}
         />
         <CustomPlanBuilderScreen
           visible={showPlanBuilder}
@@ -674,6 +681,8 @@ export default function WorkoutsScreen() {
         loading={aiLoading}
         theme={theme}
         isDark={isDark}
+        preferences={aiPreferences}
+        setPreferences={setAiPreferences}
       />
 
       <ExerciseLibraryScreen
@@ -700,66 +709,117 @@ export default function WorkoutsScreen() {
   );
 }
 
-function AIGenerateModal({ visible, onClose, planType, setPlanType, onGenerate, loading, theme, isDark }: any) {
+function AIGenerateModal({ visible, onClose, planType, setPlanType, onGenerate, loading, theme, isDark, preferences, setPreferences }: any) {
+  const BODY_PARTS = ["Chest", "Back", "Shoulders", "Biceps", "Triceps", "Legs", "Glutes", "Core", "Full Body"];
+
+  const toggleBodyPart = (part: string) => {
+    const current = preferences.bodyParts || [];
+    if (current.includes(part)) {
+      setPreferences({ ...preferences, bodyParts: current.filter((p: string) => p !== part) });
+    } else {
+      setPreferences({ ...preferences, bodyParts: [...current, part] });
+    }
+  };
+
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={styles.modalOverlay}>
         <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onClose} />
-        <View style={[styles.modalSheet, { backgroundColor: theme.surface }]}>
+        <View style={[styles.modalSheet, { backgroundColor: theme.surface, maxHeight: "85%" }]}>
           <View style={styles.modalHandle} />
-          <Text style={[styles.modalTitle, { color: theme.text }]}>AI Workout Generator</Text>
-          <Text style={[styles.modalDesc, { color: theme.textSecondary }]}>
-            Create a personalized plan using AI based on your profile, goals, and equipment.
-          </Text>
-
-          <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Plan Type</Text>
-          <View style={[styles.toggleRow, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <TouchableOpacity
-              style={[styles.toggleBtn, planType === "daily" && { backgroundColor: Colors.primary }]}
-              onPress={() => setPlanType("daily")}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="today-outline" size={16} color={planType === "daily" ? "#000" : theme.textSecondary} />
-              <Text style={[styles.toggleText, { color: planType === "daily" ? "#000" : theme.textSecondary }]}>
-                Single Day
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.toggleBtn, planType === "scheduled" && { backgroundColor: Colors.primary }]}
-              onPress={() => setPlanType("scheduled")}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="calendar-outline" size={16} color={planType === "scheduled" ? "#000" : theme.textSecondary} />
-              <Text style={[styles.toggleText, { color: planType === "scheduled" ? "#000" : theme.textSecondary }]}>
-                Full Week
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={[styles.infoBox, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <Ionicons name="sparkles" size={16} color={Colors.accent} />
-            <Text style={[styles.infoText, { color: theme.textSecondary }]}>
-              {planType === "daily"
-                ? "Generates one optimized workout based on your goal and equipment."
-                : "Creates a full weekly split with progressive overload built in."}
+          <ScrollView showsVerticalScrollIndicator={false}>
+            <Text style={[styles.modalTitle, { color: theme.text }]}>AI Workout Generator</Text>
+            <Text style={[styles.modalDesc, { color: theme.textSecondary }]}>
+              Tell us what you want to train and we'll build a plan just for you.
             </Text>
-          </View>
 
-          <TouchableOpacity
-            style={[styles.generateBtn, { backgroundColor: Colors.accent, opacity: loading ? 0.7 : 1 }]}
-            onPress={onGenerate}
-            disabled={loading}
-            activeOpacity={0.8}
-          >
-            {loading ? (
-              <ActivityIndicator color="#000" />
-            ) : (
-              <>
-                <Ionicons name="sparkles" size={16} color="#000" />
-                <Text style={styles.generateBtnText}>Generate with AI</Text>
-              </>
-            )}
-          </TouchableOpacity>
+            <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Plan Type</Text>
+            <View style={[styles.toggleRow, { backgroundColor: theme.card, borderColor: theme.border }]}>
+              <TouchableOpacity
+                style={[styles.toggleBtn, planType === "daily" && { backgroundColor: Colors.primary }]}
+                onPress={() => setPlanType("daily")}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="today-outline" size={16} color={planType === "daily" ? "#000" : theme.textSecondary} />
+                <Text style={[styles.toggleText, { color: planType === "daily" ? "#000" : theme.textSecondary }]}>
+                  Single Day
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.toggleBtn, planType === "scheduled" && { backgroundColor: Colors.primary }]}
+                onPress={() => setPlanType("scheduled")}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="calendar-outline" size={16} color={planType === "scheduled" ? "#000" : theme.textSecondary} />
+                <Text style={[styles.toggleText, { color: planType === "scheduled" ? "#000" : theme.textSecondary }]}>
+                  Full Week
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={[styles.modalLabel, { color: theme.textSecondary, marginTop: 12 }]}>Target Body Parts</Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+              {BODY_PARTS.map((part) => {
+                const selected = (preferences.bodyParts || []).includes(part);
+                return (
+                  <TouchableOpacity
+                    key={part}
+                    onPress={() => toggleBodyPart(part)}
+                    style={{
+                      paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20,
+                      backgroundColor: selected ? Colors.primary : theme.card,
+                      borderWidth: 1, borderColor: selected ? Colors.primary : theme.border,
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={{
+                      fontSize: 13, fontFamily: selected ? "Inter_600SemiBold" : "Inter_400Regular",
+                      color: selected ? "#000" : theme.textSecondary,
+                    }}>{part}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Your Preferences</Text>
+            <View style={[styles.aiInputBox, { backgroundColor: theme.card, borderColor: theme.border }]}>
+              <TextInput
+                style={[styles.aiInput, { color: theme.text }]}
+                placeholder="E.g. I want heavy compound lifts, no machines, focus on strength. I have dumbbells and a barbell..."
+                placeholderTextColor={theme.textMuted}
+                multiline
+                numberOfLines={4}
+                textAlignVertical="top"
+                value={preferences.message || ""}
+                onChangeText={(text: string) => setPreferences({ ...preferences, message: text })}
+              />
+            </View>
+
+            <View style={[styles.infoBox, { backgroundColor: theme.card, borderColor: theme.border }]}>
+              <Ionicons name="sparkles" size={16} color={Colors.accent} />
+              <Text style={[styles.infoText, { color: theme.textSecondary }]}>
+                {planType === "daily"
+                  ? "Generates one optimized workout based on your preferences."
+                  : "Creates a full weekly split tailored to your goals."}
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.generateBtn, { backgroundColor: Colors.accent, opacity: loading ? 0.7 : 1 }]}
+              onPress={onGenerate}
+              disabled={loading}
+              activeOpacity={0.8}
+            >
+              {loading ? (
+                <ActivityIndicator color="#000" />
+              ) : (
+                <>
+                  <Ionicons name="sparkles" size={16} color="#000" />
+                  <Text style={styles.generateBtnText}>Generate with AI</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -857,4 +917,6 @@ const styles = StyleSheet.create({
   infoText: { flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 17 },
   generateBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, padding: 16, borderRadius: 14, marginTop: 4 },
   generateBtnText: { color: "#000", fontSize: 16, fontFamily: "Inter_700Bold" },
+  aiInputBox: { borderRadius: 12, borderWidth: 1, padding: 12, minHeight: 100 },
+  aiInput: { fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 20, minHeight: 80 },
 });
