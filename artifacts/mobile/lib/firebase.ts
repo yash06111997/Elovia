@@ -1,7 +1,5 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
-import { getAuth, initializeAuth, getReactNativePersistence } from "firebase/auth";
 import { getDatabase } from "firebase/database";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
 
 const firebaseConfig = {
@@ -16,27 +14,16 @@ const firebaseConfig = {
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-function getFirebaseAuth() {
-  if (Platform.OS === "web") {
-    return getAuth(app);
-  }
-  try {
-    return initializeAuth(app, {
-      persistence: getReactNativePersistence(AsyncStorage),
-    });
-  } catch (e: unknown) {
-    const error = e as { code?: string; message?: string };
-    if (error.code === "auth/already-initialized" ||
-        (error.message && error.message.includes("already initialized"))) {
-      const existingAuth = getAuth(app);
-      return existingAuth;
-    }
-    return getAuth(app);
-  }
-}
+let auth: ReturnType<typeof import("firebase/auth").getAuth> | null = null;
 
-const auth = getFirebaseAuth();
+async function getFirebaseAuth() {
+  if (Platform.OS !== "web") return null;
+  if (auth) return auth;
+  const { getAuth } = await import("firebase/auth");
+  auth = getAuth(app);
+  return auth;
+}
 
 const db = getDatabase(app);
 
-export { app, auth, db };
+export { app, auth, db, getFirebaseAuth };
