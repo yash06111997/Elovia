@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Elovia — Fitness, food, and life in balance",
-    "slug": "mobile",
+    "name": "Elovia",
+    "slug": "elovia",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "mobile",
+    "scheme": "elovia",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
@@ -14,9 +14,13 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": false
+      "supportsTablet": false,
+      "bundleIdentifier": "com.elovia.app"
     },
-    "android": {},
+    "android": {
+      "package": "com.elovia.app",
+      "versionCode": 1
+    },
     "web": {
       "favicon": "./assets/images/icon.png"
     },
