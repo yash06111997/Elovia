@@ -29,9 +29,9 @@ import {
 const PROJECT_NAME = "Elovia";
 
 const APP_STORE_APP_NAME = "Elovia iOS";
-const APP_STORE_BUNDLE_ID = "com.elovia.app";
+const APP_STORE_BUNDLE_ID = "app.replit.elovia";
 const PLAY_STORE_APP_NAME = "Elovia Android";
-const PLAY_STORE_PACKAGE_NAME = "com.elovia.app";
+const PLAY_STORE_PACKAGE_NAME = "app.replit.elovia";
 
 const ENTITLEMENT_IDENTIFIER = "elovia_pro";
 const ENTITLEMENT_DISPLAY_NAME = "Elovia Pro";
