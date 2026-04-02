@@ -17,7 +17,6 @@ const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 let auth: ReturnType<typeof import("firebase/auth").getAuth> | null = null;
 
 async function getFirebaseAuth() {
-  if (Platform.OS !== "web") return null;
   if (auth) return auth;
   const { getAuth } = await import("firebase/auth");
   auth = getAuth(app);

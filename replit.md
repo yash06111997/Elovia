@@ -62,6 +62,8 @@ Elovia is a production-ready mobile health and fitness application built with Ex
   - `elovia_pro_yearly` (subscription) — iOS & Android
   - `elovia_pro_lifetime` (non_consumable) — iOS & Android
 - **All products attached** to entitlement "Elovia Pro" and packages ($rc_monthly, $rc_annual, $rc_lifetime)
+- **Test Store App**: `app1de1ff648b` — 3 test products with USD/EUR/GBP pricing for dev mode
+- **Test API Key**: `test_cDJKeSxhGQGSvdxuLrvzMbmYKfA`
 
 ### App Store Readiness
 - **Bundle ID**: `app.replit.elovia` (matches App Store Connect)

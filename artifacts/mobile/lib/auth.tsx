@@ -121,11 +121,12 @@ function getErrorMessage(err: unknown): string {
   return "Sign-in failed. Please try again.";
 }
 
-async function handleIdTokenWeb(idToken: string) {
+async function handleIdTokenFirebase(idToken: string): Promise<FirebaseUser | null> {
   const firebaseAuth = await getFirebaseAuth();
-  if (!firebaseAuth) return;
+  if (!firebaseAuth) return null;
   const credential = GoogleAuthProvider.credential(idToken);
-  await signInWithCredential(firebaseAuth, credential);
+  const result = await signInWithCredential(firebaseAuth, credential);
+  return result.user;
 }
 
 function loginWithPopupWindow(authUrl: string, state: string): Promise<string> {
@@ -188,16 +189,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return () => { mounted = false; unsubscribe?.(); };
     } else {
       AsyncStorage.multiGet([AUTH_STORAGE_KEY, AUTH_TOKEN_KEY])
-        .then(([userEntry, tokenEntry]) => {
+        .then(async ([userEntry, tokenEntry]) => {
           const savedUser = userEntry[1];
           const savedToken = tokenEntry[1];
-          if (savedUser) {
+          if (savedUser && savedToken) {
             try {
-              setUser(JSON.parse(savedUser));
-              if (savedToken) setStoredToken(savedToken);
+              const fbUser = await handleIdTokenFirebase(savedToken);
+              if (fbUser) {
+                setUser(firebaseUserToUser(fbUser));
+                setStoredToken(savedToken);
+              } else {
+                setUser(null);
+                await AsyncStorage.multiRemove([AUTH_STORAGE_KEY, AUTH_TOKEN_KEY]);
+              }
             } catch {
               setUser(null);
+              await AsyncStorage.multiRemove([AUTH_STORAGE_KEY, AUTH_TOKEN_KEY]).catch(() => {});
             }
+          } else if (savedUser) {
+            setUser(null);
+            await AsyncStorage.multiRemove([AUTH_STORAGE_KEY, AUTH_TOKEN_KEY]).catch(() => {});
           }
           setIsLoading(false);
         })
@@ -224,7 +235,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (Platform.OS === "web") {
         const authUrl = `${API_BASE}/api/auth/google-mobile?mode=popup&state=${encodeURIComponent(state)}`;
         const idToken = await loginWithPopupWindow(authUrl, state);
-        await handleIdTokenWeb(idToken);
+        await handleIdTokenFirebase(idToken);
       } else {
         const returnUrl = Linking.createURL("auth");
         const authUrl = `${API_BASE}/api/auth/google-mobile?returnUrl=${encodeURIComponent(returnUrl)}&state=${encodeURIComponent(state)}`;
@@ -248,12 +259,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const rawToken = result.url.match(/[?&]idToken=([^&]+)/)?.[1];
           const idToken = rawToken ? decodeURIComponent(rawToken) : null;
           if (idToken) {
-            const parsedUser = idTokenToUser(idToken);
-            if (parsedUser) {
-              setUser(parsedUser);
+            const fbUser = await handleIdTokenFirebase(idToken);
+            const canonicalUser = fbUser ? firebaseUserToUser(fbUser) : idTokenToUser(idToken);
+            if (canonicalUser) {
+              setUser(canonicalUser);
               setStoredToken(idToken);
               await AsyncStorage.multiSet([
-                [AUTH_STORAGE_KEY, JSON.stringify(parsedUser)],
+                [AUTH_STORAGE_KEY, JSON.stringify(canonicalUser)],
                 [AUTH_TOKEN_KEY, idToken],
               ]);
             } else {
@@ -282,10 +294,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
-      if (Platform.OS === "web") {
-        const firebaseAuth = await getFirebaseAuth();
-        if (firebaseAuth) await signOut(firebaseAuth);
-      }
+      const firebaseAuth = await getFirebaseAuth();
+      if (firebaseAuth) await signOut(firebaseAuth);
       setUser(null);
       setStoredToken(null);
       setAuthError(null);
