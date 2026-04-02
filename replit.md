@@ -15,7 +15,7 @@ Elovia is a production-ready mobile health and fitness application built with Ex
 - **Color Scheme**: Primary electric blue (`#00D4FF`) with a dark charcoal background (`#0A0A0F`). Cards are `#1A1A24` with `#2A2A3A` borders. Accents include green, orange, yellow, and red.
 - **Typography**: Inter font (400/500/600/700).
 - **Theming**: Supports both dark and light modes using a `useTheme` hook.
-- **Platform-Specific UI**: Utilizes `expo-glass-effect` and `NativeTabs` for iOS liquid glass tab bar, `expo-blur` for tab bar blur on iOS, and `expo-symbols` for SF Symbols on iOS, while using `@expo/vector-icons` (Ionicons) for Android/Web.
+- **Platform-Specific UI**: Utilizes `expo-glass-effect` and `NativeTabs` for iOS liquid glass tab bar, `expo-blur` for tab bar blur on iOS, and `expo-symbols` for SF Symbols on iOS, while using `@expo/vector-icons` (Ionicons) for Android/Web. Icon fonts (Ionicons, Feather, MaterialCommunityIcons) are loaded via `Font.loadAsync` with explicit `require()` paths in `_layout.tsx` to work around pnpm monorepo symlink resolution issues.
 
 ### Technical Implementations
 - **Framework**: Expo / React Native with Expo Router for file-based routing.

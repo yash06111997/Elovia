@@ -13,4 +13,10 @@ config.resolver.nodeModulesPaths = [
   path.resolve(workspaceRoot, "node_modules"),
 ];
 
+config.resolver.assetExts = [
+  ...(config.resolver.assetExts || []),
+  "ttf",
+  "otf",
+];
+
 module.exports = config;

@@ -5,12 +5,12 @@ import {
   Inter_700Bold,
   useFonts,
 } from "@expo-google-fonts/inter";
-import { Ionicons, Feather, MaterialCommunityIcons } from "@expo/vector-icons";
+import * as Font from "expo-font";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect } from "react";
-import { Alert } from "react-native";
+import React, { useEffect, useState } from "react";
+import { Alert, Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -46,23 +46,40 @@ function RootLayoutNav() {
 }
 
 export default function RootLayout() {
+  const [iconFontsLoaded, setIconFontsLoaded] = useState(false);
+
   const [fontsLoaded, fontError] = useFonts({
     Inter_400Regular,
     Inter_500Medium,
     Inter_600SemiBold,
     Inter_700Bold,
-    ...Ionicons.font,
-    ...Feather.font,
-    ...MaterialCommunityIcons.font,
   });
 
   useEffect(() => {
-    if (fontsLoaded || fontError) {
+    async function loadIconFonts() {
+      try {
+        if (Platform.OS !== "web") {
+          await Font.loadAsync({
+            Ionicons: require("@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Ionicons.ttf"),
+            Feather: require("@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Feather.ttf"),
+            MaterialCommunityIcons: require("@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/MaterialCommunityIcons.ttf"),
+          });
+        }
+      } catch (e) {
+        console.log("Icon font loading error (non-fatal):", e);
+      }
+      setIconFontsLoaded(true);
+    }
+    loadIconFonts();
+  }, []);
+
+  useEffect(() => {
+    if ((fontsLoaded || fontError) && iconFontsLoaded) {
       SplashScreen.hideAsync();
     }
-  }, [fontsLoaded, fontError]);
+  }, [fontsLoaded, fontError, iconFontsLoaded]);
 
-  if (!fontsLoaded && !fontError) return null;
+  if ((!fontsLoaded && !fontError) || !iconFontsLoaded) return null;
 
   return (
     <SafeAreaProvider>
