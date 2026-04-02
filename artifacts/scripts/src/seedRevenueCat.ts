@@ -63,7 +63,6 @@ const PRODUCTS: ProductConfig[] = [
     isLifetime: false,
     prices: [
       { amount_micros: 4990000, currency: "USD" },
-      { amount_micros: 299000000, currency: "INR" },
       { amount_micros: 4490000, currency: "EUR" },
       { amount_micros: 3990000, currency: "GBP" },
     ],
@@ -79,7 +78,6 @@ const PRODUCTS: ProductConfig[] = [
     isLifetime: false,
     prices: [
       { amount_micros: 29990000, currency: "USD" },
-      { amount_micros: 1499000000, currency: "INR" },
       { amount_micros: 27990000, currency: "EUR" },
       { amount_micros: 23990000, currency: "GBP" },
     ],
@@ -95,7 +93,6 @@ const PRODUCTS: ProductConfig[] = [
     isLifetime: true,
     prices: [
       { amount_micros: 79990000, currency: "USD" },
-      { amount_micros: 3999000000, currency: "INR" },
       { amount_micros: 74990000, currency: "EUR" },
       { amount_micros: 64990000, currency: "GBP" },
     ],
@@ -214,7 +211,7 @@ async function seedRevenueCat() {
     const body: CreateProductData["body"] = {
       store_identifier: productIdentifier,
       app_id: targetApp.id,
-      type: config.isLifetime ? "non_subscription" : "subscription",
+      type: config.isLifetime ? "non_consumable" : "subscription",
       display_name: config.displayName,
     };
 
@@ -252,20 +249,30 @@ async function seedRevenueCat() {
     allPlayStoreProducts.push(playStoreProduct);
 
     console.log(`Adding test store prices for ${config.displayName}...`);
-    const { data: priceData, error: priceError } = await client.post<TestStorePricesResponse>({
-      url: "/projects/{project_id}/products/{product_id}/test_store_prices",
-      path: { project_id: project.id, product_id: testStoreProduct.id },
-      body: { prices: config.prices },
-    });
-
-    if (priceError) {
-      if (priceError && typeof priceError === "object" && "type" in priceError && priceError["type"] === "resource_already_exists") {
-        console.log(`Test store prices already exist for ${config.displayName}`);
+    const apiKey = process.env.REVENUECAT_SECRET_API_KEY;
+    for (const price of config.prices) {
+      const priceResp = await fetch(
+        `https://api.revenuecat.com/v2/projects/${project.id}/products/${testStoreProduct.id}/test_store_prices`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ prices: [price] }),
+        },
+      );
+      if (priceResp.ok) {
+        console.log(`  Added ${price.currency} price for ${config.displayName}`);
       } else {
-        console.log(`Warning: Failed to add test store prices for ${config.displayName}:`, JSON.stringify(priceError));
+        const priceErr = await priceResp.json().catch(() => null);
+        if (priceErr?.type === "resource_already_exists") {
+          console.log(`  ${price.currency} price already exists for ${config.displayName}`);
+        } else {
+          console.log(`  Warning: ${price.currency} price failed (${priceResp.status}):`, priceErr?.message || JSON.stringify(priceErr));
+        }
       }
-    } else {
-      console.log(`Successfully added test store prices for ${config.displayName}`);
     }
   }
 
@@ -298,9 +305,26 @@ async function seedRevenueCat() {
         display_name: ENTITLEMENT_DISPLAY_NAME,
       },
     });
-    if (error) throw new Error("Failed to create entitlement");
-    console.log("\nCreated entitlement:", newEntitlement.id);
-    entitlement = newEntitlement;
+    if (error) {
+      if (error.type === "resource_already_exists") {
+        console.log("\nEntitlement already exists (from prior run), fetching...");
+        const { data: refetch } = await listEntitlements({
+          client,
+          path: { project_id: project.id },
+          query: { limit: 100 },
+        });
+        entitlement = refetch?.items?.find(
+          (e: any) => e.lookup_key === ENTITLEMENT_IDENTIFIER || e.display_name === ENTITLEMENT_DISPLAY_NAME
+        );
+        if (!entitlement) throw new Error("Entitlement exists but could not be fetched");
+        console.log("Found entitlement:", entitlement.id, "lookup_key:", entitlement.lookup_key);
+      } else {
+        throw new Error("Failed to create entitlement: " + JSON.stringify(error));
+      }
+    } else {
+      console.log("\nCreated entitlement:", newEntitlement.id);
+      entitlement = newEntitlement;
+    }
   }
 
   const { error: attachEntitlementError } = await attachProductsToEntitlement({

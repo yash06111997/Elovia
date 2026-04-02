@@ -24,7 +24,7 @@ Elovia is a production-ready mobile health and fitness application built with Ex
 - **Authentication**: Firebase Auth with Google Sign-In, supporting both native mobile (server-hosted auth page via `WebBrowser.openAuthSessionAsync`) and web (Firebase JS SDK `signInWithPopup`).
 - **Data Storage**: All user data is locally persisted in AsyncStorage and can be synced with Firebase Realtime Database.
 - **Data Sync**: Automatic data restore on login, periodic auto-backup every 5 minutes while authenticated, and backup on app background to Firebase Realtime Database.
-- **Subscription Model**: Implements a freemium model with a 15-day trial, managed by `SubscriptionContext`, and integrated with RevenueCat for in-app purchases.
+- **Subscription Model**: Implements a freemium model with a 15-day trial, managed by `SubscriptionContext`, and integrated with RevenueCat for in-app purchases. RevenueCat project (proj265e34c7) is fully seeded with 3 products (monthly $4.99, yearly $29.99, lifetime $79.99), entitlement "Elovia Pro", and default offering with USD/EUR/GBP pricing. User identity syncs with Firebase Auth via `Purchases.logIn/logOut`.
 - **Location Tracking**: `expo-location` is used for GPS run tracking with real-time distance tracking.
 
 ### Feature Specifications
