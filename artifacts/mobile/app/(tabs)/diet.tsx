@@ -265,7 +265,14 @@ export default function DietScreen() {
               }}
               activeOpacity={0.8}
             >
-              <Ionicons name="sparkles" size={18} color="#FF6B35" />
+              <View style={{ position: "relative" }}>
+                <Ionicons name="sparkles" size={18} color="#FF6B35" />
+                {!canAccess("ai_meal_plan") && (
+                  <View style={{ position: "absolute", top: -4, right: -4, backgroundColor: Colors.primary, borderRadius: 5, width: 10, height: 10, alignItems: "center", justifyContent: "center" }}>
+                    <Ionicons name="lock-closed" size={6} color="#000" />
+                  </View>
+                )}
+              </View>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.logBtn, { backgroundColor: Colors.accentGreen }]}
@@ -441,6 +448,11 @@ export default function DietScreen() {
                 >
                   <Ionicons name="flash-outline" size={16} color={Colors.primary} />
                   <Text style={[styles.dietQuickGenText, { color: Colors.primary }]}>Quick Generate from Profile</Text>
+                  {!canAccess("ai_meal_plan") && (
+                    <View style={{ backgroundColor: Colors.primary + "20", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
+                      <Text style={{ fontSize: 9, fontFamily: "Inter_700Bold", color: Colors.primary }}>PREMIUM</Text>
+                    </View>
+                  )}
                 </TouchableOpacity>
               </View>
             )}

@@ -249,6 +249,11 @@ export default function WorkoutsScreen() {
         >
           <Ionicons name="flash-outline" size={16} color={Colors.primary} />
           <Text style={[styles.quickGenText, { color: Colors.primary }]}>Quick Generate from Profile</Text>
+          {!canAccess("ai_workout") && (
+            <View style={{ backgroundColor: Colors.primary + "20", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
+              <Text style={{ fontSize: 9, fontFamily: "Inter_700Bold", color: Colors.primary }}>PREMIUM</Text>
+            </View>
+          )}
         </TouchableOpacity>
 
         <AIGenerateModal

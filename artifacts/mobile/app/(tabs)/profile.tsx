@@ -87,7 +87,7 @@ export default function ProfileScreen() {
   const { sessions, personalRecords } = useWorkout();
   const { healthData, toggleSync, syncHealthData, isTracking, startRunTracking, stopRunTracking, currentRun } = useHealth();
   const { user, isAuthenticated, isLoading: authLoading, login, logout } = useAuth();
-  const { state: subState, isPremium, isTrialActive, isFree, daysRemaining, trialEndDate, restorePurchases } = useSubscription();
+  const { state: subState, isPremium, isTrialActive, isFree, daysRemaining, trialEndDate, restorePurchases, canAccess } = useSubscription();
   const [syncing, setSyncing] = useState(false);
   const profile = appState.profile;
 
@@ -273,6 +273,10 @@ export default function ProfileScreen() {
           <TouchableOpacity
             style={[styles.macroEditBtn, { backgroundColor: Colors.primary + "20", borderColor: Colors.primary + "40" }]}
             onPress={() => {
+              if (!canAccess("custom_macros")) {
+                router.push("/paywall");
+                return;
+              }
               setMacroForm({
                 calories: macros.calories.toString(),
                 protein: macros.protein.toString(),
@@ -287,6 +291,11 @@ export default function ProfileScreen() {
             <Text style={[styles.macroEditText, { color: Colors.primary }]}>
               {appState.customMacros?.enabled ? "Custom Macros" : "Override Macros"}
             </Text>
+            {!canAccess("custom_macros") && (
+              <View style={{ backgroundColor: Colors.primary + "20", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginLeft: 6 }}>
+                <Ionicons name="lock-closed" size={10} color={Colors.primary} />
+              </View>
+            )}
           </TouchableOpacity>
           {appState.customMacros?.enabled && (
             <TouchableOpacity

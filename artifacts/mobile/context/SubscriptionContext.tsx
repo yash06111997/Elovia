@@ -125,15 +125,16 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
 
   const isTrialExpired =
     trialState.trialEndsAt && new Date(trialState.trialEndsAt).getTime() <= Date.now();
-  const isTrialActive =
+  const isTrialActiveLocal =
     trialState.trialUsed &&
     !!trialState.trialEndsAt &&
     !isTrialExpired;
 
   const rcSubscribed = rc.isSubscribed;
-  const isPremium = rcSubscribed || isTrialActive;
+  const isTrialActive = isTrialActiveLocal && !rcSubscribed;
+  const isPremium = rcSubscribed || isTrialActiveLocal;
   const isFree = !isPremium;
-  const daysRemaining = calculateDaysRemaining(trialState.trialEndsAt);
+  const daysRemaining = isTrialActive ? calculateDaysRemaining(trialState.trialEndsAt) : 0;
 
   const trialEndDate = trialState.trialEndsAt
     ? new Date(trialState.trialEndsAt).toLocaleDateString("en-IN", {
@@ -189,7 +190,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
 
   const state = {
     status,
-    planType: (isPremium ? (isTrialActive && !rcSubscribed ? "trial" : "premium") : "free") as PlanType,
+    planType: (rcSubscribed ? "premium" : isTrialActive ? "trial" : "free") as PlanType,
     trialUsed: trialState.trialUsed,
     trialStartedAt: trialState.trialStartedAt,
     trialEndsAt: trialState.trialEndsAt,

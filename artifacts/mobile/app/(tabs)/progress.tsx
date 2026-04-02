@@ -16,6 +16,7 @@ import { useApp } from "@/context/AppContext";
 import { MacroBar } from "@/components/MacroBar";
 import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
+import { PremiumLock } from "@/components/PremiumLock";
 
 type Tab = "strength" | "nutrition" | "body";
 
@@ -77,10 +78,14 @@ export default function ProgressScreen() {
         <StrengthTab personalRecords={personalRecords} sessions={sessions} isDark={isDark} theme={theme} />
       )}
       {activeTab === "nutrition" && (
-        <NutritionTab weeklyCalories={weeklyCalories} macros={macros} isDark={isDark} theme={theme} />
+        <PremiumLock feature="advanced_analytics">
+          <NutritionTab weeklyCalories={weeklyCalories} macros={macros} isDark={isDark} theme={theme} />
+        </PremiumLock>
       )}
       {activeTab === "body" && (
-        <BodyTab healthMetrics={appState.healthMetrics} profile={appState.profile} isDark={isDark} theme={theme} />
+        <PremiumLock feature="health_insights">
+          <BodyTab healthMetrics={appState.healthMetrics} profile={appState.profile} isDark={isDark} theme={theme} />
+        </PremiumLock>
       )}
     </ScrollView>
   );
