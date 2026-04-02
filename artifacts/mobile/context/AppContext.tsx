@@ -158,7 +158,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const saved = await AsyncStorage.getItem("@fitai_state");
       if (saved) {
         const parsed = JSON.parse(saved) as AppState;
-        setState(parsed);
+        setState({ ...defaultState, ...parsed, healthMetrics: parsed.healthMetrics ?? [] });
       }
     } catch (e) {
     } finally {
@@ -199,7 +199,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const addHealthMetric = useCallback((metric: HealthMetric) => {
     setState((prev) => {
-      const existing = prev.healthMetrics.filter((m) => m.date !== metric.date);
+      const existing = (prev.healthMetrics ?? []).filter((m) => m.date !== metric.date);
       const next = {
         ...prev,
         healthMetrics: [...existing, metric].slice(-90),
@@ -212,7 +212,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const getTodayMetric = useCallback((): HealthMetric | null => {
     const today = new Date().toISOString().split("T")[0];
     return (
-      state.healthMetrics.find((m) => m.date === today) ?? {
+      (state.healthMetrics ?? []).find((m) => m.date === today) ?? {
         date: today,
         steps: 0,
         waterLiters: 0,
@@ -224,9 +224,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const today = new Date().toISOString().split("T")[0];
     setState((prev) => {
       const existing =
-        prev.healthMetrics.find((m) => m.date === today) ?? { date: today };
+        (prev.healthMetrics ?? []).find((m) => m.date === today) ?? { date: today };
       const merged = { ...existing, ...updates };
-      const filtered = prev.healthMetrics.filter((m) => m.date !== today);
+      const filtered = (prev.healthMetrics ?? []).filter((m) => m.date !== today);
       const next = {
         ...prev,
         healthMetrics: [...filtered, merged].slice(-90),
