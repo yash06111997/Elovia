@@ -29,7 +29,7 @@ type PlanKey = "yearly" | "monthly" | "lifetime";
 export default function PaywallScreen() {
   const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
-  const { startTrial, state } = useSubscription();
+  const { startTrial, clearTrial, state } = useSubscription();
   const rc = useRevenueCat();
   const params = useLocalSearchParams<{ postOnboarding?: string }>();
   const isPostOnboarding = params.postOnboarding === "1";
@@ -96,6 +96,7 @@ export default function PaywallScreen() {
 
   const handleContinueFree = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    clearTrial();
     if (isPostOnboarding) {
       router.replace("/(tabs)");
     } else {

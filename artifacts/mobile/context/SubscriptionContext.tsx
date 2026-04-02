@@ -33,6 +33,7 @@ interface SubscriptionContextValue {
   trialEndDate: string | null;
   canAccess: (feature: PremiumFeatureKey) => boolean;
   startTrial: () => void;
+  clearTrial: () => void;
   upgradePlan: (platform: SubscriptionPlatform, period: "monthly" | "yearly") => void;
   restorePurchases: () => Promise<void>;
   cancelSubscription: () => void;
@@ -58,6 +59,7 @@ const SubscriptionContext = createContext<SubscriptionContextValue>({
   trialEndDate: null,
   canAccess: () => false,
   startTrial: () => {},
+  clearTrial: () => {},
   upgradePlan: () => {},
   restorePurchases: async () => {},
   cancelSubscription: () => {},
@@ -158,8 +160,11 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     : null;
 
   const canAccess = useCallback(
-    (_feature: PremiumFeatureKey) => isPremium,
-    [isPremium],
+    (feature: PremiumFeatureKey) => {
+      console.log(`[canAccess] feature=${feature} isPremium=${isPremium} rcSub=${rcSubscribed} trialActive=${isTrialActiveLocal} trialUsed=${trialState.trialUsed}`);
+      return isPremium;
+    },
+    [isPremium, rcSubscribed, isTrialActiveLocal, trialState.trialUsed],
   );
 
   const startTrial = useCallback(() => {
@@ -174,6 +179,10 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       trialEndsAt: end.toISOString(),
     });
   }, [trialState.trialUsed, persistTrialState]);
+
+  const clearTrial = useCallback(() => {
+    persistTrialState(defaultTrialState);
+  }, [persistTrialState]);
 
   const upgradePlan = useCallback(
     (_platform: SubscriptionPlatform, _period: "monthly" | "yearly") => {
@@ -223,6 +232,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         trialEndDate,
         canAccess,
         startTrial,
+        clearTrial,
         upgradePlan,
         restorePurchases,
         cancelSubscription,

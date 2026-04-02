@@ -87,7 +87,7 @@ export default function ProfileScreen() {
   const { sessions, personalRecords } = useWorkout();
   const { healthData, toggleSync, syncHealthData, isTracking, startRunTracking, stopRunTracking, currentRun } = useHealth();
   const { user, isAuthenticated, isLoading: authLoading, login, logout } = useAuth();
-  const { state: subState, isPremium, isTrialActive, isFree, daysRemaining, trialEndDate, restorePurchases, canAccess } = useSubscription();
+  const { state: subState, isPremium, isTrialActive, isFree, daysRemaining, trialEndDate, restorePurchases, canAccess, clearTrial } = useSubscription();
   const [syncing, setSyncing] = useState(false);
   const profile = appState.profile;
 
@@ -510,6 +510,43 @@ export default function ProfileScreen() {
             >
               <Ionicons name="diamond" size={18} color="#000" />
               <Text style={styles.loginBtnText}>Upgrade to Premium</Text>
+            </TouchableOpacity>
+          )}
+
+          {isTrialActive && (
+            <TouchableOpacity
+              onPress={() => {
+                Alert.alert(
+                  "End Trial",
+                  "This will end your free trial and switch you to the Free plan. Premium features will be locked. Continue?",
+                  [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "End Trial",
+                      style: "destructive",
+                      onPress: () => {
+                        clearTrial();
+                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+                        Alert.alert("Trial Ended", "You are now on the Free plan. Upgrade anytime from this screen.");
+                      },
+                    },
+                  ]
+                );
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.planStatusSub, { color: theme.accentRed || "#FF6B6B", textAlign: "center" }]}>End Trial Early</Text>
+            </TouchableOpacity>
+          )}
+
+          {!isFree && !isTrialActive && (
+            <TouchableOpacity
+              style={[styles.loginBtn, { backgroundColor: Colors.primary }]}
+              onPress={() => { router.push("/paywall"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); }}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="diamond" size={18} color="#000" />
+              <Text style={styles.loginBtnText}>Manage Subscription</Text>
             </TouchableOpacity>
           )}
 
