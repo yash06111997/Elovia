@@ -39,6 +39,36 @@ Elovia is a production-ready mobile health and fitness application built with Ex
 - **Backend API**: An Express API server handles AI features like food recognition and workout generation.
 - **Database Security**: Firebase Realtime Database rules ensure that only authenticated users can read/write their own data.
 
+## Production Deployment
+
+### EAS Build Configuration
+- **`eas.json`** at `artifacts/mobile/eas.json` — configured with development, preview, and production build profiles
+- **Production build**: auto-increments version, uses `EXPO_PUBLIC_DOMAIN=health-hub-yash06111997.replit.app`
+- **iOS build**: Release configuration
+- **Android build**: app-bundle format for Play Store
+
+### API Server Deployment
+- **Deployment target**: autoscale (configured in `artifact.toml`)
+- **Production URL**: `health-hub-yash06111997.replit.app`
+- **Health check**: `/api/healthz`
+- **Build**: esbuild → `dist/index.mjs`
+
+### RevenueCat Production Apps
+- **iOS App**: `app79ce9a5ade` (bundle: `app.replit.elovia`, P8 key configured, subscription key configured)
+- **Android App**: `app456ae32659` (package: `app.replit.elovia`)
+- **Live API Keys**: iOS = `appl_oLFdmGeTXzxRrGzqBRbIXqwBNjB`, Android = `goog_tJrCVZClURpSUPUzOOtAwimmOuF`
+- **Products** (6 total — 3 per store):
+  - `elovia_pro_monthly` (subscription) — iOS & Android
+  - `elovia_pro_yearly` (subscription) — iOS & Android
+  - `elovia_pro_lifetime` (non_consumable) — iOS & Android
+- **All products attached** to entitlement "Elovia Pro" and packages ($rc_monthly, $rc_annual, $rc_lifetime)
+
+### App Store Readiness
+- **Bundle ID**: `app.replit.elovia` (matches App Store Connect)
+- **Permissions declared**: Camera, Photos, Location, HealthKit (iOS), BILLING (Android)
+- **Encryption**: `ITSAppUsesNonExemptEncryption = false` (no export compliance needed)
+- **Splash background**: `#0A0A0F` (matches app dark theme)
+
 ## External Dependencies
 
 - **AI Providers**: Anthropic Claude (via Replit AI Integrations proxy).

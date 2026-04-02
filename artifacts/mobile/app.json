@@ -11,15 +11,38 @@
     "splash": {
       "image": "./assets/images/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0A0A0F"
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "app.replit.elovia"
+      "bundleIdentifier": "app.replit.elovia",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Elovia uses the camera to scan food items and log your meals with AI food recognition.",
+        "NSPhotoLibraryUsageDescription": "Elovia needs access to your photos to let you select food images for AI meal logging.",
+        "NSLocationWhenInUseUsageDescription": "Elovia uses your location to track runs and outdoor workouts in real time.",
+        "NSHealthShareUsageDescription": "Elovia reads your health data to sync steps, activity, and workouts for a complete fitness picture.",
+        "NSHealthUpdateUsageDescription": "Elovia writes workout data to Apple Health so your activity stays in sync across apps.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "app.replit.elovia",
-      "versionCode": 1
+      "versionCode": 1,
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACTIVITY_RECOGNITION",
+        "BILLING"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/icon.png",
+        "backgroundColor": "#0A0A0F"
+      }
     },
     "web": {
       "favicon": "./assets/images/icon.png"
@@ -31,11 +54,27 @@
           "origin": "https://replit.com/"
         }
       ],
-      "expo-font"
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Elovia uses your location to track runs and outdoor workouts."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Elovia needs access to your photos to select food images for AI meal logging.",
+          "cameraPermission": "Elovia uses the camera to scan food items and log meals with AI recognition."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "eas": {}
     }
   }
 }

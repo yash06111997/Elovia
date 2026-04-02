@@ -12,24 +12,26 @@ const REVENUECAT_ANDROID_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_AP
 export const REVENUECAT_ENTITLEMENT_IDENTIFIER = "Elovia Pro";
 
 function getRevenueCatApiKey(): string {
-  const isDevOrWeb =
-    __DEV__ || Platform.OS === "web" || Constants.executionEnvironment === "storeClient";
-
-  if (isDevOrWeb && REVENUECAT_TEST_API_KEY) {
-    return REVENUECAT_TEST_API_KEY;
+  if (Platform.OS === "web") {
+    if (REVENUECAT_TEST_API_KEY) return REVENUECAT_TEST_API_KEY;
+    throw new Error("No RevenueCat test API key for web");
   }
 
-  if (Platform.OS === "ios" && REVENUECAT_IOS_API_KEY) {
-    return REVENUECAT_IOS_API_KEY;
+  if (__DEV__) {
+    if (REVENUECAT_TEST_API_KEY) return REVENUECAT_TEST_API_KEY;
   }
 
-  if (Platform.OS === "android" && REVENUECAT_ANDROID_API_KEY) {
-    return REVENUECAT_ANDROID_API_KEY;
+  if (Platform.OS === "ios") {
+    if (REVENUECAT_IOS_API_KEY) return REVENUECAT_IOS_API_KEY;
+    throw new Error("EXPO_PUBLIC_REVENUECAT_IOS_API_KEY is required for iOS production builds");
   }
 
-  if (REVENUECAT_TEST_API_KEY) return REVENUECAT_TEST_API_KEY;
+  if (Platform.OS === "android") {
+    if (REVENUECAT_ANDROID_API_KEY) return REVENUECAT_ANDROID_API_KEY;
+    throw new Error("EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY is required for Android production builds");
+  }
 
-  throw new Error("No RevenueCat API key available");
+  throw new Error("No RevenueCat API key available for platform: " + Platform.OS);
 }
 
 export function initializeRevenueCat() {
