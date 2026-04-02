@@ -19,14 +19,16 @@ export function AutoSync() {
       const currentSession = ++sessionIdRef.current;
       restoreInProgressRef.current = true;
 
+      console.log("[AutoSync] Restoring data for user:", user.id);
       restoreFromFirestore(user.id)
         .then((found) => {
           if (currentSession !== sessionIdRef.current) return;
+          console.log("[AutoSync] Restore result:", found ? "data found" : "no data");
           if (found) {
             emitDataRestored();
           }
         })
-        .catch(() => {})
+        .catch((e) => { console.log("[AutoSync] Restore error:", e); })
         .finally(() => {
           if (currentSession === sessionIdRef.current) {
             restoreInProgressRef.current = false;
@@ -58,7 +60,10 @@ export function AutoSync() {
       const now = Date.now();
       if (now - lastBackupRef.current < 30000) return;
       lastBackupRef.current = now;
-      backupToFirestore(currentUserId).catch(() => {});
+      console.log("[AutoSync] Backing up data for user:", currentUserId);
+      backupToFirestore(currentUserId)
+        .then(() => { console.log("[AutoSync] Backup complete"); })
+        .catch((e) => { console.log("[AutoSync] Backup error:", e); });
     };
 
     backupTimerRef.current = setInterval(doBackup, AUTO_BACKUP_INTERVAL);

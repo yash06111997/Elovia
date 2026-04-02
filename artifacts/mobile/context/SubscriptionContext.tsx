@@ -134,6 +134,19 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
   const isTrialActive = isTrialActiveLocal && !rcSubscribed;
   const isPremium = rcSubscribed || isTrialActiveLocal;
   const isFree = !isPremium;
+
+  useEffect(() => {
+    if (isLoaded) {
+      console.log("[Subscription]", JSON.stringify({
+        isPremium,
+        rcSubscribed,
+        isTrialActiveLocal,
+        trialUsed: trialState.trialUsed,
+        trialEndsAt: trialState.trialEndsAt,
+        rcLoading: rc.isLoading,
+      }));
+    }
+  }, [isLoaded, isPremium, rcSubscribed, isTrialActiveLocal, trialState, rc.isLoading]);
   const daysRemaining = isTrialActive ? calculateDaysRemaining(trialState.trialEndsAt) : 0;
 
   const trialEndDate = trialState.trialEndsAt
