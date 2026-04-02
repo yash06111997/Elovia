@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, typ
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AppState, type AppStateStatus } from "react-native";
 import { onDataRestored } from "@/lib/syncEvents";
+import { useRevenueCat } from "@/lib/revenuecat";
 import {
   TRIAL_DURATION_DAYS,
   type PlanType,
@@ -12,20 +13,19 @@ import {
 
 const SUB_STORAGE_KEY = "@fitai_subscription";
 
-interface SubscriptionState {
-  status: SubscriptionStatus;
-  planType: PlanType;
+interface TrialState {
   trialUsed: boolean;
   trialStartedAt: string | null;
   trialEndsAt: string | null;
-  subscriptionPlatform: SubscriptionPlatform;
-  premiumAccessUntil: string | null;
-  renewalDate: string | null;
-  purchaseToken: string | null;
 }
 
+const defaultTrialState: TrialState = {
+  trialUsed: false,
+  trialStartedAt: null,
+  trialEndsAt: null,
+};
+
 interface SubscriptionContextValue {
-  state: SubscriptionState;
   isPremium: boolean;
   isTrialActive: boolean;
   isFree: boolean;
@@ -37,22 +37,20 @@ interface SubscriptionContextValue {
   restorePurchases: () => Promise<void>;
   cancelSubscription: () => void;
   isLoaded: boolean;
+  state: {
+    status: SubscriptionStatus;
+    planType: PlanType;
+    trialUsed: boolean;
+    trialStartedAt: string | null;
+    trialEndsAt: string | null;
+    subscriptionPlatform: SubscriptionPlatform;
+    premiumAccessUntil: string | null;
+    renewalDate: string | null;
+    purchaseToken: string | null;
+  };
 }
 
-const defaultState: SubscriptionState = {
-  status: "free",
-  planType: "free",
-  trialUsed: false,
-  trialStartedAt: null,
-  trialEndsAt: null,
-  subscriptionPlatform: "none",
-  premiumAccessUntil: null,
-  renewalDate: null,
-  purchaseToken: null,
-};
-
 const SubscriptionContext = createContext<SubscriptionContextValue>({
-  state: defaultState,
   isPremium: false,
   isTrialActive: false,
   isFree: true,
@@ -64,6 +62,17 @@ const SubscriptionContext = createContext<SubscriptionContextValue>({
   restorePurchases: async () => {},
   cancelSubscription: () => {},
   isLoaded: false,
+  state: {
+    status: "free",
+    planType: "free",
+    trialUsed: false,
+    trialStartedAt: null,
+    trialEndsAt: null,
+    subscriptionPlatform: "none",
+    premiumAccessUntil: null,
+    renewalDate: null,
+    purchaseToken: null,
+  },
 });
 
 function calculateDaysRemaining(trialEndsAt: string | null): number {
@@ -74,183 +83,125 @@ function calculateDaysRemaining(trialEndsAt: string | null): number {
   return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
 }
 
-function checkAndUpdateStatus(current: SubscriptionState): SubscriptionState {
-  const now = Date.now();
-
-  if (current.status === "in_trial" && current.trialEndsAt) {
-    const endTime = new Date(current.trialEndsAt).getTime();
-    if (now >= endTime) {
-      return {
-        ...current,
-        status: "free",
-        planType: "free",
-        premiumAccessUntil: null,
-      };
-    }
-  }
-
-  if (current.status === "active" && current.premiumAccessUntil) {
-    const endTime = new Date(current.premiumAccessUntil).getTime();
-    if (now >= endTime) {
-      return {
-        ...current,
-        status: "expired",
-        planType: "free",
-      };
-    }
-  }
-
-  return current;
-}
-
 export function SubscriptionProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<SubscriptionState>(defaultState);
+  const rc = useRevenueCat();
+  const [trialState, setTrialState] = useState<TrialState>(defaultTrialState);
   const [isLoaded, setIsLoaded] = useState(false);
 
-  const reconcile = useCallback((current: SubscriptionState) => {
-    const updated = checkAndUpdateStatus(current);
-    setState(updated);
-    if (updated !== current) {
-      AsyncStorage.setItem(SUB_STORAGE_KEY, JSON.stringify(updated));
-    }
-    return updated;
-  }, []);
-
-  const loadSubscription = () => {
+  const loadTrialState = useCallback(() => {
     AsyncStorage.getItem(SUB_STORAGE_KEY)
       .then((raw) => {
         if (raw) {
           try {
-            const parsed = JSON.parse(raw) as SubscriptionState;
-            reconcile(parsed);
+            const parsed = JSON.parse(raw);
+            setTrialState({
+              trialUsed: parsed.trialUsed ?? false,
+              trialStartedAt: parsed.trialStartedAt ?? null,
+              trialEndsAt: parsed.trialEndsAt ?? null,
+            });
           } catch {
-            setState(defaultState);
+            setTrialState(defaultTrialState);
           }
         }
         setIsLoaded(true);
       })
       .catch(() => setIsLoaded(true));
-  };
+  }, []);
 
   useEffect(() => {
-    loadSubscription();
-  }, [reconcile]);
+    loadTrialState();
+  }, [loadTrialState]);
 
   useEffect(() => {
     return onDataRestored(() => {
-      loadSubscription();
+      loadTrialState();
     });
-  }, [reconcile]);
+  }, [loadTrialState]);
 
-  useEffect(() => {
-    const handleAppState = (nextState: AppStateStatus) => {
-      if (nextState === "active") {
-        setState((current) => {
-          const updated = checkAndUpdateStatus(current);
-          if (updated !== current) {
-            AsyncStorage.setItem(SUB_STORAGE_KEY, JSON.stringify(updated));
-          }
-          return updated;
-        });
-      }
-    };
-    const sub = AppState.addEventListener("change", handleAppState);
-    return () => sub.remove();
-  }, []);
-
-  useEffect(() => {
-    if (state.status !== "in_trial" && state.status !== "active") return;
-    const interval = setInterval(() => {
-      setState((current) => {
-        const updated = checkAndUpdateStatus(current);
-        if (updated !== current) {
-          AsyncStorage.setItem(SUB_STORAGE_KEY, JSON.stringify(updated));
-        }
-        return updated;
-      });
-    }, 60000);
-    return () => clearInterval(interval);
-  }, [state.status]);
-
-  const persist = useCallback((newState: SubscriptionState) => {
-    setState(newState);
+  const persistTrialState = useCallback((newState: TrialState) => {
+    setTrialState(newState);
     AsyncStorage.setItem(SUB_STORAGE_KEY, JSON.stringify(newState));
   }, []);
 
-  const isPremium = state.planType === "premium" || state.planType === "trial";
-  const isTrialActive = state.status === "in_trial" && calculateDaysRemaining(state.trialEndsAt) > 0;
-  const isFree = !isPremium;
-  const daysRemaining = calculateDaysRemaining(state.trialEndsAt);
+  const isTrialExpired =
+    trialState.trialEndsAt && new Date(trialState.trialEndsAt).getTime() <= Date.now();
+  const isTrialActive =
+    trialState.trialUsed &&
+    !!trialState.trialEndsAt &&
+    !isTrialExpired;
 
-  const trialEndDate = state.trialEndsAt
-    ? new Date(state.trialEndsAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+  const rcSubscribed = rc.isSubscribed;
+  const isPremium = rcSubscribed || isTrialActive;
+  const isFree = !isPremium;
+  const daysRemaining = calculateDaysRemaining(trialState.trialEndsAt);
+
+  const trialEndDate = trialState.trialEndsAt
+    ? new Date(trialState.trialEndsAt).toLocaleDateString("en-IN", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      })
     : null;
 
   const canAccess = useCallback(
-    (_feature: PremiumFeatureKey) => {
-      return isPremium;
-    },
+    (_feature: PremiumFeatureKey) => isPremium,
     [isPremium],
   );
 
   const startTrial = useCallback(() => {
-    if (state.trialUsed) return;
+    if (trialState.trialUsed) return;
     const now = new Date();
     const end = new Date(now);
     end.setDate(end.getDate() + TRIAL_DURATION_DAYS);
 
-    const newState: SubscriptionState = {
-      ...state,
-      status: "in_trial",
-      planType: "trial",
+    persistTrialState({
       trialUsed: true,
       trialStartedAt: now.toISOString(),
       trialEndsAt: end.toISOString(),
-      premiumAccessUntil: end.toISOString(),
-    };
-    persist(newState);
-  }, [state, persist]);
+    });
+  }, [trialState.trialUsed, persistTrialState]);
 
   const upgradePlan = useCallback(
-    (platform: SubscriptionPlatform, period: "monthly" | "yearly") => {
-      const now = new Date();
-      const renewDate = new Date(now);
-      if (period === "monthly") {
-        renewDate.setMonth(renewDate.getMonth() + 1);
-      } else {
-        renewDate.setFullYear(renewDate.getFullYear() + 1);
-      }
-
-      const newState: SubscriptionState = {
-        ...state,
-        status: "active",
-        planType: "premium",
-        subscriptionPlatform: platform,
-        premiumAccessUntil: renewDate.toISOString(),
-        renewalDate: renewDate.toISOString(),
-        purchaseToken: `demo_${platform}_${period}_${Date.now()}`,
-      };
-      persist(newState);
+    (_platform: SubscriptionPlatform, _period: "monthly" | "yearly") => {
     },
-    [state, persist],
+    [],
   );
 
   const restorePurchases = useCallback(async () => {
-    await new Promise((r) => setTimeout(r, 1500));
-  }, []);
+    try {
+      await rc.restore();
+    } catch (e) {
+      console.log("Restore failed:", e);
+    }
+  }, [rc]);
 
   const cancelSubscription = useCallback(() => {
-    const newState: SubscriptionState = {
-      ...state,
-      status: "cancelled",
-    };
-    persist(newState);
-  }, [state, persist]);
+  }, []);
+
+  let status: SubscriptionStatus = "free";
+  if (rcSubscribed) {
+    status = "active";
+  } else if (isTrialActive) {
+    status = "in_trial";
+  } else if (trialState.trialUsed && isTrialExpired) {
+    status = "expired";
+  }
+
+  const state = {
+    status,
+    planType: (isPremium ? (isTrialActive && !rcSubscribed ? "trial" : "premium") : "free") as PlanType,
+    trialUsed: trialState.trialUsed,
+    trialStartedAt: trialState.trialStartedAt,
+    trialEndsAt: trialState.trialEndsAt,
+    subscriptionPlatform: "none" as SubscriptionPlatform,
+    premiumAccessUntil: null,
+    renewalDate: null,
+    purchaseToken: null,
+  };
 
   return (
     <SubscriptionContext.Provider
       value={{
-        state,
         isPremium,
         isTrialActive,
         isFree,
@@ -261,7 +212,8 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         upgradePlan,
         restorePurchases,
         cancelSubscription,
-        isLoaded,
+        isLoaded: isLoaded && !rc.isLoading,
+        state,
       }}
     >
       {children}

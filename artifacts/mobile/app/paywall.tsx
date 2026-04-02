@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Platform,
   ActivityIndicator,
+  Modal,
 } from "react-native";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -15,21 +16,58 @@ import * as Haptics from "expo-haptics";
 import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
 import { useSubscription } from "@/context/SubscriptionContext";
+import { useRevenueCat } from "@/lib/revenuecat";
 import {
   PREMIUM_FEATURES,
-  PRICING,
   PAYWALL_COPY,
   FAQ_ITEMS,
-  FREE_FEATURES,
 } from "@/constants/subscription";
+
+type PlanKey = "yearly" | "monthly" | "lifetime";
 
 export default function PaywallScreen() {
   const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
-  const { startTrial, upgradePlan, restorePurchases, state } = useSubscription();
-  const [selectedPlan, setSelectedPlan] = useState<"yearly" | "monthly">("yearly");
-  const [restoring, setRestoring] = useState(false);
+  const { startTrial, state } = useSubscription();
+  const rc = useRevenueCat();
+  const [selectedPlan, setSelectedPlan] = useState<PlanKey>("yearly");
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null);
+  const [confirmVisible, setConfirmVisible] = useState(false);
+
+  const currentOffering = rc.offerings?.current;
+  const packages = currentOffering?.availablePackages ?? [];
+
+  const monthlyPkg = packages.find(
+    (p) => p.packageType === "MONTHLY" || p.identifier === "$rc_monthly",
+  );
+  const yearlyPkg = packages.find(
+    (p) => p.packageType === "ANNUAL" || p.identifier === "$rc_annual",
+  );
+  const lifetimePkg = packages.find(
+    (p) => p.packageType === "LIFETIME" || p.identifier === "$rc_lifetime",
+  );
+
+  const monthlyPrice = monthlyPkg?.product.priceString ?? "$4.99/mo";
+  const yearlyPrice = yearlyPkg?.product.priceString ?? "$29.99/yr";
+  const lifetimePrice = lifetimePkg?.product.priceString ?? "$79.99";
+
+  const monthlyRaw = monthlyPkg?.product.price ?? 4.99;
+  const yearlyRaw = yearlyPkg?.product.price ?? 29.99;
+  const currencyCode = monthlyPkg?.product.currencyCode ?? "USD";
+
+  const yearlyMonthly = (yearlyRaw / 12).toFixed(2);
+  const yearlyMonthlyLabel =
+    currencyCode === "INR"
+      ? `₹${yearlyMonthly}/mo`
+      : `${monthlyPkg?.product.currencyCode ?? "$"}${yearlyMonthly}/mo`;
+  const savingsPercent = Math.round((1 - yearlyRaw / (monthlyRaw * 12)) * 100);
+
+  const selectedPackage =
+    selectedPlan === "yearly"
+      ? yearlyPkg
+      : selectedPlan === "lifetime"
+        ? lifetimePkg
+        : monthlyPkg;
 
   const handleStartTrial = () => {
     startTrial();
@@ -37,18 +75,33 @@ export default function PaywallScreen() {
     router.back();
   };
 
-  const handleUpgrade = () => {
-    const platform = Platform.OS === "ios" ? "apple" as const : "google" as const;
-    upgradePlan(platform, selectedPlan);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    router.back();
+  const handlePurchase = async () => {
+    if (!selectedPackage) return;
+    setConfirmVisible(true);
+  };
+
+  const confirmPurchase = async () => {
+    setConfirmVisible(false);
+    if (!selectedPackage) return;
+    try {
+      await rc.purchase(selectedPackage);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      router.back();
+    } catch (e: any) {
+      if (!e?.userCancelled) {
+        console.log("Purchase error:", e);
+      }
+    }
   };
 
   const handleRestore = async () => {
-    setRestoring(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    await restorePurchases();
-    setRestoring(false);
+    try {
+      await rc.restore();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e) {
+      console.log("Restore error:", e);
+    }
   };
 
   const showTrialButton = !state.trialUsed;
@@ -90,61 +143,104 @@ export default function PaywallScreen() {
         <View style={styles.planSection}>
           <Text style={[styles.sectionTitle, { color: theme.text }]}>Choose Your Plan</Text>
 
-          <TouchableOpacity
-            style={[
-              styles.planCard,
-              {
-                backgroundColor: selectedPlan === "yearly" ? Colors.primary + "12" : theme.card,
-                borderColor: selectedPlan === "yearly" ? Colors.primary : theme.border,
-                borderWidth: selectedPlan === "yearly" ? 2 : 1,
-              },
-            ]}
-            onPress={() => { setSelectedPlan("yearly"); Haptics.selectionAsync(); }}
-            activeOpacity={0.8}
-          >
-            <View style={styles.planBadge}>
-              <Text style={styles.planBadgeText}>BEST VALUE</Text>
-            </View>
-            <View style={styles.planInfo}>
-              <View style={styles.planRadio}>
-                <View style={[styles.radioOuter, { borderColor: selectedPlan === "yearly" ? Colors.primary : theme.textMuted }]}>
-                  {selectedPlan === "yearly" && <View style={[styles.radioInner, { backgroundColor: Colors.primary }]} />}
+          {yearlyPkg && (
+            <TouchableOpacity
+              style={[
+                styles.planCard,
+                {
+                  backgroundColor: selectedPlan === "yearly" ? Colors.primary + "12" : theme.card,
+                  borderColor: selectedPlan === "yearly" ? Colors.primary : theme.border,
+                  borderWidth: selectedPlan === "yearly" ? 2 : 1,
+                },
+              ]}
+              onPress={() => { setSelectedPlan("yearly"); Haptics.selectionAsync(); }}
+              activeOpacity={0.8}
+            >
+              <View style={styles.planBadge}>
+                <Text style={styles.planBadgeText}>BEST VALUE</Text>
+              </View>
+              <View style={styles.planInfo}>
+                <View style={styles.planRadio}>
+                  <View style={[styles.radioOuter, { borderColor: selectedPlan === "yearly" ? Colors.primary : theme.textMuted }]}>
+                    {selectedPlan === "yearly" && <View style={[styles.radioInner, { backgroundColor: Colors.primary }]} />}
+                  </View>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.planName, { color: theme.text }]}>Yearly Premium</Text>
+                  <Text style={[styles.planPrice, { color: theme.textSecondary }]}>{yearlyPrice}</Text>
+                  <Text style={[styles.planSaving, { color: Colors.accentGreen }]}>
+                    {yearlyMonthlyLabel} · Save {savingsPercent}%
+                  </Text>
                 </View>
               </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.planName, { color: theme.text }]}>Yearly Premium</Text>
-                <Text style={[styles.planPrice, { color: theme.textSecondary }]}>{PRICING.yearly.label}</Text>
-                <Text style={[styles.planSaving, { color: Colors.accentGreen }]}>
-                  {PRICING.yearly.monthlyEquivalent} · Save {PRICING.yearly.savingsPercent}%
-                </Text>
-              </View>
-            </View>
-          </TouchableOpacity>
+            </TouchableOpacity>
+          )}
 
-          <TouchableOpacity
-            style={[
-              styles.planCard,
-              {
-                backgroundColor: selectedPlan === "monthly" ? Colors.primary + "12" : theme.card,
-                borderColor: selectedPlan === "monthly" ? Colors.primary : theme.border,
-                borderWidth: selectedPlan === "monthly" ? 2 : 1,
-              },
-            ]}
-            onPress={() => { setSelectedPlan("monthly"); Haptics.selectionAsync(); }}
-            activeOpacity={0.8}
-          >
-            <View style={styles.planInfo}>
-              <View style={styles.planRadio}>
-                <View style={[styles.radioOuter, { borderColor: selectedPlan === "monthly" ? Colors.primary : theme.textMuted }]}>
-                  {selectedPlan === "monthly" && <View style={[styles.radioInner, { backgroundColor: Colors.primary }]} />}
+          {monthlyPkg && (
+            <TouchableOpacity
+              style={[
+                styles.planCard,
+                {
+                  backgroundColor: selectedPlan === "monthly" ? Colors.primary + "12" : theme.card,
+                  borderColor: selectedPlan === "monthly" ? Colors.primary : theme.border,
+                  borderWidth: selectedPlan === "monthly" ? 2 : 1,
+                },
+              ]}
+              onPress={() => { setSelectedPlan("monthly"); Haptics.selectionAsync(); }}
+              activeOpacity={0.8}
+            >
+              <View style={styles.planInfo}>
+                <View style={styles.planRadio}>
+                  <View style={[styles.radioOuter, { borderColor: selectedPlan === "monthly" ? Colors.primary : theme.textMuted }]}>
+                    {selectedPlan === "monthly" && <View style={[styles.radioInner, { backgroundColor: Colors.primary }]} />}
+                  </View>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.planName, { color: theme.text }]}>Monthly Premium</Text>
+                  <Text style={[styles.planPrice, { color: theme.textSecondary }]}>{monthlyPrice}</Text>
                 </View>
               </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.planName, { color: theme.text }]}>Monthly Premium</Text>
-                <Text style={[styles.planPrice, { color: theme.textSecondary }]}>{PRICING.monthly.label}</Text>
+            </TouchableOpacity>
+          )}
+
+          {lifetimePkg && (
+            <TouchableOpacity
+              style={[
+                styles.planCard,
+                {
+                  backgroundColor: selectedPlan === "lifetime" ? Colors.primary + "12" : theme.card,
+                  borderColor: selectedPlan === "lifetime" ? Colors.primary : theme.border,
+                  borderWidth: selectedPlan === "lifetime" ? 2 : 1,
+                },
+              ]}
+              onPress={() => { setSelectedPlan("lifetime"); Haptics.selectionAsync(); }}
+              activeOpacity={0.8}
+            >
+              <View style={styles.planBadgeLifetime}>
+                <Text style={styles.planBadgeLifetimeText}>ONE TIME</Text>
               </View>
+              <View style={styles.planInfo}>
+                <View style={styles.planRadio}>
+                  <View style={[styles.radioOuter, { borderColor: selectedPlan === "lifetime" ? Colors.primary : theme.textMuted }]}>
+                    {selectedPlan === "lifetime" && <View style={[styles.radioInner, { backgroundColor: Colors.primary }]} />}
+                  </View>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.planName, { color: theme.text }]}>Lifetime Premium</Text>
+                  <Text style={[styles.planPrice, { color: theme.textSecondary }]}>{lifetimePrice}</Text>
+                  <Text style={[styles.planSaving, { color: Colors.accentGreen }]}>Pay once, own forever</Text>
+                </View>
+              </View>
+            </TouchableOpacity>
+          )}
+
+          {packages.length === 0 && !rc.isLoading && (
+            <View style={[styles.planCard, { backgroundColor: theme.card, borderColor: theme.border, borderWidth: 1 }]}>
+              <Text style={[styles.planPrice, { color: theme.textSecondary, textAlign: "center", padding: 12 }]}>
+                Loading plans...
+              </Text>
             </View>
-          </TouchableOpacity>
+          )}
         </View>
 
         {showTrialButton ? (
@@ -158,12 +254,21 @@ export default function PaywallScreen() {
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
-            style={[styles.ctaPrimary, { backgroundColor: Colors.primary }]}
-            onPress={handleUpgrade}
+            style={[styles.ctaPrimary, { backgroundColor: Colors.primary, opacity: rc.isPurchasing ? 0.7 : 1 }]}
+            onPress={handlePurchase}
             activeOpacity={0.85}
+            disabled={rc.isPurchasing || !selectedPackage}
           >
-            <Ionicons name="diamond" size={20} color="#000" />
-            <Text style={styles.ctaPrimaryText}>Upgrade to Premium</Text>
+            {rc.isPurchasing ? (
+              <ActivityIndicator size="small" color="#000" />
+            ) : (
+              <>
+                <Ionicons name="diamond" size={20} color="#000" />
+                <Text style={styles.ctaPrimaryText}>
+                  {selectedPlan === "lifetime" ? "Buy Lifetime Access" : "Subscribe Now"}
+                </Text>
+              </>
+            )}
           </TouchableOpacity>
         )}
 
@@ -184,10 +289,10 @@ export default function PaywallScreen() {
         <TouchableOpacity
           style={styles.restoreBtn}
           onPress={handleRestore}
-          disabled={restoring}
+          disabled={rc.isRestoring}
           activeOpacity={0.7}
         >
-          {restoring ? (
+          {rc.isRestoring ? (
             <ActivityIndicator size="small" color={theme.textMuted} />
           ) : (
             <Text style={[styles.restoreText, { color: theme.textMuted }]}>{PAYWALL_COPY.ctaRestore}</Text>
@@ -253,6 +358,35 @@ export default function PaywallScreen() {
           ))}
         </View>
       </ScrollView>
+
+      <Modal visible={confirmVisible} transparent animationType="fade" onRequestClose={() => setConfirmVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <Text style={[styles.modalTitle, { color: theme.text }]}>Confirm Purchase</Text>
+            <Text style={[styles.modalBody, { color: theme.textSecondary }]}>
+              {selectedPlan === "lifetime"
+                ? `You are about to purchase Lifetime Premium for ${lifetimePrice}.`
+                : selectedPlan === "yearly"
+                  ? `You are about to subscribe to Yearly Premium for ${yearlyPrice}.`
+                  : `You are about to subscribe to Monthly Premium for ${monthlyPrice}.`}
+            </Text>
+            <TouchableOpacity
+              style={[styles.modalConfirm, { backgroundColor: Colors.primary }]}
+              onPress={confirmPurchase}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.modalConfirmText}>Confirm</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.modalCancel}
+              onPress={() => setConfirmVisible(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.modalCancelText, { color: theme.textSecondary }]}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -277,6 +411,8 @@ const styles = StyleSheet.create({
   planCard: { borderRadius: 14, padding: 16, marginTop: 12, overflow: "hidden" },
   planBadge: { position: "absolute", top: 0, right: 0, backgroundColor: Colors.primary, paddingHorizontal: 10, paddingVertical: 4, borderBottomLeftRadius: 10 },
   planBadgeText: { fontSize: 10, fontFamily: "Inter_700Bold", color: "#000", letterSpacing: 0.5 },
+  planBadgeLifetime: { position: "absolute", top: 0, right: 0, backgroundColor: Colors.accentGreen, paddingHorizontal: 10, paddingVertical: 4, borderBottomLeftRadius: 10 },
+  planBadgeLifetimeText: { fontSize: 10, fontFamily: "Inter_700Bold", color: "#000", letterSpacing: 0.5 },
   planInfo: { flexDirection: "row", alignItems: "center" },
   planRadio: { marginRight: 14 },
   radioOuter: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, alignItems: "center", justifyContent: "center" },
@@ -304,4 +440,12 @@ const styles = StyleSheet.create({
   faqHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   faqQuestion: { fontSize: 14, fontFamily: "Inter_600SemiBold", flex: 1, marginRight: 8 },
   faqAnswer: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 20, marginTop: 10 },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "center", alignItems: "center", padding: 24 },
+  modalCard: { width: "100%", maxWidth: 380, borderRadius: 20, borderWidth: 1, padding: 28, alignItems: "center" },
+  modalTitle: { fontSize: 20, fontFamily: "Inter_700Bold", marginBottom: 12 },
+  modalBody: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 21, marginBottom: 24 },
+  modalConfirm: { width: "100%", height: 50, borderRadius: 14, alignItems: "center", justifyContent: "center", marginBottom: 10 },
+  modalConfirmText: { fontSize: 16, fontFamily: "Inter_700Bold", color: "#000" },
+  modalCancel: { paddingVertical: 12 },
+  modalCancelText: { fontSize: 14, fontFamily: "Inter_500Medium" },
 });

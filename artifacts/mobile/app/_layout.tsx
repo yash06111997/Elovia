@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect } from "react";
+import { Alert } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -16,6 +17,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AutoSync } from "@/components/AutoSync";
 import { AuthProvider } from "@/lib/auth";
+import { initializeRevenueCat, RevenueCatProvider } from "@/lib/revenuecat";
 import { AppProvider } from "@/context/AppContext";
 import { WorkoutProvider } from "@/context/WorkoutContext";
 import { NutritionProvider } from "@/context/NutritionContext";
@@ -23,6 +25,12 @@ import { HealthProvider } from "@/context/HealthContext";
 import { SubscriptionProvider } from "@/context/SubscriptionContext";
 
 SplashScreen.preventAutoHideAsync();
+
+try {
+  initializeRevenueCat();
+} catch (err: any) {
+  Alert.alert("RevenueCat Unavailable", err?.message ?? "Unknown error");
+}
 
 const queryClient = new QueryClient();
 
@@ -58,20 +66,22 @@ export default function RootLayout() {
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
             <AppProvider>
-              <SubscriptionProvider>
-                <WorkoutProvider>
-                  <NutritionProvider>
-                    <HealthProvider>
-                      <AutoSync />
-                      <GestureHandlerRootView>
-                        <KeyboardProvider>
-                          <RootLayoutNav />
-                        </KeyboardProvider>
-                      </GestureHandlerRootView>
-                    </HealthProvider>
-                  </NutritionProvider>
-                </WorkoutProvider>
-              </SubscriptionProvider>
+              <RevenueCatProvider>
+                <SubscriptionProvider>
+                  <WorkoutProvider>
+                    <NutritionProvider>
+                      <HealthProvider>
+                        <AutoSync />
+                        <GestureHandlerRootView>
+                          <KeyboardProvider>
+                            <RootLayoutNav />
+                          </KeyboardProvider>
+                        </GestureHandlerRootView>
+                      </HealthProvider>
+                    </NutritionProvider>
+                  </WorkoutProvider>
+                </SubscriptionProvider>
+              </RevenueCatProvider>
             </AppProvider>
           </AuthProvider>
         </QueryClientProvider>
