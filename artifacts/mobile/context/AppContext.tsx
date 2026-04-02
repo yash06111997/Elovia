@@ -6,6 +6,7 @@ import React, {
   useState,
   useCallback,
 } from "react";
+import { onDataRestored } from "@/lib/syncEvents";
 
 export type FitnessGoal =
   | "fat_loss"
@@ -144,6 +145,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     loadState();
+  }, []);
+
+  useEffect(() => {
+    return onDataRestored(() => {
+      loadState();
+    });
   }, []);
 
   const loadState = async () => {

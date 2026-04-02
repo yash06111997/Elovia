@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { onDataRestored } from "@/lib/syncEvents";
 
 export interface Meal {
   id: string;
@@ -84,10 +85,6 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
   const [activeMealPlanType, setActiveMealPlanType] = useState<ActiveMealPlanType>("ai");
   const [activeCustomMealPlanId, setActiveCustomMealPlanId] = useState<string | null>(null);
 
-  useEffect(() => {
-    load();
-  }, []);
-
   const load = async () => {
     try {
       const [mp, fl, cmp, ampt, acmpid] = await Promise.all([
@@ -104,6 +101,16 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
       if (acmpid) setActiveCustomMealPlanId(JSON.parse(acmpid));
     } catch (e) {}
   };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  useEffect(() => {
+    return onDataRestored(() => {
+      load();
+    });
+  }, []);
 
   const setMealPlan = useCallback((plan: MealPlan) => {
     setMealPlanState(plan);

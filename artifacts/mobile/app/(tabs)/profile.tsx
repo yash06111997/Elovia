@@ -109,11 +109,13 @@ export default function ProfileScreen() {
     if (!isAuthenticated || !user) return;
     setSyncing(true);
     try {
+      const { emitDataRestored } = require("@/lib/syncEvents");
       const found = await restoreFromFirestore(user.id);
       if (!found) {
         Alert.alert("No Data", "No saved data found on your account.");
       } else {
-        Alert.alert("Restore Complete", "Your data has been restored. Please restart the app to see changes.");
+        emitDataRestored();
+        Alert.alert("Restore Complete", "Your data has been restored successfully.");
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
     } catch (e: any) {

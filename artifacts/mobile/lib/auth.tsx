@@ -10,7 +10,7 @@ import {
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { auth } from "./firebase";
+import { auth, getFirebaseAuth } from "./firebase";
 
 const AUTH_STORAGE_KEY = "@fitai_auth_user";
 const AUTH_TOKEN_KEY = "@fitai_auth_token";
@@ -122,8 +122,10 @@ function getErrorMessage(err: unknown): string {
 }
 
 async function handleIdTokenWeb(idToken: string) {
+  const firebaseAuth = await getFirebaseAuth();
+  if (!firebaseAuth) return;
   const credential = GoogleAuthProvider.credential(idToken);
-  await signInWithCredential(auth, credential);
+  await signInWithCredential(firebaseAuth, credential);
 }
 
 function loginWithPopupWindow(authUrl: string, state: string): Promise<string> {
@@ -165,15 +167,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (Platform.OS === "web") {
-      const unsubscribe = onAuthStateChanged(auth, (fbUser) => {
-        if (fbUser) {
-          setUser(firebaseUserToUser(fbUser));
-        } else {
-          setUser(null);
+      let unsubscribe: (() => void) | null = null;
+      let mounted = true;
+      getFirebaseAuth().then((firebaseAuth) => {
+        if (!mounted) return;
+        if (!firebaseAuth) {
+          setIsLoading(false);
+          return;
         }
-        setIsLoading(false);
+        unsubscribe = onAuthStateChanged(firebaseAuth, (fbUser) => {
+          if (!mounted) return;
+          if (fbUser) {
+            setUser(firebaseUserToUser(fbUser));
+          } else {
+            setUser(null);
+          }
+          setIsLoading(false);
+        });
       });
-      return unsubscribe;
+      return () => { mounted = false; unsubscribe?.(); };
     } else {
       AsyncStorage.multiGet([AUTH_STORAGE_KEY, AUTH_TOKEN_KEY])
         .then(([userEntry, tokenEntry]) => {
@@ -197,8 +209,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const getIdToken = useCallback(async (): Promise<string | null> => {
     if (Platform.OS === "web") {
-      if (!auth.currentUser) return null;
-      return auth.currentUser.getIdToken();
+      const firebaseAuth = await getFirebaseAuth();
+      if (!firebaseAuth?.currentUser) return null;
+      return firebaseAuth.currentUser.getIdToken();
     }
     return storedToken;
   }, [storedToken]);
@@ -270,7 +283,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     try {
       if (Platform.OS === "web") {
-        await signOut(auth);
+        const firebaseAuth = await getFirebaseAuth();
+        if (firebaseAuth) await signOut(firebaseAuth);
       }
       setUser(null);
       setStoredToken(null);

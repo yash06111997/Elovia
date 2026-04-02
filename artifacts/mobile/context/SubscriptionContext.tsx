@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AppState, type AppStateStatus } from "react-native";
+import { onDataRestored } from "@/lib/syncEvents";
 import {
   TRIAL_DURATION_DAYS,
   type PlanType,
@@ -115,7 +116,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     return updated;
   }, []);
 
-  useEffect(() => {
+  const loadSubscription = () => {
     AsyncStorage.getItem(SUB_STORAGE_KEY)
       .then((raw) => {
         if (raw) {
@@ -129,6 +130,16 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         setIsLoaded(true);
       })
       .catch(() => setIsLoaded(true));
+  };
+
+  useEffect(() => {
+    loadSubscription();
+  }, [reconcile]);
+
+  useEffect(() => {
+    return onDataRestored(() => {
+      loadSubscription();
+    });
   }, [reconcile]);
 
   useEffect(() => {

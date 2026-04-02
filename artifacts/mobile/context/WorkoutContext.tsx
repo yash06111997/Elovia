@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { onDataRestored } from "@/lib/syncEvents";
 
 export interface Exercise {
   id: string;
@@ -106,10 +107,6 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   const [activePlanType, setActivePlanType] = useState<ActivePlanType>("ai");
   const [activeCustomPlanId, setActiveCustomPlanId] = useState<string | null>(null);
 
-  useEffect(() => {
-    load();
-  }, []);
-
   const load = async () => {
     try {
       const [p, s, pr, active, cp, apt, acpid] = await Promise.all([
@@ -130,6 +127,16 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
       if (acpid) setActiveCustomPlanId(JSON.parse(acpid));
     } catch (e) {}
   };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  useEffect(() => {
+    return onDataRestored(() => {
+      load();
+    });
+  }, []);
 
   const setPlan = useCallback((p: WorkoutPlan) => {
     setPlanState(p);

@@ -85,7 +85,8 @@ A production-ready mobile health and fitness app built with Expo (React Native) 
 - **Run history** — last run stats (distance, duration, calories)
 - Sync Now button with last-synced timestamp
 - **Account section** — Sign in with Google (via OIDC), user profile display, cloud backup/restore buttons
-- **Data sync** — Upload/download all app data (profile, workouts, meals, health) to/from server database
+- **Data sync** — Upload/download all app data (profile, workouts, meals, health, subscription) to/from Firebase Realtime Database
+- **Auto-sync** — Automatic data restore on login, periodic auto-backup every 5 min while authenticated, backup on app background
 - Dark/light mode toggle — uses `useTheme` hook (reads from AppContext, not system preference) across all screens
 - Reset all data option
 
@@ -145,10 +146,12 @@ artifacts/mobile/
     PremiumLock.tsx       # Wraps premium features with lock overlay + upgrade prompt
     TrialExpiredModal.tsx # Shown when 15-day trial ends
     ErrorBoundary.tsx     # Error boundary
+    AutoSync.tsx          # Auto-sync: restore on login, periodic backup, backup on app background
   lib/
     firebase.ts           # Firebase app + auth + Realtime Database initialization
-    auth.tsx              # AuthProvider with Firebase Google Sign-In
+    auth.tsx              # AuthProvider with Firebase Google Sign-In (async Firebase auth init for web)
     firebaseSync.ts       # Realtime Database backup/restore — reads/writes all AsyncStorage data to users/{uid}
+    syncEvents.ts         # Event emitter for data restore notifications — contexts reload when emitted
   context/
     AppContext.tsx         # Profile, health metrics, TDEE/macros, custom macros
     WorkoutContext.tsx     # Plans, sessions, PRs

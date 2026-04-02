@@ -14,6 +14,7 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { AutoSync } from "@/components/AutoSync";
 import { AuthProvider } from "@/lib/auth";
 import { AppProvider } from "@/context/AppContext";
 import { WorkoutProvider } from "@/context/WorkoutContext";
@@ -61,6 +62,7 @@ export default function RootLayout() {
                 <WorkoutProvider>
                   <NutritionProvider>
                     <HealthProvider>
+                      <AutoSync />
                       <GestureHandlerRootView>
                         <KeyboardProvider>
                           <RootLayoutNav />

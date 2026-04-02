@@ -16,6 +16,7 @@ const ASYNC_STORAGE_KEYS = [
   "@fitai_active_meal_plan_type",
   "@fitai_active_custom_meal_plan_id",
   "@fitai_health_data",
+  "@fitai_subscription",
 ];
 
 const FIELD_MAP: Record<string, string> = {
@@ -32,6 +33,7 @@ const FIELD_MAP: Record<string, string> = {
   "@fitai_active_meal_plan_type": "activeMealPlanType",
   "@fitai_active_custom_meal_plan_id": "activeCustomMealPlanId",
   "@fitai_health_data": "healthData",
+  "@fitai_subscription": "subscription",
 };
 
 const JSON_FIELDS = new Set([
@@ -44,6 +46,7 @@ const JSON_FIELDS = new Set([
   "@fitai_food_log",
   "@fitai_custom_meal_plans",
   "@fitai_health_data",
+  "@fitai_subscription",
 ]);
 
 export async function backupToFirestore(userId: string): Promise<void> {

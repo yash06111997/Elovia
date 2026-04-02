@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Platform, Alert } from "react-native";
 import * as Location from "expo-location";
+import { onDataRestored } from "@/lib/syncEvents";
 
 export interface StepData {
   date: string;
@@ -93,16 +94,22 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
   } | null>(null);
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
   const loadData = async () => {
     try {
       const stored = await AsyncStorage.getItem("@fitai_health_data");
       if (stored) setHealthData(JSON.parse(stored));
     } catch (e) {}
   };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  useEffect(() => {
+    return onDataRestored(() => {
+      loadData();
+    });
+  }, []);
 
   const saveData = useCallback((data: HealthData) => {
     setHealthData(data);
