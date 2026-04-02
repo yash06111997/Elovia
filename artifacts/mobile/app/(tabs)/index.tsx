@@ -223,6 +223,49 @@ export default function DashboardScreen() {
         </View>
       )}
 
+      {/* AI Upgrade Prompts for free users */}
+      {isFree && (
+        <>
+          <TouchableOpacity
+            style={[styles.upgradePromptCard, { backgroundColor: Colors.primary + "10", borderColor: Colors.primary + "30" }]}
+            onPress={() => { router.push("/paywall"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
+            activeOpacity={0.85}
+          >
+            <View style={[styles.upgradePromptIcon, { backgroundColor: Colors.primary + "20" }]}>
+              <Ionicons name="sparkles" size={20} color={Colors.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.upgradePromptTitle, { color: theme.text }]}>Get a personalized AI workout plan</Text>
+              <Text style={[styles.upgradePromptSub, { color: theme.textSecondary }]}>
+                Tailored to your goals, equipment, and fitness level
+              </Text>
+            </View>
+            <View style={[styles.upgradePromptBadge, { backgroundColor: Colors.primary }]}>
+              <Text style={styles.upgradePromptBadgeText}>Try Free</Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.upgradePromptCard, { backgroundColor: Colors.accent + "10", borderColor: Colors.accent + "30" }]}
+            onPress={() => { router.push("/paywall"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
+            activeOpacity={0.85}
+          >
+            <View style={[styles.upgradePromptIcon, { backgroundColor: Colors.accent + "20" }]}>
+              <Ionicons name="camera" size={20} color={Colors.accent} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.upgradePromptTitle, { color: theme.text }]}>Scan your food with AI</Text>
+              <Text style={[styles.upgradePromptSub, { color: theme.textSecondary }]}>
+                Instantly log meals from a photo — no manual entry needed
+              </Text>
+            </View>
+            <View style={[styles.upgradePromptBadge, { backgroundColor: Colors.accent }]}>
+              <Text style={styles.upgradePromptBadgeText}>Premium</Text>
+            </View>
+          </TouchableOpacity>
+        </>
+      )}
+
       {/* Weekly Summary */}
       <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
         <Text style={[styles.cardTitle, { color: theme.text }]}>This Week</Text>
@@ -327,4 +370,10 @@ const styles = StyleSheet.create({
   subBannerSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginLeft: 24 },
   premiumBadgeRow: { flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 10, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 8, alignSelf: "flex-start" },
   premiumBadgeText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
+  upgradePromptCard: { flexDirection: "row", alignItems: "center", borderRadius: 14, borderWidth: 1, padding: 14, gap: 12 },
+  upgradePromptIcon: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  upgradePromptTitle: { fontSize: 14, fontFamily: "Inter_600SemiBold", marginBottom: 2 },
+  upgradePromptSub: { fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 17 },
+  upgradePromptBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
+  upgradePromptBadgeText: { fontSize: 11, fontFamily: "Inter_700Bold", color: "#000" },
 });

@@ -75,6 +75,7 @@ export const PREMIUM_FEATURES = [
 export const PREMIUM_FEATURE_KEYS = [
   "ai_workout",
   "ai_meal_plan",
+  "ai_food_scan",
   "advanced_analytics",
   "advanced_progress",
   "health_insights",
@@ -87,6 +88,7 @@ export type PremiumFeatureKey = (typeof PREMIUM_FEATURE_KEYS)[number];
 export const FEATURE_LOCK_MESSAGES: Record<PremiumFeatureKey, string> = {
   ai_workout: "AI-powered workout plans are a Premium feature",
   ai_meal_plan: "AI meal planning is a Premium feature",
+  ai_food_scan: "AI food recognition via camera is a Premium feature",
   advanced_analytics: "Advanced analytics are a Premium feature",
   advanced_progress: "Detailed progress tracking is a Premium feature",
   health_insights: "Health insights are a Premium feature",

@@ -177,6 +177,10 @@ export default function DietScreen() {
   };
 
   const handleScanFood = async () => {
+    if (!canAccess("ai_food_scan")) {
+      router.push("/paywall");
+      return;
+    }
     try {
       const perm = await ImagePicker.requestCameraPermissionsAsync();
       if (!perm.granted) {
@@ -232,8 +236,15 @@ export default function DietScreen() {
             >
               {scanning ? (
                 <ActivityIndicator size="small" color={Colors.primary} />
-              ) : (
+              ) : canAccess("ai_food_scan") ? (
                 <Ionicons name="camera" size={18} color={Colors.primary} />
+              ) : (
+                <View style={{ position: "relative" }}>
+                  <Ionicons name="camera" size={18} color={Colors.primary} />
+                  <View style={{ position: "absolute", top: -4, right: -4, backgroundColor: Colors.primary, borderRadius: 5, width: 10, height: 10, alignItems: "center", justifyContent: "center" }}>
+                    <Ionicons name="lock-closed" size={6} color="#000" />
+                  </View>
+                </View>
               )}
             </TouchableOpacity>
             <TouchableOpacity

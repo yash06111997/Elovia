@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -8,8 +8,9 @@ import {
   Platform,
   ActivityIndicator,
   Modal,
+  BackHandler,
 } from "react-native";
-import { router } from "expo-router";
+import { router, useLocalSearchParams, useNavigation } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -30,9 +31,22 @@ export default function PaywallScreen() {
   const insets = useSafeAreaInsets();
   const { startTrial, state } = useSubscription();
   const rc = useRevenueCat();
+  const params = useLocalSearchParams<{ postOnboarding?: string }>();
+  const isPostOnboarding = params.postOnboarding === "1";
+  const navigation = useNavigation();
   const [selectedPlan, setSelectedPlan] = useState<PlanKey>("yearly");
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null);
   const [confirmVisible, setConfirmVisible] = useState(false);
+
+  useEffect(() => {
+    navigation.setOptions({ gestureEnabled: !isPostOnboarding });
+  }, [isPostOnboarding, navigation]);
+
+  useEffect(() => {
+    if (!isPostOnboarding) return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => true);
+    return () => sub.remove();
+  }, [isPostOnboarding]);
 
   const currentOffering = rc.offerings?.current;
   const packages = currentOffering?.availablePackages ?? [];
@@ -73,7 +87,20 @@ export default function PaywallScreen() {
   const handleStartTrial = () => {
     startTrial();
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    router.back();
+    if (isPostOnboarding) {
+      router.replace("/(tabs)");
+    } else {
+      router.back();
+    }
+  };
+
+  const handleContinueFree = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (isPostOnboarding) {
+      router.replace("/(tabs)");
+    } else {
+      router.back();
+    }
   };
 
   const handlePurchase = async () => {
@@ -87,7 +114,11 @@ export default function PaywallScreen() {
     try {
       await rc.purchase(selectedPackage);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.back();
+      if (isPostOnboarding) {
+        router.replace("/(tabs)");
+      } else {
+        router.back();
+      }
     } catch (e: any) {
       if (!e?.userCancelled) {
         console.log("Purchase error:", e);
@@ -110,9 +141,11 @@ export default function PaywallScreen() {
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 20 : insets.top + 8 }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.closeBtn} activeOpacity={0.7}>
-          <Ionicons name="close" size={24} color={theme.text} />
-        </TouchableOpacity>
+        {!isPostOnboarding && (
+          <TouchableOpacity onPress={() => router.back()} style={styles.closeBtn} activeOpacity={0.7}>
+            <Ionicons name="close" size={24} color={theme.text} />
+          </TouchableOpacity>
+        )}
       </View>
 
       <ScrollView
@@ -281,10 +314,12 @@ export default function PaywallScreen() {
 
         <TouchableOpacity
           style={[styles.ctaSecondary, { borderColor: theme.border }]}
-          onPress={() => router.back()}
+          onPress={handleContinueFree}
           activeOpacity={0.7}
         >
-          <Text style={[styles.ctaSecondaryText, { color: theme.textSecondary }]}>{PAYWALL_COPY.ctaSecondary}</Text>
+          <Text style={[styles.ctaSecondaryText, { color: theme.textSecondary }]}>
+            {isPostOnboarding ? "Continue with Free" : PAYWALL_COPY.ctaSecondary}
+          </Text>
         </TouchableOpacity>
 
         <TouchableOpacity
