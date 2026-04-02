@@ -1,8 +1,9 @@
-import React, { createContext, useContext } from "react";
+import React, { createContext, useContext, useEffect, useRef } from "react";
 import { Platform } from "react-native";
 import Purchases from "react-native-purchases";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Constants from "expo-constants";
+import { useAuth } from "./auth";
 
 const REVENUECAT_TEST_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_TEST_API_KEY;
 const REVENUECAT_IOS_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY;
@@ -10,42 +11,63 @@ const REVENUECAT_ANDROID_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_AP
 
 export const REVENUECAT_ENTITLEMENT_IDENTIFIER = "elovia_pro";
 
-function getRevenueCatApiKey() {
-  if (!REVENUECAT_TEST_API_KEY || !REVENUECAT_IOS_API_KEY || !REVENUECAT_ANDROID_API_KEY) {
-    throw new Error("RevenueCat Public API Keys not found");
-  }
+function getRevenueCatApiKey(): string {
+  const isDevOrWeb =
+    __DEV__ || Platform.OS === "web" || Constants.executionEnvironment === "storeClient";
 
-  if (!REVENUECAT_ENTITLEMENT_IDENTIFIER) {
-    throw new Error("RevenueCat Entitlement Identifier not provided");
-  }
-
-  if (__DEV__ || Platform.OS === "web" || Constants.executionEnvironment === "storeClient") {
+  if (isDevOrWeb && REVENUECAT_TEST_API_KEY) {
     return REVENUECAT_TEST_API_KEY;
   }
 
-  if (Platform.OS === "ios") {
+  if (Platform.OS === "ios" && REVENUECAT_IOS_API_KEY) {
     return REVENUECAT_IOS_API_KEY;
   }
 
-  if (Platform.OS === "android") {
+  if (Platform.OS === "android" && REVENUECAT_ANDROID_API_KEY) {
     return REVENUECAT_ANDROID_API_KEY;
   }
 
-  return REVENUECAT_TEST_API_KEY;
+  if (REVENUECAT_TEST_API_KEY) return REVENUECAT_TEST_API_KEY;
+
+  throw new Error("No RevenueCat API key available");
 }
 
 export function initializeRevenueCat() {
   const apiKey = getRevenueCatApiKey();
-  if (!apiKey) throw new Error("RevenueCat Public API Key not found");
 
-  Purchases.setLogLevel(Purchases.LOG_LEVEL.DEBUG);
+  if (__DEV__) {
+    Purchases.setLogLevel(Purchases.LOG_LEVEL.DEBUG);
+  } else {
+    Purchases.setLogLevel(Purchases.LOG_LEVEL.ERROR);
+  }
+
   Purchases.configure({ apiKey });
-
   console.log("Configured RevenueCat");
 }
 
 function useRevenueCatContext() {
   const queryClient = useQueryClient();
+  const { user, isAuthenticated } = useAuth();
+  const lastUserId = useRef<string | null>(null);
+
+  useEffect(() => {
+    async function syncIdentity() {
+      try {
+        if (isAuthenticated && user?.id && user.id !== lastUserId.current) {
+          await Purchases.logIn(user.id);
+          lastUserId.current = user.id;
+          queryClient.invalidateQueries({ queryKey: ["revenuecat"] });
+        } else if (!isAuthenticated && lastUserId.current) {
+          await Purchases.logOut();
+          lastUserId.current = null;
+          queryClient.invalidateQueries({ queryKey: ["revenuecat"] });
+        }
+      } catch (e) {
+        console.log("RevenueCat identity sync error:", e);
+      }
+    }
+    syncIdentity();
+  }, [isAuthenticated, user?.id, queryClient]);
 
   const customerInfoQuery = useQuery({
     queryKey: ["revenuecat", "customer-info"],

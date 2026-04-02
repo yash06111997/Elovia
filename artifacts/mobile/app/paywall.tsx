@@ -47,20 +47,21 @@ export default function PaywallScreen() {
     (p) => p.packageType === "LIFETIME" || p.identifier === "$rc_lifetime",
   );
 
-  const monthlyPrice = monthlyPkg?.product.priceString ?? "$4.99/mo";
-  const yearlyPrice = yearlyPkg?.product.priceString ?? "$29.99/yr";
-  const lifetimePrice = lifetimePkg?.product.priceString ?? "$79.99";
+  const monthlyPrice = monthlyPkg?.product.priceString;
+  const yearlyPrice = yearlyPkg?.product.priceString;
+  const lifetimePrice = lifetimePkg?.product.priceString;
 
-  const monthlyRaw = monthlyPkg?.product.price ?? 4.99;
-  const yearlyRaw = yearlyPkg?.product.price ?? 29.99;
-  const currencyCode = monthlyPkg?.product.currencyCode ?? "USD";
+  const monthlyRaw = monthlyPkg?.product.price ?? 0;
+  const yearlyRaw = yearlyPkg?.product.price ?? 0;
 
-  const yearlyMonthly = (yearlyRaw / 12).toFixed(2);
-  const yearlyMonthlyLabel =
-    currencyCode === "INR"
-      ? `₹${yearlyMonthly}/mo`
-      : `${monthlyPkg?.product.currencyCode ?? "$"}${yearlyMonthly}/mo`;
-  const savingsPercent = Math.round((1 - yearlyRaw / (monthlyRaw * 12)) * 100);
+  const yearlyMonthlyFormatted = (() => {
+    if (!yearlyPkg || !monthlyRaw) return "";
+    const perMonth = yearlyRaw / 12;
+    const sym = yearlyPkg.product.priceString?.replace(/[\d.,\s]/g, "").trim() || "";
+    return `${sym}${perMonth.toFixed(2)}/mo`;
+  })();
+  const savingsPercent =
+    monthlyRaw > 0 ? Math.round((1 - yearlyRaw / (monthlyRaw * 12)) * 100) : 0;
 
   const selectedPackage =
     selectedPlan === "yearly"
@@ -169,7 +170,7 @@ export default function PaywallScreen() {
                   <Text style={[styles.planName, { color: theme.text }]}>Yearly Premium</Text>
                   <Text style={[styles.planPrice, { color: theme.textSecondary }]}>{yearlyPrice}</Text>
                   <Text style={[styles.planSaving, { color: Colors.accentGreen }]}>
-                    {yearlyMonthlyLabel} · Save {savingsPercent}%
+                    {yearlyMonthlyFormatted} · Save {savingsPercent}%
                   </Text>
                 </View>
               </View>
@@ -365,10 +366,10 @@ export default function PaywallScreen() {
             <Text style={[styles.modalTitle, { color: theme.text }]}>Confirm Purchase</Text>
             <Text style={[styles.modalBody, { color: theme.textSecondary }]}>
               {selectedPlan === "lifetime"
-                ? `You are about to purchase Lifetime Premium for ${lifetimePrice}.`
+                ? `You are about to purchase Lifetime Premium for ${lifetimePrice ?? "the listed price"}.`
                 : selectedPlan === "yearly"
-                  ? `You are about to subscribe to Yearly Premium for ${yearlyPrice}.`
-                  : `You are about to subscribe to Monthly Premium for ${monthlyPrice}.`}
+                  ? `You are about to subscribe to Yearly Premium for ${yearlyPrice ?? "the listed price"}.`
+                  : `You are about to subscribe to Monthly Premium for ${monthlyPrice ?? "the listed price"}.`}
             </Text>
             <TouchableOpacity
               style={[styles.modalConfirm, { backgroundColor: Colors.primary }]}
