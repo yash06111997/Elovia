@@ -192,6 +192,23 @@ export default function WorkoutsScreen() {
         </View>
 
         <TouchableOpacity
+          style={[styles.optionCard, { backgroundColor: theme.card, borderColor: Colors.accentGreen + "40" }]}
+          onPress={() => router.push("/log-workout")}
+          activeOpacity={0.8}
+        >
+          <View style={[styles.optionIconWrap, { backgroundColor: Colors.accentGreen + "20" }]}>
+            <Ionicons name="add-circle" size={28} color={Colors.accentGreen} />
+          </View>
+          <View style={styles.optionContent}>
+            <Text style={[styles.optionTitle, { color: theme.text }]}>Log Workout</Text>
+            <Text style={[styles.optionDesc, { color: theme.textSecondary }]}>
+              Start an empty workout. Add exercises and log sets one by one as you go.
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={theme.textMuted} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
           style={[styles.optionCard, { backgroundColor: theme.card, borderColor: theme.border }]}
           onPress={() => { setEditingPlan(undefined); setShowPlanBuilder(true); }}
           activeOpacity={0.8}
@@ -287,6 +304,15 @@ export default function WorkoutsScreen() {
         contentContainerStyle={[styles.content, { paddingTop: topPadding, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 80 }]}
         showsVerticalScrollIndicator={false}
       >
+        <TouchableOpacity
+          style={[styles.freeWorkoutBtn, { backgroundColor: Colors.accentGreen + "15", borderColor: Colors.accentGreen + "40" }]}
+          onPress={() => router.push("/log-workout")}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="add-circle" size={20} color={Colors.accentGreen} />
+          <Text style={[styles.freeWorkoutBtnText, { color: Colors.accentGreen }]}>Log Workout</Text>
+        </TouchableOpacity>
+
         {/* Plan/History Toggle */}
         <View style={[styles.viewToggle, { backgroundColor: theme.card, borderColor: theme.border }]}>
           <TouchableOpacity
@@ -845,6 +871,8 @@ const styles = StyleSheet.create({
   optionDesc: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 18 },
   quickGenBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, padding: 14, borderRadius: 12, borderWidth: 1 },
   quickGenText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  freeWorkoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 12, borderWidth: 1 },
+  freeWorkoutBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   viewToggle: { flexDirection: "row", borderRadius: 12, borderWidth: 1, padding: 4, gap: 4 },
   viewToggleBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 9, borderRadius: 9 },
   viewToggleText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },

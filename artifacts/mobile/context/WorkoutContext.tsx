@@ -44,11 +44,14 @@ export interface ExerciseLog {
   notes?: string;
 }
 
+export type SetType = "normal" | "warmup" | "dropset" | "failure";
+
 export interface SetLog {
   setNumber: number;
   reps: number;
   weightKg: number;
   completed: boolean;
+  setType?: SetType;
 }
 
 export interface PersonalRecord {
@@ -82,8 +85,15 @@ interface WorkoutContextType {
   activeCustomPlanId: string | null;
   setPlan: (plan: WorkoutPlan) => void;
   startSession: (day: WorkoutDay) => void;
+  startFreeSession: (name?: string) => void;
+  addExerciseToSession: (exerciseName: string, exerciseId?: string) => void;
+  addSetToExercise: (exerciseIndex: number, set: Omit<SetLog, "setNumber">) => void;
+  updateSetInExercise: (exerciseIndex: number, setIndex: number, set: Partial<SetLog>) => void;
+  removeSetFromExercise: (exerciseIndex: number, setIndex: number) => void;
+  removeExerciseFromSession: (exerciseIndex: number) => void;
   logSet: (exerciseId: string, exerciseName: string, set: SetLog) => void;
   completeSession: (durationMins: number) => void;
+  cancelSession: () => void;
   getExerciseHistory: (exerciseId: string) => SetLog[];
   getPersonalRecord: (exerciseId: string) => PersonalRecord | null;
   getLastPerformance: (exerciseId: string) => { date: string; sets: SetLog[] } | null;
@@ -155,6 +165,93 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
     };
     setActiveSession(session);
     AsyncStorage.setItem("@fitai_active_session", JSON.stringify(session));
+  }, []);
+
+  const startFreeSession = useCallback((name?: string) => {
+    const session: WorkoutSession = {
+      id: Date.now().toString(),
+      date: new Date().toISOString().split("T")[0],
+      workoutDayId: "free",
+      workoutDayName: name || "Free Workout",
+      exerciseLogs: [],
+      durationMins: 0,
+      completed: false,
+    };
+    setActiveSession(session);
+    AsyncStorage.setItem("@fitai_active_session", JSON.stringify(session));
+  }, []);
+
+  const addExerciseToSession = useCallback((exerciseName: string, exerciseId?: string) => {
+    setActiveSession((prev) => {
+      if (!prev) return prev;
+      const id = exerciseId || exerciseName.toLowerCase().replace(/\s+/g, "_");
+      const newLog: ExerciseLog = {
+        exerciseId: id,
+        exerciseName,
+        sets: [],
+        date: prev.date,
+      };
+      const updated = { ...prev, exerciseLogs: [...prev.exerciseLogs, newLog] };
+      AsyncStorage.setItem("@fitai_active_session", JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  const addSetToExercise = useCallback((exerciseIndex: number, set: Omit<SetLog, "setNumber">) => {
+    setActiveSession((prev) => {
+      if (!prev) return prev;
+      const logs = [...prev.exerciseLogs];
+      if (!logs[exerciseIndex]) return prev;
+      const existingSets = logs[exerciseIndex].sets;
+      const newSet: SetLog = { ...set, setNumber: existingSets.length + 1 };
+      logs[exerciseIndex] = { ...logs[exerciseIndex], sets: [...existingSets, newSet] };
+      const updated = { ...prev, exerciseLogs: logs };
+      AsyncStorage.setItem("@fitai_active_session", JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  const updateSetInExercise = useCallback((exerciseIndex: number, setIndex: number, setUpdate: Partial<SetLog>) => {
+    setActiveSession((prev) => {
+      if (!prev) return prev;
+      const logs = [...prev.exerciseLogs];
+      if (!logs[exerciseIndex] || !logs[exerciseIndex].sets[setIndex]) return prev;
+      const sets = [...logs[exerciseIndex].sets];
+      sets[setIndex] = { ...sets[setIndex], ...setUpdate };
+      logs[exerciseIndex] = { ...logs[exerciseIndex], sets };
+      const updated = { ...prev, exerciseLogs: logs };
+      AsyncStorage.setItem("@fitai_active_session", JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  const removeSetFromExercise = useCallback((exerciseIndex: number, setIndex: number) => {
+    setActiveSession((prev) => {
+      if (!prev) return prev;
+      const logs = [...prev.exerciseLogs];
+      if (!logs[exerciseIndex]) return prev;
+      const sets = logs[exerciseIndex].sets.filter((_, i) => i !== setIndex)
+        .map((s, i) => ({ ...s, setNumber: i + 1 }));
+      logs[exerciseIndex] = { ...logs[exerciseIndex], sets };
+      const updated = { ...prev, exerciseLogs: logs };
+      AsyncStorage.setItem("@fitai_active_session", JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  const removeExerciseFromSession = useCallback((exerciseIndex: number) => {
+    setActiveSession((prev) => {
+      if (!prev) return prev;
+      const logs = prev.exerciseLogs.filter((_, i) => i !== exerciseIndex);
+      const updated = { ...prev, exerciseLogs: logs };
+      AsyncStorage.setItem("@fitai_active_session", JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  const cancelSession = useCallback(() => {
+    setActiveSession(null);
+    AsyncStorage.removeItem("@fitai_active_session");
   }, []);
 
   const logSet = useCallback(
@@ -370,8 +467,15 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
         activeCustomPlanId,
         setPlan,
         startSession,
+        startFreeSession,
+        addExerciseToSession,
+        addSetToExercise,
+        updateSetInExercise,
+        removeSetFromExercise,
+        removeExerciseFromSession,
         logSet,
         completeSession,
+        cancelSession,
         getExerciseHistory,
         getPersonalRecord,
         getLastPerformance,
