@@ -11,14 +11,17 @@ const REVENUECAT_ANDROID_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_AP
 
 export const REVENUECAT_ENTITLEMENT_IDENTIFIER = "Elovia Pro";
 
-function getRevenueCatApiKey(): string {
-  if (Platform.OS === "web") {
-    if (REVENUECAT_TEST_API_KEY) return REVENUECAT_TEST_API_KEY;
-    throw new Error("No RevenueCat test API key for web");
-  }
+function isExpoGo(): boolean {
+  return Constants.appOwnership === "expo";
+}
 
-  if (__DEV__) {
+function getRevenueCatApiKey(): string {
+  if (Platform.OS === "web" || isExpoGo()) {
     if (REVENUECAT_TEST_API_KEY) return REVENUECAT_TEST_API_KEY;
+    throw new Error(
+      "EXPO_PUBLIC_REVENUECAT_TEST_API_KEY is required for Expo Go / web. " +
+      "See https://rev.cat/sdk-test-store"
+    );
   }
 
   if (Platform.OS === "ios") {
