@@ -355,7 +355,7 @@ export default function ProfileScreen() {
           <HealthSyncCard
             icon="logo-apple"
             label="Apple Health"
-            connected={healthData.syncStatus.appleHealth}
+            connected={healthData?.syncStatus?.appleHealth ?? false}
             onToggle={() => { toggleSync("appleHealth"); Haptics.selectionAsync(); }}
             theme={theme}
             color="#FF2D55"
@@ -363,7 +363,7 @@ export default function ProfileScreen() {
           <HealthSyncCard
             icon="fitness-outline"
             label="Google Fit"
-            connected={healthData.syncStatus.googleFit}
+            connected={healthData?.syncStatus?.googleFit ?? false}
             onToggle={() => { toggleSync("googleFit"); Haptics.selectionAsync(); }}
             theme={theme}
             color="#4285F4"
@@ -371,7 +371,7 @@ export default function ProfileScreen() {
           <HealthSyncCard
             icon="footsteps-outline"
             label="Step Counter"
-            connected={healthData.syncStatus.stepsEnabled}
+            connected={healthData?.syncStatus?.stepsEnabled ?? false}
             onToggle={() => { toggleSync("stepsEnabled"); Haptics.selectionAsync(); }}
             theme={theme}
             color={Colors.accentGreen}
@@ -379,14 +379,14 @@ export default function ProfileScreen() {
           <HealthSyncCard
             icon="navigate-outline"
             label="GPS Tracking"
-            connected={healthData.syncStatus.locationEnabled}
+            connected={healthData?.syncStatus?.locationEnabled ?? false}
             onToggle={() => { toggleSync("locationEnabled"); Haptics.selectionAsync(); }}
             theme={theme}
             color={Colors.accent}
           />
         </View>
 
-        {healthData.todaySteps > 0 && (
+        {(healthData?.todaySteps ?? 0) > 0 && (
           <View style={[styles.stepsRow, { borderTopColor: theme.border }]}>
             <Ionicons name="footsteps" size={18} color={Colors.accentGreen} />
             <View style={{ flex: 1 }}>
@@ -397,14 +397,14 @@ export default function ProfileScreen() {
             </View>
             <View style={[styles.stepsProgress, { backgroundColor: isDark ? "#1A1A24" : "#E4E6F0" }]}>
               <View style={[styles.stepsProgressFill, {
-                width: `${Math.min(100, (healthData.todaySteps / 10000) * 100)}%`,
+                width: `${Math.min(100, ((healthData?.todaySteps ?? 0) / 10000) * 100)}%`,
                 backgroundColor: Colors.accentGreen,
               }]} />
             </View>
           </View>
         )}
 
-        {healthData.runSessions.length > 0 && (
+        {healthData?.runSessions?.length > 0 && (
           <View style={[styles.recentRunRow, { borderTopColor: theme.border }]}>
             <Ionicons name="walk-outline" size={18} color={Colors.accent} />
             <View style={{ flex: 1 }}>
