@@ -11,7 +11,13 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Colors } from "@/constants/colors";
-import { foodCategories, searchFoods, getFoodsByCategory, FoodItem } from "@/utils/foodDatabase";
+import {
+  foodCategories,
+  searchFoods,
+  getFoodsByCategory,
+  filterByDiet,
+  FoodItem,
+} from "@/utils/foodDatabase";
 import { useApp } from "@/context/AppContext";
 
 interface Props {
@@ -31,9 +37,15 @@ export function FoodSearch({ visible, onClose, onSelect, isDark }: Props) {
   const [servings, setServings] = useState("1");
 
   const results = useMemo(() => {
-    if (query.trim()) return searchFoods(query, dietaryPreference);
-    if (selectedCategory) return getFoodsByCategory(selectedCategory, dietaryPreference);
-    return [];
+    const base = query.trim()
+      ? searchFoods(query)
+      : selectedCategory
+        ? getFoodsByCategory(selectedCategory)
+        : [];
+    // Respect the user's dietary preference. searchFoods' second parameter is
+    // a CATEGORY, not a diet - passing the preference there filtered by a
+    // category that never matches, so this filtering never actually ran.
+    return dietaryPreference ? filterByDiet(base, dietaryPreference) : base;
   }, [query, selectedCategory, dietaryPreference]);
 
   const handleSelect = (food: FoodItem) => {
@@ -104,7 +116,7 @@ export function FoodSearch({ visible, onClose, onSelect, isDark }: Props) {
                   <Ionicons name="restaurant-outline" size={18} color={Colors.primary} />
                   <Text style={[styles.categoryName, { color: theme.text }]}>{item}</Text>
                   <Text style={[styles.categoryCount, { color: theme.textSecondary }]}>
-                    {getFoodsByCategory(item, dietaryPreference).length} items
+                    {filterByDiet(getFoodsByCategory(item), dietaryPreference ?? "").length} items
                   </Text>
                   <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
                 </TouchableOpacity>
