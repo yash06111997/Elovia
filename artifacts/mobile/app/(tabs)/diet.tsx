@@ -27,6 +27,7 @@ import { recognizeFood, generateAIMealPlan } from "@/utils/api";
 import { Colors } from "@/constants/colors";
 import { CustomMealPlanBuilder } from "@/screens/CustomMealPlanBuilder";
 import type { FoodItem } from "@/utils/foodDatabase";
+import { handleAiError } from "@/utils/aiErrors";
 import type { DietType } from "@/context/AppContext";
 import { useTheme } from "@/hooks/useTheme";
 
@@ -141,7 +142,7 @@ export default function DietScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert("Meal Plan Generated", result.summary || "Your personalized AI meal plan is ready!");
     } catch (e: any) {
-      Alert.alert("Error", e.message || "Failed to generate meal plan. Please try again.");
+      handleAiError(e, "Failed to generate meal plan. Please try again.");
     } finally {
       setAiGenerating(false);
     }
@@ -206,7 +207,7 @@ export default function DietScreen() {
       Alert.alert("Food Recognized", `${analysis.description}\n\nAdded ${analysis.foods.length} item(s) totaling ${analysis.totalCalories} kcal.`);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: any) {
-      Alert.alert("Error", e.message || "Failed to analyze food photo.");
+      handleAiError(e, "Failed to analyze food photo.");
     } finally {
       setScanning(false);
     }
@@ -804,7 +805,8 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold" },
   smallBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1 },
   smallBtnText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
-  emptyState: { gap: 14, paddingVertical: 8 },
+  emptyState: { gap: 14, paddingVertical: 8, alignItems: "center" },
+  emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 20 },
   dietOptionCard: { flexDirection: "row", alignItems: "center", padding: 18, borderRadius: 16, borderWidth: 1, gap: 14 },
   dietOptionIcon: { width: 50, height: 50, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   dietOptionContent: { flex: 1, gap: 4 },

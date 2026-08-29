@@ -24,6 +24,8 @@ import { WorkoutProvider } from "@/context/WorkoutContext";
 import { NutritionProvider } from "@/context/NutritionContext";
 import { HealthProvider } from "@/context/HealthContext";
 import { SubscriptionProvider } from "@/context/SubscriptionContext";
+import { WellnessProvider } from "@/context/WellnessContext";
+import { configureNotificationHandler } from "@/lib/notifications";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -32,6 +34,10 @@ try {
 } catch (err: any) {
   console.warn("RevenueCat init error:", err?.message ?? "Unknown error");
 }
+
+// Must run before the first notification is delivered, so it lives at module
+// scope rather than in an effect.
+configureNotificationHandler();
 
 const queryClient = new QueryClient();
 
@@ -42,6 +48,14 @@ function RootLayoutNav() {
       <Stack.Screen name="onboarding/index" options={{ headerShown: false, presentation: "fullScreenModal" }} />
       <Stack.Screen name="paywall" options={{ headerShown: false, presentation: "fullScreenModal" }} />
       <Stack.Screen name="log-workout" options={{ headerShown: false, presentation: "fullScreenModal" }} />
+      <Stack.Screen name="plans" options={{ headerShown: true, title: "Training Programmes" }} />
+      <Stack.Screen name="hydration" options={{ headerShown: true, title: "Hydration" }} />
+      <Stack.Screen name="supplements" options={{ headerShown: true, title: "Supplements" }} />
+      <Stack.Screen name="coach" options={{ headerShown: true, title: "Coach" }} />
+      <Stack.Screen name="run" options={{ headerShown: true, title: "Record Activity" }} />
+      <Stack.Screen name="places" options={{ headerShown: true, title: "My Places" }} />
+      <Stack.Screen name="achievements" options={{ headerShown: true, title: "Achievements" }} />
+      <Stack.Screen name="scan" options={{ headerShown: true, title: "Scan barcode" }} />
     </Stack>
   );
 }
@@ -93,12 +107,14 @@ export default function RootLayout() {
                   <WorkoutProvider>
                     <NutritionProvider>
                       <HealthProvider>
+                        <WellnessProvider>
                         <AutoSync />
                         <GestureHandlerRootView>
                           <KeyboardProvider>
                             <RootLayoutNav />
                           </KeyboardProvider>
                         </GestureHandlerRootView>
+                        </WellnessProvider>
                       </HealthProvider>
                     </NutritionProvider>
                   </WorkoutProvider>

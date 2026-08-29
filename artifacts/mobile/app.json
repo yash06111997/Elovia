@@ -20,12 +20,23 @@
         "NSCameraUsageDescription": "Elovia uses the camera to scan food items and log your meals with AI food recognition.",
         "NSPhotoLibraryUsageDescription": "Elovia needs access to your photos to let you select food images for AI meal logging.",
         "NSLocationWhenInUseUsageDescription": "Elovia uses your location to track runs and outdoor workouts in real time.",
-        "NSHealthShareUsageDescription": "Elovia reads your health data to sync steps, activity, and workouts for a complete fitness picture.",
-        "NSHealthUpdateUsageDescription": "Elovia writes workout data to Apple Health so your activity stays in sync across apps.",
-        "ITSAppUsesNonExemptEncryption": false
+        "NSHealthShareUsageDescription": "Elovia reads your steps, workouts, sleep, and heart data so your dashboard and AI plans reflect what you actually did.",
+        "NSHealthUpdateUsageDescription": "Elovia saves the workouts and runs you complete to Apple Health so they appear alongside your other activity.",
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSMotionUsageDescription": "Elovia uses motion data to count your daily steps.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Elovia uses your location in the background to detect when you arrive at your gym so it can offer to start your session. You can turn this off at any time.",
+        "UIBackgroundModes": [
+          "location",
+          "fetch",
+          "remote-notification"
+        ]
       },
       "config": {
         "usesNonExemptEncryption": false
+      },
+      "entitlements": {
+        "com.apple.developer.healthkit": true,
+        "com.apple.developer.healthkit.access": []
       }
     },
     "android": {
@@ -37,7 +48,25 @@
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
         "ACTIVITY_RECOGNITION",
-        "BILLING"
+        "BILLING",
+        "android.permission.health.READ_STEPS",
+        "android.permission.health.READ_ACTIVE_CALORIES_BURNED",
+        "android.permission.health.READ_TOTAL_CALORIES_BURNED",
+        "android.permission.health.READ_DISTANCE",
+        "android.permission.health.READ_EXERCISE",
+        "android.permission.health.READ_SLEEP",
+        "android.permission.health.READ_RESTING_HEART_RATE",
+        "android.permission.health.READ_HEART_RATE_VARIABILITY",
+        "android.permission.health.READ_WEIGHT",
+        "android.permission.health.WRITE_EXERCISE",
+        "android.permission.health.WRITE_ACTIVE_CALORIES_BURNED",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "POST_NOTIFICATIONS",
+        "RECEIVE_BOOT_COMPLETED",
+        "SCHEDULE_EXACT_ALARM",
+        "VIBRATE"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
@@ -58,7 +87,10 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Elovia uses your location to track runs and outdoor workouts."
+          "locationWhenInUsePermission": "Elovia uses your location to track runs and outdoor workouts.",
+          "locationAlwaysAndWhenInUsePermission": "Elovia detects when you arrive at your gym so it can offer to start your session.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isIosBackgroundLocationEnabled": true
         }
       ],
       [
@@ -66,6 +98,36 @@
         {
           "photosPermission": "Elovia needs access to your photos to select food images for AI meal logging.",
           "cameraPermission": "Elovia uses the camera to scan food items and log meals with AI recognition."
+        }
+      ],
+      [
+        "@kingstinct/react-native-healthkit",
+        {
+          "NSHealthShareUsageDescription": "Elovia reads your steps, workouts, sleep, and heart data so your dashboard and AI plans reflect what you actually did.",
+          "NSHealthUpdateUsageDescription": "Elovia saves the workouts and runs you complete to Apple Health so they appear alongside your other activity.",
+          "background": true
+        }
+      ],
+      "react-native-health-connect",
+      [
+        "expo-sensors",
+        {
+          "motionPermission": "Elovia uses motion data to count your daily steps."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#00D4FF",
+          "defaultChannel": "reminders"
+        }
+      ],
+      "expo-task-manager",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Elovia uses the camera to scan food and barcodes so it can estimate calories."
         }
       ]
     ],

@@ -10,6 +10,7 @@ import {
   Alert,
   Switch,
   Modal,
+  ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -21,7 +22,8 @@ import { useWorkout } from "@/context/WorkoutContext";
 import { useHealth } from "@/context/HealthContext";
 import { useAuth } from "@/lib/auth";
 import { useSubscription } from "@/context/SubscriptionContext";
-import { backupToFirestore, restoreFromFirestore } from "@/lib/firebaseSync";
+import { backupToCloud, restoreFromCloud, migrateLegacyFirebaseData } from "@/lib/cloudSync";
+import { emitDataRestored } from "@/lib/syncEvents";
 import { NumberEditModal } from "@/components/NumberEditModal";
 import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
@@ -85,7 +87,7 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { state: appState, calculateTDEE, calculateMacros, toggleColorScheme, updateProfileField, setCustomMacros } = useApp();
   const { sessions, personalRecords } = useWorkout();
-  const { healthData, toggleSync, syncHealthData, isTracking, startRunTracking, stopRunTracking, currentRun } = useHealth();
+  const { healthData, toggleSync, syncHealthData, isTracking, startRunTracking, stopRunTracking, currentRun, status: healthStatus, isSyncing, connectHealth, backendName } = useHealth();
   const { user, isAuthenticated, isLoading: authLoading, login, logout } = useAuth();
   const { state: subState, isPremium, isTrialActive, isFree, daysRemaining, trialEndDate, restorePurchases, canAccess, clearTrial } = useSubscription();
   const [syncing, setSyncing] = useState(false);
@@ -95,11 +97,26 @@ export default function ProfileScreen() {
     if (!isAuthenticated || !user) return;
     setSyncing(true);
     try {
-      await backupToFirestore(user.id);
-      Alert.alert("Backup Complete", "Your data has been saved to Firebase.");
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      const result = await backupToCloud();
+
+      if (result.ok) {
+        Alert.alert("Backup complete", "Your data has been saved to your account.");
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        return;
+      }
+
+      // "empty" is a guard, not a failure: uploading an empty device would
+      // overwrite whatever the account already holds.
+      Alert.alert(
+        result.reason === "empty" ? "Nothing to back up" : "Backup failed",
+        result.reason === "empty"
+          ? "There is no workout or nutrition data on this device yet."
+          : result.reason === "network"
+            ? "Could not reach the server. Check your connection and try again."
+            : "Something went wrong saving your data. Please try again.",
+      );
     } catch (e: any) {
-      Alert.alert("Backup Failed", e.message || "Could not save data. Please try again.");
+      Alert.alert("Backup failed", e?.message || "Could not save data. Please try again.");
     } finally {
       setSyncing(false);
     }
@@ -109,13 +126,19 @@ export default function ProfileScreen() {
     if (!isAuthenticated || !user) return;
     setSyncing(true);
     try {
-      const { emitDataRestored } = require("@/lib/syncEvents");
-      const found = await restoreFromFirestore(user.id);
+      let found = await restoreFromCloud();
+
+      // Fall back to the legacy Realtime Database for accounts that predate
+      // the move to Postgres.
       if (!found) {
-        Alert.alert("No Data", "No saved data found on your account.");
+        found = await migrateLegacyFirebaseData(user.id);
+      }
+
+      if (!found) {
+        Alert.alert("No data", "No saved data was found on your account.");
       } else {
         emitDataRestored();
-        Alert.alert("Restore Complete", "Your data has been restored successfully.");
+        Alert.alert("Restore complete", "Your data has been restored.");
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
     } catch (e: any) {
@@ -352,22 +375,28 @@ export default function ProfileScreen() {
 
       <SectionCard title="Health Data Sync" isDark={isDark} theme={theme} subtitle="Connect devices & apps">
         <View style={styles.healthSyncGrid}>
-          <HealthSyncCard
-            icon="logo-apple"
-            label="Apple Health"
-            connected={healthData?.syncStatus?.appleHealth ?? false}
-            onToggle={() => { toggleSync("appleHealth"); Haptics.selectionAsync(); }}
-            theme={theme}
-            color="#FF2D55"
-          />
-          <HealthSyncCard
-            icon="fitness-outline"
-            label="Google Fit"
-            connected={healthData?.syncStatus?.googleFit ?? false}
-            onToggle={() => { toggleSync("googleFit"); Haptics.selectionAsync(); }}
-            theme={theme}
-            color="#4285F4"
-          />
+          {/* Only the card for THIS platform is shown. Offering an Apple Health
+              toggle on Android (and vice versa) was always a dead control. */}
+          {Platform.OS === "ios" && (
+            <HealthSyncCard
+              icon="logo-apple"
+              label="Apple Health"
+              connected={healthData?.syncStatus?.appleHealth ?? false}
+              onToggle={() => { toggleSync("appleHealth"); Haptics.selectionAsync(); }}
+              theme={theme}
+              color="#FF2D55"
+            />
+          )}
+          {Platform.OS === "android" && (
+            <HealthSyncCard
+              icon="fitness-outline"
+              label="Health Connect"
+              connected={healthData?.syncStatus?.googleFit ?? false}
+              onToggle={() => { toggleSync("googleFit"); Haptics.selectionAsync(); }}
+              theme={theme}
+              color="#4285F4"
+            />
+          )}
           <HealthSyncCard
             icon="footsteps-outline"
             label="Step Counter"
@@ -385,6 +414,45 @@ export default function ProfileScreen() {
             color={Colors.accent}
           />
         </View>
+
+        {/* Tell the user WHY a source is unavailable instead of showing a
+            switch that silently does nothing. */}
+        {healthStatus?.platform?.requiresDevBuild && (
+          <View style={[styles.healthNotice, { borderTopColor: theme.border }]}>
+            <Ionicons name="information-circle-outline" size={16} color={theme.textMuted} />
+            <Text style={[styles.healthNoticeText, { color: theme.textMuted }]}>
+              {Platform.OS === "ios" ? "Apple Health" : "Health Connect"} needs the full
+              app build. Step tracking works here; workouts, sleep and heart data need
+              the installed app.
+            </Text>
+          </View>
+        )}
+
+        {healthStatus?.hasAnySource && (
+          <View style={[styles.healthNotice, { borderTopColor: theme.border }]}>
+            <Ionicons name="pulse-outline" size={16} color={Colors.accentGreen} />
+            <Text style={[styles.healthNoticeText, { color: theme.textSecondary }]}>
+              Reading from {backendName}
+              {healthData?.lastSynced
+                ? ` · updated ${new Date(healthData.lastSynced).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+                : ""}
+            </Text>
+            {isSyncing && <ActivityIndicator size="small" color={Colors.primary} />}
+          </View>
+        )}
+
+        {!healthStatus?.hasAnySource && Platform.OS !== "web" && (
+          <TouchableOpacity
+            style={[styles.connectHealthBtn, { borderColor: Colors.primary }]}
+            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); void connectHealth(); }}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="link-outline" size={16} color={Colors.primary} />
+            <Text style={[styles.connectHealthText, { color: Colors.primary }]}>
+              Connect health data
+            </Text>
+          </TouchableOpacity>
+        )}
 
         {(healthData?.todaySteps ?? 0) > 0 && (
           <View style={[styles.stepsRow, { borderTopColor: theme.border }]}>
@@ -535,7 +603,7 @@ export default function ProfileScreen() {
               }}
               activeOpacity={0.7}
             >
-              <Text style={[styles.planStatusSub, { color: theme.accentRed || "#FF6B6B", textAlign: "center" }]}>End Trial Early</Text>
+              <Text style={[styles.planStatusSub, { color: Colors.accentRed, textAlign: "center" }]}>End Trial Early</Text>
             </TouchableOpacity>
           )}
 
@@ -747,7 +815,16 @@ export default function ProfileScreen() {
   );
 }
 
-function MacroInput({ label, unit, value, onChange, theme, color }: any) {
+interface MacroInputProps {
+  label: string;
+  unit: string;
+  value: string;
+  onChange: (value: string) => void;
+  theme: typeof Colors.dark;
+  color: string;
+}
+
+function MacroInput({ label, unit, value, onChange, theme, color }: MacroInputProps) {
   return (
     <View style={styles.macroInputRow}>
       <View style={[styles.macroColorDot, { backgroundColor: color }]} />
@@ -1131,6 +1208,26 @@ function StatItem({ label, value, theme }: any) {
 }
 
 const styles = StyleSheet.create({
+  healthNotice: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderTopWidth: 1,
+    paddingTop: 12,
+    marginTop: 12,
+  },
+  healthNoticeText: { flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 17 },
+  connectHealthBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 12,
+    marginTop: 12,
+  },
+  connectHealthText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   container: { flex: 1 },
   content: { paddingHorizontal: 16, gap: 14 },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12 },

@@ -21,6 +21,7 @@ import { ExerciseCard } from "@/components/ExerciseCard";
 import { router } from "expo-router";
 import { generateWorkoutPlan } from "@/utils/aiEngine";
 import { generateAIWorkout } from "@/utils/api";
+import { handleAiError } from "@/utils/aiErrors";
 import { Colors } from "@/constants/colors";
 import { ExerciseLibraryScreen } from "@/screens/ExerciseLibraryScreen";
 import { CustomPlanBuilderScreen } from "@/screens/CustomPlanBuilderScreen";
@@ -137,7 +138,7 @@ export default function WorkoutsScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert("Plan Generated", `AI created a ${result.days.length}-day plan tailored to your profile!`);
     } catch (e: any) {
-      Alert.alert("Error", e.message || "Failed to generate AI workout plan.");
+      handleAiError(e, "Failed to generate AI workout plan.");
     } finally {
       setAiLoading(false);
     }
@@ -203,6 +204,27 @@ export default function WorkoutsScreen() {
             <Text style={[styles.optionTitle, { color: theme.text }]}>Log Workout</Text>
             <Text style={[styles.optionDesc, { color: theme.textSecondary }]}>
               Start an empty workout. Add exercises and log sets one by one as you go.
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={theme.textMuted} />
+        </TouchableOpacity>
+
+        {/* Curated programmes: free on every tier, so this sits ABOVE the
+            AI option rather than below it. A free user hitting a locked AI
+            card as their first experience has nothing to do; this gives them
+            a real programme immediately. */}
+        <TouchableOpacity
+          style={[styles.optionCard, { backgroundColor: theme.card, borderColor: theme.border }]}
+          onPress={() => { Haptics.selectionAsync(); router.push("/plans"); }}
+          activeOpacity={0.8}
+        >
+          <View style={[styles.optionIconWrap, { backgroundColor: Colors.accentGreen + "20" }]}>
+            <Ionicons name="library-outline" size={28} color={Colors.accentGreen} />
+          </View>
+          <View style={styles.optionContent}>
+            <Text style={[styles.optionTitle, { color: theme.text }]}>Training Programmes</Text>
+            <Text style={[styles.optionDesc, { color: theme.textSecondary }]}>
+              Proven programmes built on established training principles. Free on every plan.
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color={theme.textMuted} />
