@@ -298,3 +298,135 @@ export async function createSupplement(input: {
 }): Promise<{ supplement: unknown }> {
   return postAuthed<{ supplement: unknown }>("/api/supplements", input);
 }
+
+// ---------------------------------------------------------------------------
+// Social
+// ---------------------------------------------------------------------------
+
+async function getAuthed<T>(path: string): Promise<T> {
+  const token = await getAuthToken();
+  if (!token) throw new ApiError("Please sign in.", 401, "unauthenticated");
+
+  const response = await fetch(`${getBaseUrl()}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: "Unknown error" }));
+    throw new ApiError(payload.error || "Request failed", response.status, payload.code || "unknown");
+  }
+  return response.json() as Promise<T>;
+}
+
+async function sendAuthed<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const token = await getAuthToken();
+  if (!token) throw new ApiError("Please sign in.", 401, "unauthenticated");
+
+  const response = await fetch(`${getBaseUrl()}${path}`, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: "Unknown error" }));
+    throw new ApiError(payload.error || "Request failed", response.status, payload.code || "unknown");
+  }
+  return response.json() as Promise<T>;
+}
+
+export interface SocialProfile {
+  userId: string;
+  displayName: string;
+  friendCode: string;
+  avatarUrl: string | null;
+  bio: string | null;
+  discoverable: boolean;
+  leaderboardOptIn: boolean;
+}
+
+export interface FriendEntry {
+  friendshipId: string;
+  userId: string;
+  displayName: string;
+  avatarUrl: string | null;
+  since: string;
+}
+
+export interface FeedActivity {
+  id: string;
+  kind: string;
+  title: string;
+  caption: string | null;
+  payload: Record<string, unknown>;
+  kudosCount: number;
+  commentCount: number;
+  createdAt: string;
+  hasKudos: boolean;
+  author: { userId: string; displayName: string; avatarUrl: string | null; isSelf: boolean };
+}
+
+export interface ChallengeEntry {
+  id: string;
+  name: string;
+  description: string | null;
+  metric: string;
+  target: number;
+  endsAt: string;
+  joinCode: string;
+  active: boolean;
+  participants: {
+    userId: string;
+    displayName: string;
+    progress: number;
+    isSelf: boolean;
+  }[];
+}
+
+export const social = {
+  me: () => getAuthed<{ profile: SocialProfile }>("/api/social/me"),
+  updateMe: (patch: Partial<Pick<SocialProfile, "displayName" | "bio" | "discoverable" | "leaderboardOptIn">>) =>
+    sendAuthed<{ profile: SocialProfile }>("/api/social/me", "PATCH", patch),
+
+  lookup: (code: string) =>
+    getAuthed<{ user: { userId: string; displayName: string; bio: string | null }; state: string }>(
+      `/api/social/lookup/${encodeURIComponent(code)}`,
+    ),
+
+  friends: () =>
+    getAuthed<{ friends: FriendEntry[]; incoming: FriendEntry[]; outgoing: FriendEntry[] }>(
+      "/api/social/friends",
+    ),
+  requestFriend: (userId: string) =>
+    sendAuthed<{ state: string }>("/api/social/friends/request", "POST", { userId }),
+  respondFriend: (friendshipId: string, accept: boolean) =>
+    sendAuthed<{ state: string }>(`/api/social/friends/${friendshipId}/respond`, "POST", { accept }),
+  removeFriend: (friendshipId: string) =>
+    sendAuthed<{ removed: boolean }>(`/api/social/friends/${friendshipId}`, "DELETE"),
+
+  feed: (limit = 25) => getAuthed<{ feed: FeedActivity[] }>(`/api/social/feed?limit=${limit}`),
+  share: (input: { kind: string; title: string; caption?: string; payload?: unknown }) =>
+    sendAuthed<{ activity: unknown }>("/api/social/activities", "POST", input),
+  deleteActivity: (id: string) =>
+    sendAuthed<{ deleted: boolean }>(`/api/social/activities/${id}`, "DELETE"),
+  toggleKudos: (id: string) =>
+    sendAuthed<{ hasKudos: boolean; kudosCount: number }>(
+      `/api/social/activities/${id}/kudos`,
+      "POST",
+    ),
+
+  leaderboard: (days = 7) =>
+    getAuthed<{
+      leaderboard: { userId: string; displayName: string; activities: number; isSelf: boolean }[];
+      optedIn: boolean;
+    }>(`/api/social/leaderboard?days=${days}`),
+
+  challenges: () => getAuthed<{ challenges: ChallengeEntry[] }>("/api/social/challenges"),
+  createChallenge: (input: { name: string; description?: string; metric: string; target: number; days: number }) =>
+    sendAuthed<{ challenge: ChallengeEntry }>("/api/social/challenges", "POST", input),
+  joinChallenge: (joinCode: string) =>
+    sendAuthed<{ challenge: ChallengeEntry }>("/api/social/challenges/join", "POST", { joinCode }),
+};

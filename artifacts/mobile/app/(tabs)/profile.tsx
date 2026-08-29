@@ -382,6 +382,7 @@ export default function ProfileScreen() {
         <NavRow icon="medkit-outline" label="Supplements & medication" hint="Reminders and training context" onPress={() => router.push("/supplements")} theme={theme} />
         <NavRow icon="chatbubbles-outline" label="Ask your coach" hint="Training and nutrition questions" onPress={() => router.push("/coach")} theme={theme} />
         <NavRow icon="barcode-outline" label="Scan a barcode" hint="Look up packaged food" onPress={() => router.push("/scan")} theme={theme} />
+        <NavRow icon="people-outline" label="Community" hint="Friends, feed and challenges" onPress={() => router.push("/social")} theme={theme} />
         <NavRow icon="trophy-outline" label="Achievements" hint="Level, streaks and badges" onPress={() => router.push("/achievements")} theme={theme} />
         <NavRow icon="location-outline" label="My places" hint="Start a session when you reach the gym" onPress={() => router.push("/places")} theme={theme} />
       </SectionCard>
