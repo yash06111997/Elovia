@@ -252,7 +252,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setState((prev) => {
       const next = {
         ...prev,
-        colorScheme: prev.colorScheme === "dark" ? "light" : ("dark" as const),
+        colorScheme: prev.colorScheme === "dark" ? ("light" as const) : ("dark" as const),
       };
       saveState(next);
       return next;

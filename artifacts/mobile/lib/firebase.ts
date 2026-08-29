@@ -1,7 +1,7 @@
 import { initializeApp, getApps, getApp } from "firebase/app";
 import { getDatabase } from "firebase/database";
 import { Platform } from "react-native";
-import type { Auth } from "firebase/auth";
+import type { Auth, Persistence } from "firebase/auth";
 
 const firebaseConfig = {
   apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
@@ -24,7 +24,15 @@ async function getFirebaseAuth(): Promise<Auth> {
     const { getAuth } = await import("firebase/auth");
     auth = getAuth(app);
   } else {
-    const { initializeAuth, getReactNativePersistence } = await import("firebase/auth");
+    // getReactNativePersistence exists at runtime in firebase/auth but is not
+    // present in the published type definitions for this entry point (it is
+    // declared under the react-native subpath). Cast rather than switching
+    // import paths, which breaks Metro resolution in this monorepo.
+    const authModule = await import("firebase/auth");
+    const { initializeAuth } = authModule;
+    const { getReactNativePersistence } = authModule as unknown as {
+      getReactNativePersistence: (storage: unknown) => Persistence;
+    };
     const AsyncStorage = (await import("@react-native-async-storage/async-storage")).default;
     try {
       auth = initializeAuth(app, {

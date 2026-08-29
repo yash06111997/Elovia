@@ -583,7 +583,7 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   topBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingBottom: 16 },
   progressDots: { flexDirection: "row", gap: 5, alignItems: "center" },
-  dot: { height: 8, borderRadius: 4, transition: "all 0.2s" as any },
+  dot: { height: 8, borderRadius: 4 },
   stepCount: { fontSize: 12, fontFamily: "Inter_500Medium" },
   scroll: { flex: 1 },
   scrollContent: { paddingHorizontal: 20, paddingTop: 8 },
