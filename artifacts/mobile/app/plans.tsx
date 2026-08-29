@@ -22,6 +22,7 @@ import {
   rankCuratedPlans,
   type CuratedPlan,
 } from "@/utils/curatedPlans";
+import { allExercises } from "@/utils/exerciseDatabase";
 
 const GOAL_LABELS: Record<string, string> = {
   fat_loss: "Fat loss",
@@ -233,11 +234,17 @@ export default function PlansScreen() {
   );
 }
 
-/** Resolve a display name without importing the whole DB into the render path. */
+/**
+ * Exercise id -> display name.
+ *
+ * A module-level Map rather than a lazy require: the database is plain data
+ * with no native dependency, so there was nothing to defer, and a linear find()
+ * per row turned rendering a six-day plan into ~200 scans of a 166-item array.
+ */
+const EXERCISE_NAMES = new Map(allExercises.map((e) => [e.id, e.name]));
+
 function exerciseDisplayName(exerciseId: string): string {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { allExercises } = require("@/utils/exerciseDatabase") as typeof import("@/utils/exerciseDatabase");
-  return allExercises.find((e) => e.id === exerciseId)?.name ?? exerciseId;
+  return EXERCISE_NAMES.get(exerciseId) ?? exerciseId;
 }
 
 function Meta({ icon, label, theme }: { icon: any; label: string; theme: any }) {

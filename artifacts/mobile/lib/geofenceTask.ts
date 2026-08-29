@@ -11,22 +11,46 @@ import { GEOFENCE_TASK, loadPlaces, recordPendingArrival } from "./geofence";
  * The task runs with no UI and a short execution budget, so it does exactly
  * two things: post a local notification, and leave a note for the app to act
  * on next time it opens.
+ *
+ * Every require() below uses a LITERAL string. Metro resolves dependencies
+ * statically at bundle time, so `require(someVariable)` is not a runtime
+ * fallback - it fails the whole bundle with "Invalid call". TypeScript accepts
+ * it happily, which makes it a compile-clean way to break the build.
  */
 
 type TaskManagerModule = typeof import("expo-task-manager");
 type LocationModule = typeof import("expo-location");
+type NotificationsModule = typeof import("expo-notifications");
 
-function safeRequire<T>(name: string): T | null {
+function loadTaskManager(): TaskManagerModule | null {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    return require(name) as T;
+    return require("expo-task-manager") as TaskManagerModule;
   } catch {
     return null;
   }
 }
 
-const TaskManager = safeRequire<TaskManagerModule>("expo-task-manager");
-const Location = safeRequire<LocationModule>("expo-location");
+function loadLocation(): LocationModule | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require("expo-location") as LocationModule;
+  } catch {
+    return null;
+  }
+}
+
+function loadNotifications(): NotificationsModule | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require("expo-notifications") as NotificationsModule;
+  } catch {
+    return null;
+  }
+}
+
+const TaskManager = loadTaskManager();
+const Location = loadLocation();
 
 const ARRIVAL_COPY: Record<string, { title: string; body: string }> = {
   gym: { title: "You are at the gym", body: "Ready to start today's session?" },
@@ -36,7 +60,7 @@ const ARRIVAL_COPY: Record<string, { title: string; body: string }> = {
 };
 
 async function notifyArrival(placeName: string, kind: string): Promise<void> {
-  const Notifications = safeRequire<typeof import("expo-notifications")>("expo-notifications");
+  const Notifications = loadNotifications();
   if (!Notifications) return;
 
   const copy = ARRIVAL_COPY[kind] ?? ARRIVAL_COPY.other;
@@ -48,7 +72,7 @@ async function notifyArrival(placeName: string, kind: string): Promise<void> {
         body: `${placeName} — ${copy.body}`,
         data: { kind: "geofence", placeName },
       },
-      // null trigger delivers immediately.
+      // A null trigger delivers immediately.
       trigger: null,
     });
   } catch {
