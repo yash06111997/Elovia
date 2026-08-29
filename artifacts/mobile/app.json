@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Elovia",
-    "slug": "elovia",
+    "slug": "elovia-claude",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -136,7 +136,9 @@
       "reactCompiler": true
     },
     "extra": {
-      "eas": {}
+      "eas": {
+        "projectId": "33537f25-269e-4984-8e51-61732be32a64"
+      }
     }
   }
 }
