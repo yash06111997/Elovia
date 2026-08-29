@@ -4,31 +4,69 @@ export type PlanType = "free" | "trial" | "premium";
 export type SubscriptionStatus = "free" | "in_trial" | "active" | "expired" | "cancelled";
 export type SubscriptionPlatform = "apple" | "google" | "none";
 
+/**
+ * Product identifiers.
+ *
+ * These MUST match RevenueCat exactly, which in turn mirrors App Store Connect
+ * and Play Console. They previously read "com.elovia.premium.*" while RevenueCat
+ * was seeded with "elovia_pro_*", which meant every purchase attempt would fail
+ * to resolve a product.
+ */
 export const PRODUCT_IDS = {
-  apple: {
-    monthly: "com.elovia.premium.monthly",
-    yearly: "com.elovia.premium.yearly",
-  },
-  google: {
-    monthly: "elovia_premium_monthly",
-    yearly: "elovia_premium_yearly",
-  },
-};
+  monthly: "elovia_pro_monthly",
+  yearly: "elovia_pro_yearly",
+  lifetime: "elovia_pro_lifetime",
+} as const;
 
-export const PRICING = {
+/**
+ * RevenueCat package identifiers within the default offering. The paywall looks
+ * packages up by these rather than by array index, so reordering the offering
+ * in the RevenueCat dashboard cannot silently repoint a purchase button.
+ */
+export const PACKAGE_IDS = {
+  monthly: "$rc_monthly",
+  yearly: "$rc_annual",
+  lifetime: "$rc_lifetime",
+} as const;
+
+export type BillingPeriod = keyof typeof PRODUCT_IDS;
+
+/**
+ * Fallback display prices ONLY.
+ *
+ * The live price shown to a user comes from RevenueCat's offerings
+ * (`package.product.priceString`), which is already localized to that user's
+ * store front — INR for an Indian account, USD for a US one, and so on.
+ * Hardcoding a currency here was the original bug: the client claimed a rupee
+ * price the store had no way to charge.
+ *
+ * These values exist purely so the paywall can render something sensible while
+ * offerings load or if that request fails. Keep them aligned with the USD
+ * configuration in RevenueCat.
+ */
+export const FALLBACK_PRICING: Record<
+  BillingPeriod,
+  { amount: number; currency: string; label: string; period: string; note?: string }
+> = {
   monthly: {
-    price: 299,
-    currency: "₹",
-    label: "₹299/month",
+    amount: 4.99,
+    currency: "USD",
+    label: "$4.99",
     period: "month",
   },
   yearly: {
-    price: 1499,
-    currency: "₹",
-    label: "₹1,499/year",
+    amount: 29.99,
+    currency: "USD",
+    label: "$29.99",
     period: "year",
-    monthlyEquivalent: "₹125/month",
-    savingsPercent: 58,
+    note: "Save 50% vs monthly",
+  },
+  lifetime: {
+    amount: 79.99,
+    currency: "USD",
+    label: "$79.99",
+    period: "once",
+    note: "One-time payment",
   },
 };
 
