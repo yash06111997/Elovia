@@ -26,6 +26,8 @@ import { HealthProvider } from "@/context/HealthContext";
 import { SubscriptionProvider } from "@/context/SubscriptionContext";
 import { WellnessProvider } from "@/context/WellnessContext";
 import { configureNotificationHandler } from "@/lib/notifications";
+// Side-effect import: registers the background geofence task.
+import "@/lib/geofenceTask";
 
 SplashScreen.preventAutoHideAsync();
 

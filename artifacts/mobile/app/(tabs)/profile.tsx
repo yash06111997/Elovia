@@ -373,6 +373,19 @@ export default function ProfileScreen() {
         <TappableRow label="Water Goal" value={`${profile.waterIntakeLiters} L/day`} theme={theme} onPress={() => setEditField("waterIntakeLiters")} />
       </SectionCard>
 
+      {/* Everything built on top of the core tabs lives here rather than
+          crowding the bottom nav, which Material caps at five items. */}
+      <SectionCard title="More" isDark={isDark} theme={theme} subtitle="Tools & tracking">
+        <NavRow icon="library-outline" label="Training programmes" hint="Curated plans, free on every tier" onPress={() => router.push("/plans")} theme={theme} />
+        <NavRow icon="navigate-outline" label="Record a run" hint="GPS tracking with splits" onPress={() => router.push("/run")} theme={theme} />
+        <NavRow icon="water-outline" label="Hydration" hint="Track water and set a daily goal" onPress={() => router.push("/hydration")} theme={theme} />
+        <NavRow icon="medkit-outline" label="Supplements & medication" hint="Reminders and training context" onPress={() => router.push("/supplements")} theme={theme} />
+        <NavRow icon="chatbubbles-outline" label="Ask your coach" hint="Training and nutrition questions" onPress={() => router.push("/coach")} theme={theme} />
+        <NavRow icon="barcode-outline" label="Scan a barcode" hint="Look up packaged food" onPress={() => router.push("/scan")} theme={theme} />
+        <NavRow icon="trophy-outline" label="Achievements" hint="Level, streaks and badges" onPress={() => router.push("/achievements")} theme={theme} />
+        <NavRow icon="location-outline" label="My places" hint="Start a session when you reach the gym" onPress={() => router.push("/places")} theme={theme} />
+      </SectionCard>
+
       <SectionCard title="Health Data Sync" isDark={isDark} theme={theme} subtitle="Connect devices & apps">
         <View style={styles.healthSyncGrid}>
           {/* Only the card for THIS platform is shown. Offering an Apple Health
@@ -841,6 +854,33 @@ function MacroInput({ label, unit, value, onChange, theme, color }: MacroInputPr
   );
 }
 
+function NavRow({
+  icon,
+  label,
+  hint,
+  onPress,
+  theme,
+}: {
+  icon: any;
+  label: string;
+  hint?: string;
+  onPress: () => void;
+  theme: any;
+}) {
+  return (
+    <TouchableOpacity style={styles.navRow} onPress={onPress} activeOpacity={0.7}>
+      <View style={[styles.navIcon, { backgroundColor: Colors.primary + "15" }]}>
+        <Ionicons name={icon} size={17} color={Colors.primary} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.navLabel, { color: theme.text }]}>{label}</Text>
+        {hint ? <Text style={[styles.navHint, { color: theme.textMuted }]}>{hint}</Text> : null}
+      </View>
+      <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
+    </TouchableOpacity>
+  );
+}
+
 function SectionCard({ title, children, isDark, theme, subtitle, onEdit }: any) {
   return (
     <View style={[styles.sectionCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
@@ -1208,6 +1248,17 @@ function StatItem({ label, value, theme }: any) {
 }
 
 const styles = StyleSheet.create({
+  navRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 11,
+    // Meets the 48dp minimum touch target.
+    minHeight: 48,
+  },
+  navIcon: { width: 34, height: 34, borderRadius: 11, alignItems: "center", justifyContent: "center" },
+  navLabel: { fontSize: 14, fontFamily: "Inter_500Medium" },
+  navHint: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 1 },
   healthNotice: {
     flexDirection: "row",
     alignItems: "center",
