@@ -1,15 +1,5 @@
 import React, { useState, useEffect } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  Platform,
-  ActivityIndicator,
-  Modal,
-  BackHandler,
-} from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, ActivityIndicator, Modal, BackHandler, Alert } from "react-native";
 import { router, useLocalSearchParams, useNavigation } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -18,18 +8,17 @@ import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
 import { useSubscription } from "@/context/SubscriptionContext";
 import { useRevenueCat } from "@/lib/revenuecat";
-import {
-  PREMIUM_FEATURES,
-  PAYWALL_COPY,
-  FAQ_ITEMS,
-} from "@/constants/subscription";
+import { useAuth } from "@/lib/auth";
+import { PREMIUM_FEATURES, PAYWALL_COPY, FAQ_ITEMS } from "@/constants/subscription";
+import { trackEvent } from "@/lib/telemetry";
 
 type PlanKey = "yearly" | "monthly" | "lifetime";
 
 export default function PaywallScreen() {
   const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
-  const { startTrial, clearTrial, state } = useSubscription();
+  const { startTrial, refreshEntitlement, isTrialActive } = useSubscription();
+  const { isAuthenticated, login } = useAuth();
   const rc = useRevenueCat();
   const params = useLocalSearchParams<{ postOnboarding?: string }>();
   const isPostOnboarding = params.postOnboarding === "1";
@@ -37,6 +26,12 @@ export default function PaywallScreen() {
   const [selectedPlan, setSelectedPlan] = useState<PlanKey>("yearly");
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null);
   const [confirmVisible, setConfirmVisible] = useState(false);
+
+  useEffect(() => {
+    void trackEvent("paywall_viewed", {
+      source: isPostOnboarding ? "onboarding" : "app",
+    });
+  }, [isPostOnboarding]);
 
   useEffect(() => {
     navigation.setOptions({ gestureEnabled: !isPostOnboarding });
@@ -51,15 +46,9 @@ export default function PaywallScreen() {
   const currentOffering = rc.offerings?.current;
   const packages = currentOffering?.availablePackages ?? [];
 
-  const monthlyPkg = packages.find(
-    (p) => p.packageType === "MONTHLY" || p.identifier === "$rc_monthly",
-  );
-  const yearlyPkg = packages.find(
-    (p) => p.packageType === "ANNUAL" || p.identifier === "$rc_annual",
-  );
-  const lifetimePkg = packages.find(
-    (p) => p.packageType === "LIFETIME" || p.identifier === "$rc_lifetime",
-  );
+  const monthlyPkg = packages.find((p) => p.packageType === "MONTHLY" || p.identifier === "$rc_monthly");
+  const yearlyPkg = packages.find((p) => p.packageType === "ANNUAL" || p.identifier === "$rc_annual");
+  const lifetimePkg = packages.find((p) => p.packageType === "LIFETIME" || p.identifier === "$rc_lifetime");
 
   const monthlyPrice = monthlyPkg?.product.priceString;
   const yearlyPrice = yearlyPkg?.product.priceString;
@@ -74,18 +63,21 @@ export default function PaywallScreen() {
     const sym = yearlyPkg.product.priceString?.replace(/[\d.,\s]/g, "").trim() || "";
     return `${sym}${perMonth.toFixed(2)}/mo`;
   })();
-  const savingsPercent =
-    monthlyRaw > 0 ? Math.round((1 - yearlyRaw / (monthlyRaw * 12)) * 100) : 0;
+  const savingsPercent = monthlyRaw > 0 ? Math.round((1 - yearlyRaw / (monthlyRaw * 12)) * 100) : 0;
 
-  const selectedPackage =
-    selectedPlan === "yearly"
-      ? yearlyPkg
-      : selectedPlan === "lifetime"
-        ? lifetimePkg
-        : monthlyPkg;
+  const selectedPackage = selectedPlan === "yearly" ? yearlyPkg : selectedPlan === "lifetime" ? lifetimePkg : monthlyPkg;
 
-  const handleStartTrial = () => {
-    startTrial();
+  const waitForServerAccess = async () => {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const entitlement = await refreshEntitlement();
+      if (entitlement?.hasProAccess) return true;
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 750));
+    }
+    return false;
+  };
+
+  const handleStartTrial = async () => {
+    await startTrial();
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     if (isPostOnboarding) {
       router.replace("/(tabs)");
@@ -96,7 +88,6 @@ export default function PaywallScreen() {
 
   const handleContinueFree = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    clearTrial();
     if (isPostOnboarding) {
       router.replace("/(tabs)");
     } else {
@@ -114,6 +105,14 @@ export default function PaywallScreen() {
     if (!selectedPackage) return;
     try {
       await rc.purchase(selectedPackage);
+      const accessReady = await waitForServerAccess();
+      if (!accessReady) {
+        Alert.alert(
+          "Purchase received",
+          "The store confirmed your purchase, but Elovia is still syncing access. Use Restore Purchases in a moment; you will not be charged again.",
+        );
+        return;
+      }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       if (isPostOnboarding) {
         router.replace("/(tabs)");
@@ -131,13 +130,18 @@ export default function PaywallScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
       await rc.restore();
+      const accessReady = await waitForServerAccess();
+      Alert.alert(
+        accessReady ? "Purchases restored" : "No active access found",
+        accessReady ? "Your Elovia access is active." : "No active Elovia subscription was found for this signed-in account.",
+      );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
       console.log("Restore error:", e);
     }
   };
 
-  const showTrialButton = !state.trialUsed;
+  const showTrialButton = isTrialActive;
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
@@ -149,10 +153,7 @@ export default function PaywallScreen() {
         )}
       </View>
 
-      <ScrollView
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 32 }]}
-        showsVerticalScrollIndicator={false}
-      >
+      <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 32 }]} showsVerticalScrollIndicator={false}>
         <View style={styles.heroSection}>
           <View style={[styles.iconCircle, { backgroundColor: Colors.primary + "20" }]}>
             <Ionicons name="diamond" size={36} color={Colors.primary} />
@@ -188,7 +189,10 @@ export default function PaywallScreen() {
                   borderWidth: selectedPlan === "yearly" ? 2 : 1,
                 },
               ]}
-              onPress={() => { setSelectedPlan("yearly"); Haptics.selectionAsync(); }}
+              onPress={() => {
+                setSelectedPlan("yearly");
+                Haptics.selectionAsync();
+              }}
               activeOpacity={0.8}
             >
               <View style={styles.planBadge}>
@@ -196,7 +200,14 @@ export default function PaywallScreen() {
               </View>
               <View style={styles.planInfo}>
                 <View style={styles.planRadio}>
-                  <View style={[styles.radioOuter, { borderColor: selectedPlan === "yearly" ? Colors.primary : theme.textMuted }]}>
+                  <View
+                    style={[
+                      styles.radioOuter,
+                      {
+                        borderColor: selectedPlan === "yearly" ? Colors.primary : theme.textMuted,
+                      },
+                    ]}
+                  >
                     {selectedPlan === "yearly" && <View style={[styles.radioInner, { backgroundColor: Colors.primary }]} />}
                   </View>
                 </View>
@@ -221,12 +232,22 @@ export default function PaywallScreen() {
                   borderWidth: selectedPlan === "monthly" ? 2 : 1,
                 },
               ]}
-              onPress={() => { setSelectedPlan("monthly"); Haptics.selectionAsync(); }}
+              onPress={() => {
+                setSelectedPlan("monthly");
+                Haptics.selectionAsync();
+              }}
               activeOpacity={0.8}
             >
               <View style={styles.planInfo}>
                 <View style={styles.planRadio}>
-                  <View style={[styles.radioOuter, { borderColor: selectedPlan === "monthly" ? Colors.primary : theme.textMuted }]}>
+                  <View
+                    style={[
+                      styles.radioOuter,
+                      {
+                        borderColor: selectedPlan === "monthly" ? Colors.primary : theme.textMuted,
+                      },
+                    ]}
+                  >
                     {selectedPlan === "monthly" && <View style={[styles.radioInner, { backgroundColor: Colors.primary }]} />}
                   </View>
                 </View>
@@ -248,7 +269,10 @@ export default function PaywallScreen() {
                   borderWidth: selectedPlan === "lifetime" ? 2 : 1,
                 },
               ]}
-              onPress={() => { setSelectedPlan("lifetime"); Haptics.selectionAsync(); }}
+              onPress={() => {
+                setSelectedPlan("lifetime");
+                Haptics.selectionAsync();
+              }}
               activeOpacity={0.8}
             >
               <View style={styles.planBadgeLifetime}>
@@ -256,7 +280,14 @@ export default function PaywallScreen() {
               </View>
               <View style={styles.planInfo}>
                 <View style={styles.planRadio}>
-                  <View style={[styles.radioOuter, { borderColor: selectedPlan === "lifetime" ? Colors.primary : theme.textMuted }]}>
+                  <View
+                    style={[
+                      styles.radioOuter,
+                      {
+                        borderColor: selectedPlan === "lifetime" ? Colors.primary : theme.textMuted,
+                      },
+                    ]}
+                  >
                     {selectedPlan === "lifetime" && <View style={[styles.radioInner, { backgroundColor: Colors.primary }]} />}
                   </View>
                 </View>
@@ -270,26 +301,51 @@ export default function PaywallScreen() {
           )}
 
           {packages.length === 0 && !rc.isLoading && (
-            <View style={[styles.planCard, { backgroundColor: theme.card, borderColor: theme.border, borderWidth: 1 }]}>
-              <Text style={[styles.planPrice, { color: theme.textSecondary, textAlign: "center", padding: 12 }]}>
+            <View
+              style={[
+                styles.planCard,
+                {
+                  backgroundColor: theme.card,
+                  borderColor: theme.border,
+                  borderWidth: 1,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.planPrice,
+                  {
+                    color: theme.textSecondary,
+                    textAlign: "center",
+                    padding: 12,
+                  },
+                ]}
+              >
                 Loading plans...
               </Text>
             </View>
           )}
         </View>
 
-        {showTrialButton ? (
-          <TouchableOpacity
-            style={[styles.ctaPrimary, { backgroundColor: Colors.primary }]}
-            onPress={handleStartTrial}
-            activeOpacity={0.85}
-          >
+        {!isAuthenticated ? (
+          <TouchableOpacity style={[styles.ctaPrimary, { backgroundColor: Colors.primary }]} onPress={login} activeOpacity={0.85}>
+            <Ionicons name="log-in-outline" size={20} color="#000" />
+            <Text style={styles.ctaPrimaryText}>Sign in to Start Trial or Subscribe</Text>
+          </TouchableOpacity>
+        ) : showTrialButton ? (
+          <TouchableOpacity style={[styles.ctaPrimary, { backgroundColor: Colors.primary }]} onPress={handleStartTrial} activeOpacity={0.85}>
             <Ionicons name="sparkles" size={20} color="#000" />
             <Text style={styles.ctaPrimaryText}>{PAYWALL_COPY.ctaPrimary}</Text>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
-            style={[styles.ctaPrimary, { backgroundColor: Colors.primary, opacity: rc.isPurchasing ? 0.7 : 1 }]}
+            style={[
+              styles.ctaPrimary,
+              {
+                backgroundColor: Colors.primary,
+                opacity: rc.isPurchasing ? 0.7 : 1,
+              },
+            ]}
             onPress={handlePurchase}
             activeOpacity={0.85}
             disabled={rc.isPurchasing || !selectedPackage}
@@ -299,36 +355,19 @@ export default function PaywallScreen() {
             ) : (
               <>
                 <Ionicons name="diamond" size={20} color="#000" />
-                <Text style={styles.ctaPrimaryText}>
-                  {selectedPlan === "lifetime" ? "Buy Lifetime Access" : "Subscribe Now"}
-                </Text>
+                <Text style={styles.ctaPrimaryText}>{selectedPlan === "lifetime" ? "Buy Lifetime Access" : "Subscribe Now"}</Text>
               </>
             )}
           </TouchableOpacity>
         )}
 
-        {showTrialButton && (
-          <Text style={[styles.trialNote, { color: theme.textSecondary }]}>
-            {PAYWALL_COPY.trialNote}
-          </Text>
-        )}
+        {showTrialButton && <Text style={[styles.trialNote, { color: theme.textSecondary }]}>{PAYWALL_COPY.trialNote}</Text>}
 
-        <TouchableOpacity
-          style={[styles.ctaSecondary, { borderColor: theme.border }]}
-          onPress={handleContinueFree}
-          activeOpacity={0.7}
-        >
-          <Text style={[styles.ctaSecondaryText, { color: theme.textSecondary }]}>
-            {isPostOnboarding ? "Continue with Free" : PAYWALL_COPY.ctaSecondary}
-          </Text>
+        <TouchableOpacity style={[styles.ctaSecondary, { borderColor: theme.border }]} onPress={handleContinueFree} activeOpacity={0.7}>
+          <Text style={[styles.ctaSecondaryText, { color: theme.textSecondary }]}>{isPostOnboarding ? "Continue with Free" : PAYWALL_COPY.ctaSecondary}</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={styles.restoreBtn}
-          onPress={handleRestore}
-          disabled={rc.isRestoring}
-          activeOpacity={0.7}
-        >
+        <TouchableOpacity style={styles.restoreBtn} onPress={handleRestore} disabled={rc.isRestoring} activeOpacity={0.7}>
           {rc.isRestoring ? (
             <ActivityIndicator size="small" color={theme.textMuted} />
           ) : (
@@ -388,9 +427,7 @@ export default function PaywallScreen() {
                 <Text style={[styles.faqQuestion, { color: theme.text }]}>{item.question}</Text>
                 <Ionicons name={expandedFaq === i ? "chevron-up" : "chevron-down"} size={18} color={theme.textMuted} />
               </View>
-              {expandedFaq === i && (
-                <Text style={[styles.faqAnswer, { color: theme.textSecondary }]}>{item.answer}</Text>
-              )}
+              {expandedFaq === i && <Text style={[styles.faqAnswer, { color: theme.textSecondary }]}>{item.answer}</Text>}
             </TouchableOpacity>
           ))}
         </View>
@@ -407,18 +444,10 @@ export default function PaywallScreen() {
                   ? `You are about to subscribe to Yearly Premium for ${yearlyPrice ?? "the listed price"}.`
                   : `You are about to subscribe to Monthly Premium for ${monthlyPrice ?? "the listed price"}.`}
             </Text>
-            <TouchableOpacity
-              style={[styles.modalConfirm, { backgroundColor: Colors.primary }]}
-              onPress={confirmPurchase}
-              activeOpacity={0.85}
-            >
+            <TouchableOpacity style={[styles.modalConfirm, { backgroundColor: Colors.primary }]} onPress={confirmPurchase} activeOpacity={0.85}>
               <Text style={styles.modalConfirmText}>Confirm</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.modalCancel}
-              onPress={() => setConfirmVisible(false)}
-              activeOpacity={0.7}
-            >
+            <TouchableOpacity style={styles.modalCancel} onPress={() => setConfirmVisible(false)} activeOpacity={0.7}>
               <Text style={[styles.modalCancelText, { color: theme.textSecondary }]}>Cancel</Text>
             </TouchableOpacity>
           </View>
@@ -430,59 +459,223 @@ export default function PaywallScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { flexDirection: "row", justifyContent: "flex-end", paddingHorizontal: 16, paddingBottom: 4 },
+  header: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    paddingHorizontal: 16,
+    paddingBottom: 4,
+  },
   closeBtn: { padding: 8 },
   scrollContent: { paddingHorizontal: 20 },
   heroSection: { alignItems: "center", marginTop: 8, marginBottom: 28 },
-  iconCircle: { width: 72, height: 72, borderRadius: 36, alignItems: "center", justifyContent: "center", marginBottom: 16 },
-  headline: { fontSize: 26, fontFamily: "Inter_700Bold", textAlign: "center", marginBottom: 8 },
-  subheadline: { fontSize: 15, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 22, paddingHorizontal: 12 },
+  iconCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
+  },
+  headline: {
+    fontSize: 26,
+    fontFamily: "Inter_700Bold",
+    textAlign: "center",
+    marginBottom: 8,
+  },
+  subheadline: {
+    fontSize: 15,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    lineHeight: 22,
+    paddingHorizontal: 12,
+  },
   featuresSection: { marginBottom: 28 },
-  featureRow: { flexDirection: "row", alignItems: "center", paddingVertical: 14, borderBottomWidth: 0.5 },
-  featureIcon: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center", marginRight: 14 },
+  featureRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 14,
+    borderBottomWidth: 0.5,
+  },
+  featureIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 14,
+  },
   featureText: { flex: 1 },
-  featureTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold", marginBottom: 2 },
+  featureTitle: {
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    marginBottom: 2,
+  },
   featureDesc: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 18 },
   planSection: { marginBottom: 24 },
   sectionTitle: { fontSize: 18, fontFamily: "Inter_700Bold", marginBottom: 4 },
-  planCard: { borderRadius: 14, padding: 16, marginTop: 12, overflow: "hidden" },
-  planBadge: { position: "absolute", top: 0, right: 0, backgroundColor: Colors.primary, paddingHorizontal: 10, paddingVertical: 4, borderBottomLeftRadius: 10 },
-  planBadgeText: { fontSize: 10, fontFamily: "Inter_700Bold", color: "#000", letterSpacing: 0.5 },
-  planBadgeLifetime: { position: "absolute", top: 0, right: 0, backgroundColor: Colors.accentGreen, paddingHorizontal: 10, paddingVertical: 4, borderBottomLeftRadius: 10 },
-  planBadgeLifetimeText: { fontSize: 10, fontFamily: "Inter_700Bold", color: "#000", letterSpacing: 0.5 },
+  planCard: {
+    borderRadius: 14,
+    padding: 16,
+    marginTop: 12,
+    overflow: "hidden",
+  },
+  planBadge: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderBottomLeftRadius: 10,
+  },
+  planBadgeText: {
+    fontSize: 10,
+    fontFamily: "Inter_700Bold",
+    color: "#000",
+    letterSpacing: 0.5,
+  },
+  planBadgeLifetime: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    backgroundColor: Colors.accentGreen,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderBottomLeftRadius: 10,
+  },
+  planBadgeLifetimeText: {
+    fontSize: 10,
+    fontFamily: "Inter_700Bold",
+    color: "#000",
+    letterSpacing: 0.5,
+  },
   planInfo: { flexDirection: "row", alignItems: "center" },
   planRadio: { marginRight: 14 },
-  radioOuter: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, alignItems: "center", justifyContent: "center" },
+  radioOuter: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   radioInner: { width: 12, height: 12, borderRadius: 6 },
   planName: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
   planPrice: { fontSize: 14, fontFamily: "Inter_400Regular", marginTop: 2 },
   planSaving: { fontSize: 13, fontFamily: "Inter_600SemiBold", marginTop: 2 },
-  ctaPrimary: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 54, borderRadius: 14, marginBottom: 8 },
+  ctaPrimary: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    height: 54,
+    borderRadius: 14,
+    marginBottom: 8,
+  },
   ctaPrimaryText: { fontSize: 17, fontFamily: "Inter_700Bold", color: "#000" },
-  trialNote: { textAlign: "center", fontSize: 13, fontFamily: "Inter_400Regular", marginBottom: 12 },
-  ctaSecondary: { alignItems: "center", justifyContent: "center", height: 46, borderRadius: 14, borderWidth: 1, marginBottom: 8 },
+  trialNote: {
+    textAlign: "center",
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    marginBottom: 12,
+  },
+  ctaSecondary: {
+    alignItems: "center",
+    justifyContent: "center",
+    height: 46,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 8,
+  },
   ctaSecondaryText: { fontSize: 15, fontFamily: "Inter_500Medium" },
   restoreBtn: { alignItems: "center", paddingVertical: 12, marginBottom: 24 },
-  restoreText: { fontSize: 13, fontFamily: "Inter_400Regular", textDecorationLine: "underline" },
+  restoreText: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    textDecorationLine: "underline",
+  },
   trustSection: { marginBottom: 28 },
-  trustRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
+  trustRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
   trustText: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  comparisonSection: { borderRadius: 14, borderWidth: 1, padding: 16, marginBottom: 28 },
+  comparisonSection: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 16,
+    marginBottom: 28,
+  },
   compHeader: { flexDirection: "row", alignItems: "center", paddingBottom: 8 },
-  compHeaderLabel: { fontSize: 12, fontFamily: "Inter_600SemiBold", textTransform: "uppercase" },
-  compRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, borderTopWidth: 0.5 },
+  compHeaderLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    textTransform: "uppercase",
+  },
+  compRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    borderTopWidth: 0.5,
+  },
   compName: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular" },
   faqSection: { marginBottom: 20 },
   faqItem: { borderRadius: 12, borderWidth: 1, padding: 14, marginBottom: 8 },
-  faqHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  faqQuestion: { fontSize: 14, fontFamily: "Inter_600SemiBold", flex: 1, marginRight: 8 },
-  faqAnswer: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 20, marginTop: 10 },
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "center", alignItems: "center", padding: 24 },
-  modalCard: { width: "100%", maxWidth: 380, borderRadius: 20, borderWidth: 1, padding: 28, alignItems: "center" },
+  faqHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  faqQuestion: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    flex: 1,
+    marginRight: 8,
+  },
+  faqAnswer: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 20,
+    marginTop: 10,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 380,
+    borderRadius: 20,
+    borderWidth: 1,
+    padding: 28,
+    alignItems: "center",
+  },
   modalTitle: { fontSize: 20, fontFamily: "Inter_700Bold", marginBottom: 12 },
-  modalBody: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 21, marginBottom: 24 },
-  modalConfirm: { width: "100%", height: 50, borderRadius: 14, alignItems: "center", justifyContent: "center", marginBottom: 10 },
-  modalConfirmText: { fontSize: 16, fontFamily: "Inter_700Bold", color: "#000" },
+  modalBody: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    lineHeight: 21,
+    marginBottom: 24,
+  },
+  modalConfirm: {
+    width: "100%",
+    height: 50,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+  },
+  modalConfirmText: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    color: "#000",
+  },
   modalCancel: { paddingVertical: 12 },
   modalCancelText: { fontSize: 14, fontFamily: "Inter_500Medium" },
 });

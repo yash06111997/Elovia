@@ -15,51 +15,49 @@ import { getFirebaseAuth } from "./firebase";
  */
 
 const SYNC_KEYS = [
-  "@fitai_state",
-  "@fitai_plan",
-  "@fitai_custom_plans",
-  "@fitai_active_plan_type",
-  "@fitai_active_custom_plan_id",
-  "@fitai_sessions",
-  "@fitai_prs",
-  "@fitai_meal_plan",
-  "@fitai_food_log",
-  "@fitai_custom_meal_plans",
-  "@fitai_active_meal_plan_type",
-  "@fitai_active_custom_meal_plan_id",
-  "@fitai_health_data",
+  "@elovia_state",
+  "@elovia_plan",
+  "@elovia_custom_plans",
+  "@elovia_active_plan_type",
+  "@elovia_active_custom_plan_id",
+  "@elovia_sessions",
+  "@elovia_prs",
+  "@elovia_meal_plan",
+  "@elovia_food_log",
+  "@elovia_custom_meal_plans",
+  "@elovia_active_meal_plan_type",
+  "@elovia_active_custom_meal_plan_id",
+  "@elovia_health_data",
 ] as const;
 
 const FIELD_MAP: Record<string, string> = {
-  "@fitai_state": "appState",
-  "@fitai_plan": "workoutPlan",
-  "@fitai_custom_plans": "customPlans",
-  "@fitai_active_plan_type": "activePlanType",
-  "@fitai_active_custom_plan_id": "activeCustomPlanId",
-  "@fitai_sessions": "sessions",
-  "@fitai_prs": "personalRecords",
-  "@fitai_meal_plan": "mealPlan",
-  "@fitai_food_log": "foodLog",
-  "@fitai_custom_meal_plans": "customMealPlans",
-  "@fitai_active_meal_plan_type": "activeMealPlanType",
-  "@fitai_active_custom_meal_plan_id": "activeCustomMealPlanId",
-  "@fitai_health_data": "healthData",
+  "@elovia_state": "appState",
+  "@elovia_plan": "workoutPlan",
+  "@elovia_custom_plans": "customPlans",
+  "@elovia_active_plan_type": "activePlanType",
+  "@elovia_active_custom_plan_id": "activeCustomPlanId",
+  "@elovia_sessions": "sessions",
+  "@elovia_prs": "personalRecords",
+  "@elovia_meal_plan": "mealPlan",
+  "@elovia_food_log": "foodLog",
+  "@elovia_custom_meal_plans": "customMealPlans",
+  "@elovia_active_meal_plan_type": "activeMealPlanType",
+  "@elovia_active_custom_meal_plan_id": "activeCustomMealPlanId",
+  "@elovia_health_data": "healthData",
 };
 
-const REVERSE_FIELD_MAP: Record<string, string> = Object.fromEntries(
-  Object.entries(FIELD_MAP).map(([k, v]) => [v, k]),
-);
+const REVERSE_FIELD_MAP: Record<string, string> = Object.fromEntries(Object.entries(FIELD_MAP).map(([k, v]) => [v, k]));
 
 const JSON_KEYS = new Set([
-  "@fitai_state",
-  "@fitai_plan",
-  "@fitai_custom_plans",
-  "@fitai_sessions",
-  "@fitai_prs",
-  "@fitai_meal_plan",
-  "@fitai_food_log",
-  "@fitai_custom_meal_plans",
-  "@fitai_health_data",
+  "@elovia_state",
+  "@elovia_plan",
+  "@elovia_custom_plans",
+  "@elovia_sessions",
+  "@elovia_prs",
+  "@elovia_meal_plan",
+  "@elovia_food_log",
+  "@elovia_custom_meal_plans",
+  "@elovia_health_data",
 ]);
 
 /**
@@ -120,15 +118,7 @@ async function collectLocalPayload(): Promise<Record<string, unknown>> {
  * backgrounded.
  */
 export function payloadHasContent(payload: Record<string, unknown>): boolean {
-  const meaningful = [
-    "appState",
-    "workoutPlan",
-    "customPlans",
-    "sessions",
-    "personalRecords",
-    "mealPlan",
-    "foodLog",
-  ];
+  const meaningful = ["appState", "workoutPlan", "customPlans", "sessions", "personalRecords", "mealPlan", "foodLog"];
 
   return meaningful.some((field) => {
     const value = payload[field];
@@ -185,7 +175,9 @@ export async function restoreFromCloud(): Promise<boolean> {
 
     if (!response.ok) return false;
 
-    const body = (await response.json()) as { data: Record<string, unknown> | null };
+    const body = (await response.json()) as {
+      data: Record<string, unknown> | null;
+    };
     if (!body?.data) return false;
 
     const pairs: [string, string][] = [];

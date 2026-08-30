@@ -1,17 +1,5 @@
 import React, { useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  Platform,
-  Alert,
-  Switch,
-  Modal,
-  ActivityIndicator,
-} from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Alert, Switch, Modal, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -87,9 +75,21 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { state: appState, calculateTDEE, calculateMacros, toggleColorScheme, updateProfileField, setCustomMacros } = useApp();
   const { sessions, personalRecords } = useWorkout();
-  const { healthData, toggleSync, syncHealthData, isTracking, startRunTracking, stopRunTracking, currentRun, status: healthStatus, isSyncing, connectHealth, backendName } = useHealth();
+  const {
+    healthData,
+    toggleSync,
+    syncHealthData,
+    isTracking,
+    startRunTracking,
+    stopRunTracking,
+    currentRun,
+    status: healthStatus,
+    isSyncing,
+    connectHealth,
+    backendName,
+  } = useHealth();
   const { user, isAuthenticated, isLoading: authLoading, login, logout } = useAuth();
-  const { state: subState, isPremium, isTrialActive, isFree, daysRemaining, trialEndDate, restorePurchases, canAccess, clearTrial } = useSubscription();
+  const { state: subState, isPremium, isTrialActive, isFree, daysRemaining, trialEndDate, restorePurchases, canAccess } = useSubscription();
   const [syncing, setSyncing] = useState(false);
   const profile = appState.profile;
 
@@ -163,22 +163,18 @@ export default function ProfileScreen() {
   });
 
   const handleResetOnboarding = () => {
-    Alert.alert(
-      "Reset App",
-      "This will clear all your data and restart the onboarding. Are you sure?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Reset",
-          style: "destructive",
-          onPress: async () => {
-            const AsyncStorage = require("@react-native-async-storage/async-storage").default;
-            await AsyncStorage.clear();
-            router.replace("/onboarding");
-          },
+    Alert.alert("Reset App", "This will clear all your data and restart the onboarding. Are you sure?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Reset",
+        style: "destructive",
+        onPress: async () => {
+          const AsyncStorage = require("@react-native-async-storage/async-storage").default;
+          await AsyncStorage.clear();
+          router.replace("/onboarding");
         },
-      ]
-    );
+      },
+    ]);
   };
 
   const handleSaveField = (value: number) => {
@@ -217,16 +213,89 @@ export default function ProfileScreen() {
     );
   }
 
-  const editFieldConfig: Record<string, { title: string; unit: string; min: number; max: number; step: number; value: number }> = {
-    heightCm: { title: "Edit Height", unit: "cm", min: 100, max: 250, step: 1, value: profile.heightCm },
-    weightKg: { title: "Edit Weight", unit: "kg", min: 30, max: 250, step: 0.5, value: profile.weightKg },
-    targetWeightKg: { title: "Edit Target Weight", unit: "kg", min: 30, max: 250, step: 0.5, value: profile.targetWeightKg || profile.weightKg },
-    targetWeeks: { title: "Edit Target Weeks", unit: "weeks", min: 4, max: 52, step: 1, value: profile.targetWeeks || 12 },
-    age: { title: "Edit Age", unit: "years", min: 10, max: 90, step: 1, value: profile.age },
-    sleepHours: { title: "Edit Sleep Hours", unit: "hrs", min: 3, max: 12, step: 0.5, value: profile.sleepHours },
-    waterIntakeLiters: { title: "Edit Water Intake", unit: "L", min: 0.5, max: 6, step: 0.25, value: profile.waterIntakeLiters },
-    workoutDaysPerWeek: { title: "Edit Workout Days", unit: "days/wk", min: 1, max: 7, step: 1, value: profile.workoutDaysPerWeek },
-    workoutDurationMins: { title: "Edit Session Length", unit: "min", min: 15, max: 120, step: 15, value: profile.workoutDurationMins },
+  const editFieldConfig: Record<
+    string,
+    {
+      title: string;
+      unit: string;
+      min: number;
+      max: number;
+      step: number;
+      value: number;
+    }
+  > = {
+    heightCm: {
+      title: "Edit Height",
+      unit: "cm",
+      min: 100,
+      max: 250,
+      step: 1,
+      value: profile.heightCm,
+    },
+    weightKg: {
+      title: "Edit Weight",
+      unit: "kg",
+      min: 30,
+      max: 250,
+      step: 0.5,
+      value: profile.weightKg,
+    },
+    targetWeightKg: {
+      title: "Edit Target Weight",
+      unit: "kg",
+      min: 30,
+      max: 250,
+      step: 0.5,
+      value: profile.targetWeightKg || profile.weightKg,
+    },
+    targetWeeks: {
+      title: "Edit Target Weeks",
+      unit: "weeks",
+      min: 4,
+      max: 52,
+      step: 1,
+      value: profile.targetWeeks || 12,
+    },
+    age: {
+      title: "Edit Age",
+      unit: "years",
+      min: 10,
+      max: 90,
+      step: 1,
+      value: profile.age,
+    },
+    sleepHours: {
+      title: "Edit Sleep Hours",
+      unit: "hrs",
+      min: 3,
+      max: 12,
+      step: 0.5,
+      value: profile.sleepHours,
+    },
+    waterIntakeLiters: {
+      title: "Edit Water Intake",
+      unit: "L",
+      min: 0.5,
+      max: 6,
+      step: 0.25,
+      value: profile.waterIntakeLiters,
+    },
+    workoutDaysPerWeek: {
+      title: "Edit Workout Days",
+      unit: "days/wk",
+      min: 1,
+      max: 7,
+      step: 1,
+      value: profile.workoutDaysPerWeek,
+    },
+    workoutDurationMins: {
+      title: "Edit Session Length",
+      unit: "min",
+      min: 15,
+      max: 120,
+      step: 15,
+      value: profile.workoutDurationMins,
+    },
   };
 
   const currentEditConfig = editField ? editFieldConfig[editField] : null;
@@ -240,14 +309,18 @@ export default function ProfileScreen() {
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: theme.background }]}
-      contentContainerStyle={[styles.content, { paddingTop: topPadding, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 80 }]}
+      contentContainerStyle={[
+        styles.content,
+        {
+          paddingTop: topPadding,
+          paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 80,
+        },
+      ]}
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.avatarSection}>
         <View style={[styles.avatarLarge, { backgroundColor: Colors.primary + "20" }]}>
-          <Text style={[styles.avatarInitial, { color: Colors.primary }]}>
-            {profile.name.charAt(0).toUpperCase() || "A"}
-          </Text>
+          <Text style={[styles.avatarInitial, { color: Colors.primary }]}>{profile.name.charAt(0).toUpperCase() || "A"}</Text>
         </View>
         <Text style={[styles.userName, { color: theme.text }]}>{profile.name}</Text>
         <View style={styles.goalBadge}>
@@ -287,14 +360,20 @@ export default function ProfileScreen() {
             badgeColor={Colors.primary}
           />
         )}
-        <InfoRow label="BMI" value={`${(profile.weightKg / ((profile.heightCm / 100) ** 2)).toFixed(1)}`} theme={theme} />
+        <InfoRow label="BMI" value={`${(profile.weightKg / (profile.heightCm / 100) ** 2).toFixed(1)}`} theme={theme} />
         <InfoRow label="TDEE" value={`${tdee} kcal`} theme={theme} highlight />
       </SectionCard>
 
       <SectionCard title="Daily Nutrition Targets" isDark={isDark} theme={theme}>
         <View style={styles.macroActionsRow}>
           <TouchableOpacity
-            style={[styles.macroEditBtn, { backgroundColor: Colors.primary + "20", borderColor: Colors.primary + "40" }]}
+            style={[
+              styles.macroEditBtn,
+              {
+                backgroundColor: Colors.primary + "20",
+                borderColor: Colors.primary + "40",
+              },
+            ]}
             onPress={() => {
               if (!canAccess("custom_macros")) {
                 router.push("/paywall");
@@ -311,21 +390,23 @@ export default function ProfileScreen() {
             activeOpacity={0.8}
           >
             <Ionicons name="create-outline" size={14} color={Colors.primary} />
-            <Text style={[styles.macroEditText, { color: Colors.primary }]}>
-              {appState.customMacros?.enabled ? "Custom Macros" : "Override Macros"}
-            </Text>
+            <Text style={[styles.macroEditText, { color: Colors.primary }]}>{appState.customMacros?.enabled ? "Custom Macros" : "Override Macros"}</Text>
             {!canAccess("custom_macros") && (
-              <View style={{ backgroundColor: Colors.primary + "20", paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginLeft: 6 }}>
+              <View
+                style={{
+                  backgroundColor: Colors.primary + "20",
+                  paddingHorizontal: 6,
+                  paddingVertical: 2,
+                  borderRadius: 4,
+                  marginLeft: 6,
+                }}
+              >
                 <Ionicons name="lock-closed" size={10} color={Colors.primary} />
               </View>
             )}
           </TouchableOpacity>
           {appState.customMacros?.enabled && (
-            <TouchableOpacity
-              style={[styles.macroResetBtn, { borderColor: theme.border }]}
-              onPress={handleResetMacros}
-              activeOpacity={0.8}
-            >
+            <TouchableOpacity style={[styles.macroResetBtn, { borderColor: theme.border }]} onPress={handleResetMacros} activeOpacity={0.8}>
               <Ionicons name="refresh" size={14} color={theme.textSecondary} />
             </TouchableOpacity>
           )}
@@ -360,7 +441,16 @@ export default function ProfileScreen() {
                 <Text style={[styles.equipTagText, { color: Colors.primary }]}>{eq.replace(/_/g, " ")}</Text>
               </View>
             ))}
-            <View style={[styles.equipTag, { backgroundColor: theme.card, borderWidth: 1, borderColor: theme.border }]}>
+            <View
+              style={[
+                styles.equipTag,
+                {
+                  backgroundColor: theme.card,
+                  borderWidth: 1,
+                  borderColor: theme.border,
+                },
+              ]}
+            >
               <Ionicons name="pencil" size={10} color={Colors.primary} />
               <Text style={[styles.equipTagText, { color: Colors.primary }]}>Edit</Text>
             </View>
@@ -397,7 +487,10 @@ export default function ProfileScreen() {
               icon="logo-apple"
               label="Apple Health"
               connected={healthData?.syncStatus?.appleHealth ?? false}
-              onToggle={() => { toggleSync("appleHealth"); Haptics.selectionAsync(); }}
+              onToggle={() => {
+                toggleSync("appleHealth");
+                Haptics.selectionAsync();
+              }}
               theme={theme}
               color="#FF2D55"
             />
@@ -407,7 +500,10 @@ export default function ProfileScreen() {
               icon="fitness-outline"
               label="Health Connect"
               connected={healthData?.syncStatus?.googleFit ?? false}
-              onToggle={() => { toggleSync("googleFit"); Haptics.selectionAsync(); }}
+              onToggle={() => {
+                toggleSync("googleFit");
+                Haptics.selectionAsync();
+              }}
               theme={theme}
               color="#4285F4"
             />
@@ -416,7 +512,10 @@ export default function ProfileScreen() {
             icon="footsteps-outline"
             label="Step Counter"
             connected={healthData?.syncStatus?.stepsEnabled ?? false}
-            onToggle={() => { toggleSync("stepsEnabled"); Haptics.selectionAsync(); }}
+            onToggle={() => {
+              toggleSync("stepsEnabled");
+              Haptics.selectionAsync();
+            }}
             theme={theme}
             color={Colors.accentGreen}
           />
@@ -424,7 +523,10 @@ export default function ProfileScreen() {
             icon="navigate-outline"
             label="GPS Tracking"
             connected={healthData?.syncStatus?.locationEnabled ?? false}
-            onToggle={() => { toggleSync("locationEnabled"); Haptics.selectionAsync(); }}
+            onToggle={() => {
+              toggleSync("locationEnabled");
+              Haptics.selectionAsync();
+            }}
             theme={theme}
             color={Colors.accent}
           />
@@ -436,9 +538,7 @@ export default function ProfileScreen() {
           <View style={[styles.healthNotice, { borderTopColor: theme.border }]}>
             <Ionicons name="information-circle-outline" size={16} color={theme.textMuted} />
             <Text style={[styles.healthNoticeText, { color: theme.textMuted }]}>
-              {Platform.OS === "ios" ? "Apple Health" : "Health Connect"} needs the full
-              app build. Step tracking works here; workouts, sleep and heart data need
-              the installed app.
+              {Platform.OS === "ios" ? "Apple Health" : "Health Connect"} needs the full app build. Step tracking works here; workouts, sleep and heart data need the installed app.
             </Text>
           </View>
         )}
@@ -448,9 +548,7 @@ export default function ProfileScreen() {
             <Ionicons name="pulse-outline" size={16} color={Colors.accentGreen} />
             <Text style={[styles.healthNoticeText, { color: theme.textSecondary }]}>
               Reading from {backendName}
-              {healthData?.lastSynced
-                ? ` · updated ${new Date(healthData.lastSynced).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
-                : ""}
+              {healthData?.lastSynced ? ` · updated ${new Date(healthData.lastSynced).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}
             </Text>
             {isSyncing && <ActivityIndicator size="small" color={Colors.primary} />}
           </View>
@@ -459,13 +557,14 @@ export default function ProfileScreen() {
         {!healthStatus?.hasAnySource && Platform.OS !== "web" && (
           <TouchableOpacity
             style={[styles.connectHealthBtn, { borderColor: Colors.primary }]}
-            onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); void connectHealth(); }}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              void connectHealth();
+            }}
             activeOpacity={0.85}
           >
             <Ionicons name="link-outline" size={16} color={Colors.primary} />
-            <Text style={[styles.connectHealthText, { color: Colors.primary }]}>
-              Connect health data
-            </Text>
+            <Text style={[styles.connectHealthText, { color: Colors.primary }]}>Connect health data</Text>
           </TouchableOpacity>
         )}
 
@@ -473,16 +572,19 @@ export default function ProfileScreen() {
           <View style={[styles.stepsRow, { borderTopColor: theme.border }]}>
             <Ionicons name="footsteps" size={18} color={Colors.accentGreen} />
             <View style={{ flex: 1 }}>
-              <Text style={[styles.stepsValue, { color: theme.text }]}>
-                {healthData.todaySteps.toLocaleString()} steps today
-              </Text>
+              <Text style={[styles.stepsValue, { color: theme.text }]}>{healthData.todaySteps.toLocaleString()} steps today</Text>
               <Text style={[styles.stepsGoal, { color: theme.textSecondary }]}>Goal: 10,000 steps</Text>
             </View>
             <View style={[styles.stepsProgress, { backgroundColor: isDark ? "#1A1A24" : "#E4E6F0" }]}>
-              <View style={[styles.stepsProgressFill, {
-                width: `${Math.min(100, ((healthData?.todaySteps ?? 0) / 10000) * 100)}%`,
-                backgroundColor: Colors.accentGreen,
-              }]} />
+              <View
+                style={[
+                  styles.stepsProgressFill,
+                  {
+                    width: `${Math.min(100, ((healthData?.todaySteps ?? 0) / 10000) * 100)}%`,
+                    backgroundColor: Colors.accentGreen,
+                  },
+                ]}
+              />
             </View>
           </View>
         )}
@@ -493,8 +595,7 @@ export default function ProfileScreen() {
             <View style={{ flex: 1 }}>
               <Text style={[styles.runLabel, { color: theme.text }]}>Last Run</Text>
               <Text style={[styles.runMeta, { color: theme.textSecondary }]}>
-                {healthData.runSessions[healthData.runSessions.length - 1].distanceKm} km ·{" "}
-                {healthData.runSessions[healthData.runSessions.length - 1].durationMins} min ·{" "}
+                {healthData.runSessions[healthData.runSessions.length - 1].distanceKm} km · {healthData.runSessions[healthData.runSessions.length - 1].durationMins} min ·{" "}
                 {healthData.runSessions[healthData.runSessions.length - 1].caloriesBurned} kcal
               </Text>
             </View>
@@ -502,7 +603,15 @@ export default function ProfileScreen() {
         )}
 
         {isTracking && currentRun && (
-          <View style={[styles.activeRunBanner, { backgroundColor: Colors.accentGreen + "15", borderColor: Colors.accentGreen + "40" }]}>
+          <View
+            style={[
+              styles.activeRunBanner,
+              {
+                backgroundColor: Colors.accentGreen + "15",
+                borderColor: Colors.accentGreen + "40",
+              },
+            ]}
+          >
             <View style={[styles.runPulse, { backgroundColor: Colors.accentGreen }]} />
             <View style={{ flex: 1 }}>
               <Text style={[styles.activeRunTitle, { color: Colors.accentGreen }]}>Run in Progress</Text>
@@ -530,7 +639,13 @@ export default function ProfileScreen() {
         <View style={styles.healthActions}>
           {!isTracking && (
             <TouchableOpacity
-              style={[styles.healthActionBtn, { backgroundColor: Colors.accentGreen + "20", borderColor: Colors.accentGreen + "40" }]}
+              style={[
+                styles.healthActionBtn,
+                {
+                  backgroundColor: Colors.accentGreen + "20",
+                  borderColor: Colors.accentGreen + "40",
+                },
+              ]}
               onPress={() => {
                 startRunTracking();
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -543,7 +658,13 @@ export default function ProfileScreen() {
             </TouchableOpacity>
           )}
           <TouchableOpacity
-            style={[styles.healthActionBtn, { backgroundColor: Colors.primary + "20", borderColor: Colors.primary + "40" }]}
+            style={[
+              styles.healthActionBtn,
+              {
+                backgroundColor: Colors.primary + "20",
+                borderColor: Colors.primary + "40",
+              },
+            ]}
             onPress={() => {
               syncHealthData();
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -555,31 +676,40 @@ export default function ProfileScreen() {
           </TouchableOpacity>
         </View>
 
-        {healthData.lastSynced && (
-          <Text style={[styles.lastSynced, { color: theme.textMuted }]}>
-            Last synced: {new Date(healthData.lastSynced).toLocaleString()}
-          </Text>
-        )}
+        {healthData.lastSynced && <Text style={[styles.lastSynced, { color: theme.textMuted }]}>Last synced: {new Date(healthData.lastSynced).toLocaleString()}</Text>}
       </SectionCard>
 
       <SectionCard title="Subscription" isDark={isDark} theme={theme} subtitle={isTrialActive ? `Premium Trial · ${daysRemaining} days left` : isPremium ? "Premium" : "Free Plan"}>
         <View style={{ gap: 12 }}>
-          <View style={[styles.planStatusRow, { backgroundColor: isPremium ? Colors.primary + "12" : theme.cardElevated }]}>
-            <View style={[styles.planStatusIcon, { backgroundColor: isPremium ? Colors.primary + "20" : theme.border }]}>
+          <View
+            style={[
+              styles.planStatusRow,
+              {
+                backgroundColor: isPremium ? Colors.primary + "12" : theme.cardElevated,
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.planStatusIcon,
+                {
+                  backgroundColor: isPremium ? Colors.primary + "20" : theme.border,
+                },
+              ]}
+            >
               <Ionicons name={isPremium ? "diamond" : "person-outline"} size={18} color={isPremium ? Colors.primary : theme.textSecondary} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={[styles.planStatusLabel, { color: theme.text }]}>
-                {isTrialActive ? "Premium Trial" : isPremium ? "Premium" : "Free Plan"}
-              </Text>
-              {isTrialActive && trialEndDate && (
-                <Text style={[styles.planStatusSub, { color: theme.textSecondary }]}>
-                  Trial ends {trialEndDate}
-                </Text>
-              )}
+              <Text style={[styles.planStatusLabel, { color: theme.text }]}>{isTrialActive ? "Premium Trial" : isPremium ? "Premium" : "Free Plan"}</Text>
+              {isTrialActive && trialEndDate && <Text style={[styles.planStatusSub, { color: theme.textSecondary }]}>Trial ends {trialEndDate}</Text>}
               {subState.status === "active" && subState.renewalDate && (
                 <Text style={[styles.planStatusSub, { color: theme.textSecondary }]}>
-                  Renews {new Date(subState.renewalDate).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                  Renews{" "}
+                  {new Date(subState.renewalDate).toLocaleDateString("en-IN", {
+                    day: "numeric",
+                    month: "short",
+                    year: "numeric",
+                  })}
                 </Text>
               )}
             </View>
@@ -588,7 +718,10 @@ export default function ProfileScreen() {
           {isFree && (
             <TouchableOpacity
               style={[styles.loginBtn, { backgroundColor: Colors.primary }]}
-              onPress={() => { router.push("/paywall"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); }}
+              onPress={() => {
+                router.push("/paywall");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              }}
               activeOpacity={0.85}
             >
               <Ionicons name="diamond" size={18} color="#000" />
@@ -596,36 +729,13 @@ export default function ProfileScreen() {
             </TouchableOpacity>
           )}
 
-          {isTrialActive && (
-            <TouchableOpacity
-              onPress={() => {
-                Alert.alert(
-                  "End Trial",
-                  "This will end your free trial and switch you to the Free plan. Premium features will be locked. Continue?",
-                  [
-                    { text: "Cancel", style: "cancel" },
-                    {
-                      text: "End Trial",
-                      style: "destructive",
-                      onPress: () => {
-                        clearTrial();
-                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-                        Alert.alert("Trial Ended", "You are now on the Free plan. Upgrade anytime from this screen.");
-                      },
-                    },
-                  ]
-                );
-              }}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.planStatusSub, { color: Colors.accentRed, textAlign: "center" }]}>End Trial Early</Text>
-            </TouchableOpacity>
-          )}
-
           {!isFree && !isTrialActive && (
             <TouchableOpacity
               style={[styles.loginBtn, { backgroundColor: Colors.primary }]}
-              onPress={() => { router.push("/paywall"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); }}
+              onPress={() => {
+                router.push("/paywall");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              }}
               activeOpacity={0.85}
             >
               <Ionicons name="diamond" size={18} color="#000" />
@@ -660,35 +770,41 @@ export default function ProfileScreen() {
                 </View>
               )}
               <View style={{ flex: 1 }}>
-                <Text style={[styles.accountName, { color: theme.text }]}>
-                  {[user?.firstName, user?.lastName].filter(Boolean).join(" ") || "User"}
-                </Text>
+                <Text style={[styles.accountName, { color: theme.text }]}>{[user?.firstName, user?.lastName].filter(Boolean).join(" ") || "User"}</Text>
                 {user?.email && <Text style={[styles.accountEmail, { color: theme.textSecondary }]}>{user.email}</Text>}
               </View>
             </View>
 
             <View style={styles.accountActions}>
               <TouchableOpacity
-                style={[styles.accountActionBtn, { backgroundColor: Colors.accentGreen + "20", borderColor: Colors.accentGreen + "40" }]}
+                style={[
+                  styles.accountActionBtn,
+                  {
+                    backgroundColor: Colors.accentGreen + "20",
+                    borderColor: Colors.accentGreen + "40",
+                  },
+                ]}
                 onPress={uploadData}
                 disabled={syncing}
                 activeOpacity={0.8}
               >
                 <Ionicons name="cloud-upload-outline" size={16} color={Colors.accentGreen} />
-                <Text style={[styles.accountActionText, { color: Colors.accentGreen }]}>
-                  {syncing ? "Syncing..." : "Backup"}
-                </Text>
+                <Text style={[styles.accountActionText, { color: Colors.accentGreen }]}>{syncing ? "Syncing..." : "Backup"}</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.accountActionBtn, { backgroundColor: Colors.primary + "20", borderColor: Colors.primary + "40" }]}
+                style={[
+                  styles.accountActionBtn,
+                  {
+                    backgroundColor: Colors.primary + "20",
+                    borderColor: Colors.primary + "40",
+                  },
+                ]}
                 onPress={downloadData}
                 disabled={syncing}
                 activeOpacity={0.8}
               >
                 <Ionicons name="cloud-download-outline" size={16} color={Colors.primary} />
-                <Text style={[styles.accountActionText, { color: Colors.primary }]}>
-                  {syncing ? "Syncing..." : "Restore"}
-                </Text>
+                <Text style={[styles.accountActionText, { color: Colors.primary }]}>{syncing ? "Syncing..." : "Restore"}</Text>
               </TouchableOpacity>
             </View>
 
@@ -697,7 +813,11 @@ export default function ProfileScreen() {
               onPress={() => {
                 Alert.alert("Sign Out", "Are you sure you want to sign out?", [
                   { text: "Cancel", style: "cancel" },
-                  { text: "Sign Out", style: "destructive", onPress: () => logout() },
+                  {
+                    text: "Sign Out",
+                    style: "destructive",
+                    onPress: () => logout(),
+                  },
                 ]);
               }}
               activeOpacity={0.8}
@@ -709,7 +829,10 @@ export default function ProfileScreen() {
         ) : (
           <TouchableOpacity
             style={[styles.loginBtn, { backgroundColor: Colors.primary }]}
-            onPress={() => { login(); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); }}
+            onPress={() => {
+              login();
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            }}
             activeOpacity={0.8}
           >
             <Ionicons name="log-in-outline" size={18} color="#000" />
@@ -719,6 +842,13 @@ export default function ProfileScreen() {
       </SectionCard>
 
       <SectionCard title="Settings" isDark={isDark} theme={theme}>
+        <NavRow
+          icon="shield-checkmark-outline"
+          label="Privacy & Data"
+          hint="Privacy notice, export and account deletion"
+          onPress={() => router.push("/privacy-data")}
+          theme={theme}
+        />
         <View style={styles.settingRow}>
           <View style={styles.settingLeft}>
             <Ionicons name="moon-outline" size={18} color={theme.textSecondary} />
@@ -726,7 +856,10 @@ export default function ProfileScreen() {
           </View>
           <Switch
             value={isDark}
-            onValueChange={() => { toggleColorScheme(); Haptics.selectionAsync(); }}
+            onValueChange={() => {
+              toggleColorScheme();
+              Haptics.selectionAsync();
+            }}
             trackColor={{ false: theme.border, true: Colors.primary + "80" }}
             thumbColor={isDark ? Colors.primary : theme.textMuted}
           />
@@ -734,7 +867,13 @@ export default function ProfileScreen() {
       </SectionCard>
 
       <TouchableOpacity
-        style={[styles.actionBtn, { backgroundColor: Colors.primary + "20", borderColor: Colors.primary + "40" }]}
+        style={[
+          styles.actionBtn,
+          {
+            backgroundColor: Colors.primary + "20",
+            borderColor: Colors.primary + "40",
+          },
+        ]}
         onPress={() => router.push("/onboarding")}
         activeOpacity={0.8}
       >
@@ -743,7 +882,13 @@ export default function ProfileScreen() {
       </TouchableOpacity>
 
       <TouchableOpacity
-        style={[styles.actionBtn, { backgroundColor: Colors.accentRed + "15", borderColor: Colors.accentRed + "40" }]}
+        style={[
+          styles.actionBtn,
+          {
+            backgroundColor: Colors.accentRed + "15",
+            borderColor: Colors.accentRed + "40",
+          },
+        ]}
         onPress={handleResetOnboarding}
         activeOpacity={0.8}
       >
@@ -772,10 +917,15 @@ export default function ProfileScreen() {
           <View style={[styles.macroSheet, { backgroundColor: theme.surface }]}>
             <View style={styles.macroHandle} />
             <Text style={[styles.macroTitle, { color: theme.text }]}>Custom Macro Targets</Text>
-            <Text style={[styles.macroSubtitle, { color: theme.textSecondary }]}>
-              Override the calculated values with your own targets
-            </Text>
-            <MacroInput label="Calories" unit="kcal" value={macroForm.calories} onChange={(v) => setMacroForm((p) => ({ ...p, calories: v }))} theme={theme} color={Colors.accentYellow} />
+            <Text style={[styles.macroSubtitle, { color: theme.textSecondary }]}>Override the calculated values with your own targets</Text>
+            <MacroInput
+              label="Calories"
+              unit="kcal"
+              value={macroForm.calories}
+              onChange={(v) => setMacroForm((p) => ({ ...p, calories: v }))}
+              theme={theme}
+              color={Colors.accentYellow}
+            />
             <MacroInput label="Protein" unit="g" value={macroForm.protein} onChange={(v) => setMacroForm((p) => ({ ...p, protein: v }))} theme={theme} color={Colors.primary} />
             <MacroInput label="Carbs" unit="g" value={macroForm.carbs} onChange={(v) => setMacroForm((p) => ({ ...p, carbs: v }))} theme={theme} color={Colors.accent} />
             <MacroInput label="Fats" unit="g" value={macroForm.fats} onChange={(v) => setMacroForm((p) => ({ ...p, fats: v }))} theme={theme} color={Colors.accentGreen} />
@@ -845,7 +995,14 @@ function MacroInput({ label, unit, value, onChange, theme, color }: MacroInputPr
       <View style={[styles.macroColorDot, { backgroundColor: color }]} />
       <Text style={[styles.macroInputLabel, { color: theme.textSecondary }]}>{label}</Text>
       <TextInput
-        style={[styles.macroInputField, { backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
+        style={[
+          styles.macroInputField,
+          {
+            backgroundColor: theme.card,
+            borderColor: theme.border,
+            color: theme.text,
+          },
+        ]}
         value={value}
         onChangeText={onChange}
         keyboardType="numeric"
@@ -856,19 +1013,7 @@ function MacroInput({ label, unit, value, onChange, theme, color }: MacroInputPr
   );
 }
 
-function NavRow({
-  icon,
-  label,
-  hint,
-  onPress,
-  theme,
-}: {
-  icon: any;
-  label: string;
-  hint?: string;
-  onPress: () => void;
-  theme: any;
-}) {
+function NavRow({ icon, label, hint, onPress, theme }: { icon: any; label: string; hint?: string; onPress: () => void; theme: any }) {
   return (
     <TouchableOpacity style={styles.navRow} onPress={onPress} activeOpacity={0.7}>
       <View style={[styles.navIcon, { backgroundColor: Colors.primary + "15" }]}>
@@ -922,16 +1067,20 @@ function OptionPicker({ label, options, selected, onSelect, theme }: any) {
           return (
             <TouchableOpacity
               key={opt.value}
-              style={[styles.optionChip, {
-                backgroundColor: active ? Colors.primary + "20" : theme.card,
-                borderColor: active ? Colors.primary : theme.border,
-              }]}
-              onPress={() => { onSelect(opt.value); Haptics.selectionAsync(); }}
+              style={[
+                styles.optionChip,
+                {
+                  backgroundColor: active ? Colors.primary + "20" : theme.card,
+                  borderColor: active ? Colors.primary : theme.border,
+                },
+              ]}
+              onPress={() => {
+                onSelect(opt.value);
+                Haptics.selectionAsync();
+              }}
               activeOpacity={0.8}
             >
-              <Text style={[styles.optionChipText, { color: active ? Colors.primary : theme.text }]}>
-                {opt.label}
-              </Text>
+              <Text style={[styles.optionChipText, { color: active ? Colors.primary : theme.text }]}>{opt.label}</Text>
             </TouchableOpacity>
           );
         })}
@@ -968,28 +1117,40 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDar
     <ModalSheet visible={visible} onClose={onClose} title="Edit Fitness Profile" theme={theme}>
       <OptionPicker
         label="Primary Goal"
-        options={Object.entries(goalLabels).map(([value, label]) => ({ value, label }))}
+        options={Object.entries(goalLabels).map(([value, label]) => ({
+          value,
+          label,
+        }))}
         selected={goal}
         onSelect={setGoal}
         theme={theme}
       />
       <OptionPicker
         label="Fitness Level"
-        options={Object.entries(levelLabels).map(([value, label]) => ({ value, label }))}
+        options={Object.entries(levelLabels).map(([value, label]) => ({
+          value,
+          label,
+        }))}
         selected={level}
         onSelect={setLevel}
         theme={theme}
       />
       <OptionPicker
         label="Activity Level"
-        options={Object.entries(activityLabels).map(([value, label]) => ({ value, label }))}
+        options={Object.entries(activityLabels).map(([value, label]) => ({
+          value,
+          label,
+        }))}
         selected={activity}
         onSelect={setActivity}
         theme={theme}
       />
       <OptionPicker
         label="Workout Preference"
-        options={Object.entries(prefLabels).map(([value, label]) => ({ value, label }))}
+        options={Object.entries(prefLabels).map(([value, label]) => ({
+          value,
+          label,
+        }))}
         selected={pref}
         onSelect={setPref}
         theme={theme}
@@ -1034,7 +1195,10 @@ function DietEditModal({ visible, onClose, profile, updateProfileField, isDark, 
     <ModalSheet visible={visible} onClose={onClose} title="Edit Diet Profile" theme={theme}>
       <OptionPicker
         label="Food Preference"
-        options={Object.entries(foodPrefLabels).map(([value, label]) => ({ value, label }))}
+        options={Object.entries(foodPrefLabels).map(([value, label]) => ({
+          value,
+          label,
+        }))}
         selected={foodPref}
         onSelect={setFoodPref}
         theme={theme}
@@ -1042,7 +1206,14 @@ function DietEditModal({ visible, onClose, profile, updateProfileField, isDark, 
       <View style={{ gap: 6 }}>
         <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Restrictions / Allergies</Text>
         <TextInput
-          style={[styles.editTextInput, { backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
+          style={[
+            styles.editTextInput,
+            {
+              backgroundColor: theme.card,
+              borderColor: theme.border,
+              color: theme.text,
+            },
+          ]}
           value={restrictions}
           onChangeText={setRestrictions}
           placeholder="e.g. gluten-free, nut allergy..."
@@ -1053,7 +1224,14 @@ function DietEditModal({ visible, onClose, profile, updateProfileField, isDark, 
       <View style={{ gap: 6 }}>
         <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Disliked Foods</Text>
         <TextInput
-          style={[styles.editTextInput, { backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
+          style={[
+            styles.editTextInput,
+            {
+              backgroundColor: theme.card,
+              borderColor: theme.border,
+              color: theme.text,
+            },
+          ]}
           value={dislikes}
           onChangeText={setDislikes}
           placeholder="e.g. broccoli, tofu..."
@@ -1064,7 +1242,14 @@ function DietEditModal({ visible, onClose, profile, updateProfileField, isDark, 
       <View style={{ gap: 6 }}>
         <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Medical Notes</Text>
         <TextInput
-          style={[styles.editTextInput, { backgroundColor: theme.card, borderColor: theme.border, color: theme.text }]}
+          style={[
+            styles.editTextInput,
+            {
+              backgroundColor: theme.card,
+              borderColor: theme.border,
+              color: theme.text,
+            },
+          ]}
           value={medicalNotes}
           onChangeText={setMedicalNotes}
           placeholder="e.g. lower back pain..."
@@ -1094,7 +1279,7 @@ function EquipmentEditModal({ visible, onClose, profile, updateProfileField, isD
   }, [visible]);
 
   const toggle = (eq: Equipment) => {
-    setSelected((prev) => prev.includes(eq) ? prev.filter((e) => e !== eq) : [...prev, eq]);
+    setSelected((prev) => (prev.includes(eq) ? prev.filter((e) => e !== eq) : [...prev, eq]));
     Haptics.selectionAsync();
   };
 
@@ -1112,17 +1297,18 @@ function EquipmentEditModal({ visible, onClose, profile, updateProfileField, isD
           return (
             <TouchableOpacity
               key={eq.value}
-              style={[styles.optionChip, {
-                backgroundColor: active ? Colors.primary + "20" : theme.card,
-                borderColor: active ? Colors.primary : theme.border,
-              }]}
+              style={[
+                styles.optionChip,
+                {
+                  backgroundColor: active ? Colors.primary + "20" : theme.card,
+                  borderColor: active ? Colors.primary : theme.border,
+                },
+              ]}
               onPress={() => toggle(eq.value)}
               activeOpacity={0.8}
             >
               {active && <Ionicons name="checkmark-circle" size={14} color={Colors.primary} />}
-              <Text style={[styles.optionChipText, { color: active ? Colors.primary : theme.text }]}>
-                {eq.label}
-              </Text>
+              <Text style={[styles.optionChipText, { color: active ? Colors.primary : theme.text }]}>{eq.label}</Text>
             </TouchableOpacity>
           );
         })}
@@ -1159,7 +1345,15 @@ function NameGenderEditModal({ visible, onClose, profile, updateProfileField, is
       <View style={{ gap: 6 }}>
         <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Name</Text>
         <TextInput
-          style={[styles.editTextInput, { backgroundColor: theme.card, borderColor: theme.border, color: theme.text, height: 44 }]}
+          style={[
+            styles.editTextInput,
+            {
+              backgroundColor: theme.card,
+              borderColor: theme.border,
+              color: theme.text,
+              height: 44,
+            },
+          ]}
           value={name}
           onChangeText={setName}
           placeholder="Your name"
@@ -1200,11 +1394,7 @@ function InfoRow({ label, value, theme, highlight }: any) {
 
 function TappableRow({ label, value, theme, onPress, badge, badgeColor }: any) {
   return (
-    <TouchableOpacity
-      style={[styles.infoRow, { borderBottomColor: theme.border }]}
-      onPress={onPress}
-      activeOpacity={0.6}
-    >
+    <TouchableOpacity style={[styles.infoRow, { borderBottomColor: theme.border }]} onPress={onPress} activeOpacity={0.6}>
       <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>{label}</Text>
       <View style={styles.tappableRight}>
         {badge && (
@@ -1222,19 +1412,22 @@ function TappableRow({ label, value, theme, onPress, badge, badgeColor }: any) {
 function HealthSyncCard({ icon, label, connected, onToggle, theme, color }: any) {
   return (
     <TouchableOpacity
-      style={[styles.healthCard, {
-        backgroundColor: connected ? color + "15" : theme.card,
-        borderColor: connected ? color + "40" : theme.border,
-      }]}
+      style={[
+        styles.healthCard,
+        {
+          backgroundColor: connected ? color + "15" : theme.card,
+          borderColor: connected ? color + "40" : theme.border,
+        },
+      ]}
       onPress={onToggle}
       activeOpacity={0.7}
     >
       <Ionicons name={icon} size={22} color={connected ? color : theme.textMuted} />
-      <Text style={[styles.healthCardLabel, { color: connected ? color : theme.textSecondary }]} numberOfLines={1}>{label}</Text>
+      <Text style={[styles.healthCardLabel, { color: connected ? color : theme.textSecondary }]} numberOfLines={1}>
+        {label}
+      </Text>
       <View style={[styles.healthCardStatus, { backgroundColor: connected ? color : theme.border }]}>
-        <Text style={[styles.healthCardStatusText, { color: connected ? "#FFF" : theme.textMuted }]}>
-          {connected ? "On" : "Off"}
-        </Text>
+        <Text style={[styles.healthCardStatusText, { color: connected ? "#FFF" : theme.textMuted }]}>{connected ? "On" : "Off"}</Text>
       </View>
     </TouchableOpacity>
   );
@@ -1258,7 +1451,13 @@ const styles = StyleSheet.create({
     // Meets the 48dp minimum touch target.
     minHeight: 48,
   },
-  navIcon: { width: 34, height: 34, borderRadius: 11, alignItems: "center", justifyContent: "center" },
+  navIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   navLabel: { fontSize: 14, fontFamily: "Inter_500Medium" },
   navHint: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 1 },
   healthNotice: {
@@ -1269,7 +1468,12 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     marginTop: 12,
   },
-  healthNoticeText: { flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 17 },
+  healthNoticeText: {
+    flex: 1,
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 17,
+  },
   connectHealthBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -1288,94 +1492,357 @@ const styles = StyleSheet.create({
   setupBtn: { paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 },
   setupBtnText: { color: "#000", fontSize: 15, fontFamily: "Inter_700Bold" },
   avatarSection: { alignItems: "center", gap: 8, paddingVertical: 8 },
-  avatarLarge: { width: 80, height: 80, borderRadius: 40, alignItems: "center", justifyContent: "center" },
+  avatarLarge: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   avatarInitial: { fontSize: 32, fontFamily: "Inter_700Bold" },
   userName: { fontSize: 22, fontFamily: "Inter_700Bold" },
-  goalBadge: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: Colors.primary + "20", paddingHorizontal: 12, paddingVertical: 5, borderRadius: 10 },
+  goalBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: Colors.primary + "20",
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
   goalBadgeText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
-  statsCard: { flexDirection: "row", borderRadius: 16, borderWidth: 1, padding: 16 },
+  statsCard: {
+    flexDirection: "row",
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 16,
+  },
   statItem: { flex: 1, alignItems: "center", gap: 4 },
   statValue: { fontSize: 22, fontFamily: "Inter_700Bold" },
-  statLabel: { fontSize: 11, fontFamily: "Inter_500Medium", textTransform: "uppercase", letterSpacing: 0.5 },
+  statLabel: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
   statDivider: { width: 1, marginVertical: 4 },
   sectionCard: { borderRadius: 16, borderWidth: 1, padding: 16, gap: 0 },
-  sectionHeaderRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 },
+  sectionHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    marginBottom: 12,
+  },
   sectionTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   sectionSubtitle: { fontSize: 11, fontFamily: "Inter_400Regular" },
-  infoRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", paddingVertical: 10, borderBottomWidth: 1 },
+  infoRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+  },
   infoLabel: { fontSize: 13, fontFamily: "Inter_400Regular", flex: 1 },
-  infoValue: { fontSize: 13, fontFamily: "Inter_600SemiBold", textAlign: "right" },
+  infoValue: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    textAlign: "right",
+  },
   tappableRight: { flexDirection: "row", alignItems: "center" },
-  badge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, marginRight: 8 },
+  badge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginRight: 8,
+  },
   badgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold" },
-  macroActionsRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
-  macroEditBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1 },
+  macroActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+  macroEditBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
   macroEditText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
-  macroResetBtn: { width: 32, height: 32, borderRadius: 8, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  equipmentList: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingTop: 4 },
-  equipTag: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
-  equipTagText: { fontSize: 12, fontFamily: "Inter_500Medium", textTransform: "capitalize" },
-  settingRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 4 },
+  macroResetBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  equipmentList: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    paddingTop: 4,
+  },
+  equipTag: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  equipTagText: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    textTransform: "capitalize",
+  },
+  settingRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 4,
+  },
   settingLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
   settingLabel: { fontSize: 14, fontFamily: "Inter_400Regular" },
-  actionBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, padding: 14, borderRadius: 14, borderWidth: 1 },
+  actionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
   actionBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  macroOverlay: { flex: 1, backgroundColor: "#00000060", justifyContent: "flex-end" },
-  macroSheet: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: 40, gap: 14 },
-  macroHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: "#444", alignSelf: "center" },
-  macroTitle: { fontSize: 18, fontFamily: "Inter_700Bold", textAlign: "center" },
-  macroSubtitle: { fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" },
+  macroOverlay: {
+    flex: 1,
+    backgroundColor: "#00000060",
+    justifyContent: "flex-end",
+  },
+  macroSheet: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingBottom: 40,
+    gap: 14,
+  },
+  macroHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#444",
+    alignSelf: "center",
+  },
+  macroTitle: {
+    fontSize: 18,
+    fontFamily: "Inter_700Bold",
+    textAlign: "center",
+  },
+  macroSubtitle: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+  },
   macroInputRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   macroColorDot: { width: 10, height: 10, borderRadius: 5 },
   macroInputLabel: { fontSize: 14, fontFamily: "Inter_500Medium", width: 70 },
-  macroInputField: { flex: 1, height: 44, borderRadius: 10, borderWidth: 1, paddingHorizontal: 14, fontSize: 16, fontFamily: "Inter_600SemiBold", textAlign: "center" },
+  macroInputField: {
+    flex: 1,
+    height: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+    textAlign: "center",
+  },
   macroInputUnit: { fontSize: 13, fontFamily: "Inter_400Regular", width: 30 },
   macroActions: { flexDirection: "row", gap: 12, marginTop: 4 },
-  macroCancelBtn: { flex: 1, padding: 14, borderRadius: 12, borderWidth: 1, alignItems: "center" },
+  macroCancelBtn: {
+    flex: 1,
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+  },
   macroCancelText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  macroSaveBtn: { flex: 2, padding: 14, borderRadius: 12, alignItems: "center" },
+  macroSaveBtn: {
+    flex: 2,
+    padding: 14,
+    borderRadius: 12,
+    alignItems: "center",
+  },
   macroSaveText: { color: "#000", fontSize: 15, fontFamily: "Inter_700Bold" },
-  healthSyncGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingTop: 4 },
-  healthCard: { width: "48%" as any, padding: 12, borderRadius: 12, borderWidth: 1, alignItems: "center", gap: 6 },
-  healthCardLabel: { fontSize: 12, fontFamily: "Inter_600SemiBold", textAlign: "center" },
-  healthCardStatus: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
+  healthSyncGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    paddingTop: 4,
+  },
+  healthCard: {
+    width: "48%" as any,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    gap: 6,
+  },
+  healthCardLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    textAlign: "center",
+  },
+  healthCardStatus: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
   healthCardStatusText: { fontSize: 10, fontFamily: "Inter_700Bold" },
-  stepsRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 12, marginTop: 8, borderTopWidth: 1 },
+  stepsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingTop: 12,
+    marginTop: 8,
+    borderTopWidth: 1,
+  },
   stepsValue: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   stepsGoal: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 1 },
   stepsProgress: { width: 60, height: 6, borderRadius: 3, overflow: "hidden" },
   stepsProgressFill: { height: "100%", borderRadius: 3 },
-  recentRunRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 12, marginTop: 8, borderTopWidth: 1 },
+  recentRunRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingTop: 12,
+    marginTop: 8,
+    borderTopWidth: 1,
+  },
   runLabel: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   runMeta: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 1 },
-  activeRunBanner: { flexDirection: "row", alignItems: "center", padding: 12, borderRadius: 12, borderWidth: 1, gap: 10, marginTop: 8 },
+  activeRunBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 10,
+    marginTop: 8,
+  },
   runPulse: { width: 10, height: 10, borderRadius: 5 },
   activeRunTitle: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
   activeRunMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 1 },
-  stopRunBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
+  stopRunBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
   stopRunBtnText: { color: "#FFF", fontSize: 12, fontFamily: "Inter_700Bold" },
   healthActions: { flexDirection: "row", gap: 8, marginTop: 10 },
-  healthActionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, padding: 12, borderRadius: 10, borderWidth: 1 },
+  healthActionBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
   healthActionText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  lastSynced: { fontSize: 11, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 6 },
+  lastSynced: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    marginTop: 6,
+  },
   accountUserRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-  accountAvatar: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
+  accountAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   accountName: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   accountEmail: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 1 },
   accountActions: { flexDirection: "row", gap: 8 },
-  accountActionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, padding: 12, borderRadius: 10, borderWidth: 1 },
+  accountActionBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
   accountActionText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  logoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, padding: 10, borderRadius: 10, borderWidth: 1 },
+  logoutBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    padding: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
   logoutBtnText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  loginBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, padding: 14, borderRadius: 12 },
+  loginBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    padding: 14,
+    borderRadius: 12,
+  },
   loginBtnText: { color: "#000", fontSize: 15, fontFamily: "Inter_700Bold" },
-  editSectionLabel: { fontSize: 12, fontFamily: "Inter_600SemiBold", textTransform: "uppercase", letterSpacing: 0.5 },
+  editSectionLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
   optionGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  optionChip: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10, borderWidth: 1, flexDirection: "row", alignItems: "center", gap: 6 },
+  optionChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
   optionChipText: { fontSize: 13, fontFamily: "Inter_500Medium" },
-  editTextInput: { borderWidth: 1, borderRadius: 10, padding: 12, fontSize: 14, fontFamily: "Inter_400Regular", minHeight: 60, textAlignVertical: "top" },
-  planStatusRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 12 },
-  planStatusIcon: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  editTextInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    minHeight: 60,
+    textAlignVertical: "top",
+  },
+  planStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    borderRadius: 12,
+  },
+  planStatusIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   planStatusLabel: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   planStatusSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
 });

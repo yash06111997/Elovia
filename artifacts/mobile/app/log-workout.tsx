@@ -1,24 +1,14 @@
 import React, { useState, useEffect, useRef } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  Platform,
-  Alert,
-  KeyboardAvoidingView,
-  Keyboard,
-} from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Alert, KeyboardAvoidingView, Keyboard, Modal } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { router } from "expo-router";
-import { useWorkout, SetType } from "@/context/WorkoutContext";
+import { router, useLocalSearchParams } from "expo-router";
+import { useWorkout, SetType, type WorkoutFeedback } from "@/context/WorkoutContext";
 import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
 import { allExercises, ExerciseEntry } from "@/utils/exerciseDatabase";
+import { trackEvent } from "@/lib/telemetry";
 
 const SET_TYPE_LABELS: Record<SetType, { label: string; color: string; short: string }> = {
   normal: { label: "Normal", color: Colors.primary, short: "" },
@@ -30,6 +20,10 @@ const SET_TYPE_LABELS: Record<SetType, { label: string; color: string; short: st
 export default function LogWorkoutScreen() {
   const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{
+    checkIn?: string;
+    elapsedSeconds?: string;
+  }>();
   const {
     activeSession,
     startFreeSession,
@@ -44,11 +38,17 @@ export default function LogWorkoutScreen() {
     getLastPerformance,
   } = useWorkout();
 
-  const [timer, setTimer] = useState(0);
+  const initialSeconds = Number.parseInt(params.elapsedSeconds ?? "0", 10);
+  const [timer, setTimer] = useState(Number.isFinite(initialSeconds) ? initialSeconds : 0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [showExerciseSearch, setShowExerciseSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedExercise, setExpandedExercise] = useState<number | null>(null);
+  const [feedbackVisible, setFeedbackVisible] = useState(false);
+  const [effort, setEffort] = useState(7);
+  const [pain, setPain] = useState(0);
+  const [enjoyment, setEnjoyment] = useState(4);
+  const [readiness, setReadiness] = useState(3);
   const scrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
@@ -56,6 +56,7 @@ export default function LogWorkoutScreen() {
       startFreeSession();
     }
     timerRef.current = setInterval(() => setTimer((t) => t + 1), 1000);
+    if (params.checkIn === "1" && activeSession) setFeedbackVisible(true);
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
@@ -69,18 +70,16 @@ export default function LogWorkoutScreen() {
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
-  const filteredExercises = searchQuery.length > 0
-    ? allExercises.filter((e) =>
-        e.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        e.muscleGroup.toLowerCase().includes(searchQuery.toLowerCase())
-      ).slice(0, 20)
-    : [];
+  const filteredExercises =
+    searchQuery.length > 0
+      ? allExercises.filter((e) => e.name.toLowerCase().includes(searchQuery.toLowerCase()) || e.muscleGroup.toLowerCase().includes(searchQuery.toLowerCase())).slice(0, 20)
+      : [];
 
   const handleAddExercise = (entry: ExerciseEntry) => {
     addExerciseToSession(entry.name, entry.id);
     setShowExerciseSearch(false);
     setSearchQuery("");
-    const newIndex = (activeSession?.exerciseLogs.length ?? 0);
+    const newIndex = activeSession?.exerciseLogs.length ?? 0;
     setExpandedExercise(newIndex);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
@@ -89,7 +88,7 @@ export default function LogWorkoutScreen() {
     if (!searchQuery.trim()) return;
     addExerciseToSession(searchQuery.trim());
     setShowExerciseSearch(false);
-    const newIndex = (activeSession?.exerciseLogs.length ?? 0);
+    const newIndex = activeSession?.exerciseLogs.length ?? 0;
     setExpandedExercise(newIndex);
     setSearchQuery("");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -97,15 +96,25 @@ export default function LogWorkoutScreen() {
 
   const handleFinish = () => {
     if (!activeSession) return;
-    const totalSets = activeSession.exerciseLogs.reduce((sum, l) => sum + l.sets.filter(s => s.completed).length, 0);
+    const totalSets = activeSession.exerciseLogs.reduce((sum, l) => sum + l.sets.filter((s) => s.completed).length, 0);
     if (totalSets === 0 && activeSession.exerciseLogs.length === 0) {
       Alert.alert("Empty Workout", "Add some exercises and log sets before finishing.", [{ text: "OK" }]);
       return;
     }
-    const durationMins = Math.round(timer / 60);
-    completeSession(durationMins);
+    setFeedbackVisible(true);
+  };
+
+  const submitFeedback = () => {
+    const durationMins = Math.max(1, Math.round(timer / 60));
+    const feedback: WorkoutFeedback = { effort, pain, enjoyment, readiness };
+    const adjustment = completeSession(durationMins, feedback);
+    void trackEvent("workout_feedback_submitted", {
+      direction: adjustment?.direction ?? "unknown",
+      painBand: pain >= 7 ? "high" : pain >= 4 ? "moderate" : "low",
+    });
+    setFeedbackVisible(false);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    router.back();
+    Alert.alert("Workout saved", adjustment?.summary ?? "Your session and feedback were saved.", [{ text: "Done", onPress: () => router.back() }]);
   };
 
   const handleCancel = () => {
@@ -125,19 +134,24 @@ export default function LogWorkoutScreen() {
   const exercises = activeSession?.exerciseLogs ?? [];
 
   return (
-    <KeyboardAvoidingView
-      style={[styles.container, { backgroundColor: theme.background }]}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-    >
-      <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 16 : insets.top + 4, borderBottomColor: theme.border }]}>
-        <TouchableOpacity onPress={handleCancel} style={styles.headerBtn}>
+    <KeyboardAvoidingView style={[styles.container, { backgroundColor: theme.background }]} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop: Platform.OS === "web" ? 16 : insets.top + 4,
+            borderBottomColor: theme.border,
+          },
+        ]}
+      >
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel="Discard workout" onPress={handleCancel} style={styles.headerBtn}>
           <Ionicons name="close" size={24} color={Colors.accentRed} />
         </TouchableOpacity>
         <View style={styles.timerContainer}>
           <Ionicons name="timer-outline" size={18} color={Colors.primary} />
           <Text style={[styles.timerText, { color: theme.text }]}>{formatTime(timer)}</Text>
         </View>
-        <TouchableOpacity onPress={handleFinish} style={[styles.finishBtn]}>
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel="Finish workout" onPress={handleFinish} style={[styles.finishBtn]}>
           <Ionicons name="checkmark" size={18} color="#fff" />
           <Text style={styles.finishBtnText}>Finish</Text>
         </TouchableOpacity>
@@ -153,9 +167,7 @@ export default function LogWorkoutScreen() {
           <View style={styles.emptyState}>
             <Ionicons name="barbell-outline" size={48} color={theme.textMuted} />
             <Text style={[styles.emptyTitle, { color: theme.textSecondary }]}>Start Your Workout</Text>
-            <Text style={[styles.emptySubtitle, { color: theme.textMuted }]}>
-              Tap "Add Exercise" below to begin logging
-            </Text>
+            <Text style={[styles.emptySubtitle, { color: theme.textMuted }]}>Tap "Add Exercise" below to begin logging</Text>
           </View>
         )}
 
@@ -187,10 +199,23 @@ export default function LogWorkoutScreen() {
         ))}
 
         {showExerciseSearch && (
-          <View style={[styles.searchCard, { backgroundColor: theme.card, borderColor: Colors.primary + "40" }]}>
+          <View
+            style={[
+              styles.searchCard,
+              {
+                backgroundColor: theme.card,
+                borderColor: Colors.primary + "40",
+              },
+            ]}
+          >
             <View style={styles.searchHeader}>
               <Text style={[styles.searchTitle, { color: theme.text }]}>Add Exercise</Text>
-              <TouchableOpacity onPress={() => { setShowExerciseSearch(false); setSearchQuery(""); }}>
+              <TouchableOpacity
+                onPress={() => {
+                  setShowExerciseSearch(false);
+                  setSearchQuery("");
+                }}
+              >
                 <Ionicons name="close-circle" size={24} color={theme.textMuted} />
               </TouchableOpacity>
             </View>
@@ -209,24 +234,15 @@ export default function LogWorkoutScreen() {
             </View>
 
             {searchQuery.length > 0 && (
-              <TouchableOpacity
-                style={[styles.customExerciseBtn, { borderColor: Colors.primary + "40" }]}
-                onPress={handleAddCustomExercise}
-              >
+              <TouchableOpacity style={[styles.customExerciseBtn, { borderColor: Colors.primary + "40" }]} onPress={handleAddCustomExercise}>
                 <Ionicons name="add-circle" size={20} color={Colors.primary} />
-                <Text style={[styles.customExerciseText, { color: Colors.primary }]}>
-                  Add "{searchQuery}" as custom exercise
-                </Text>
+                <Text style={[styles.customExerciseText, { color: Colors.primary }]}>Add "{searchQuery}" as custom exercise</Text>
               </TouchableOpacity>
             )}
 
             <ScrollView style={styles.searchResults} keyboardShouldPersistTaps="handled">
               {filteredExercises.map((entry) => (
-                <TouchableOpacity
-                  key={entry.id}
-                  style={[styles.searchResultItem, { borderBottomColor: theme.border }]}
-                  onPress={() => handleAddExercise(entry)}
-                >
+                <TouchableOpacity key={entry.id} style={[styles.searchResultItem, { borderBottomColor: theme.border }]} onPress={() => handleAddExercise(entry)}>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.searchResultName, { color: theme.text }]}>{entry.name}</Text>
                     <Text style={[styles.searchResultMeta, { color: theme.textSecondary }]}>
@@ -242,9 +258,24 @@ export default function LogWorkoutScreen() {
       </ScrollView>
 
       {!showExerciseSearch && (
-        <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 12, backgroundColor: theme.background, borderTopColor: theme.border }]}>
+        <View
+          style={[
+            styles.bottomBar,
+            {
+              paddingBottom: insets.bottom + 12,
+              backgroundColor: theme.background,
+              borderTopColor: theme.border,
+            },
+          ]}
+        >
           <TouchableOpacity
-            style={[styles.addExerciseBtn, { backgroundColor: Colors.primary + "15", borderColor: Colors.primary + "40" }]}
+            style={[
+              styles.addExerciseBtn,
+              {
+                backgroundColor: Colors.primary + "15",
+                borderColor: Colors.primary + "40",
+              },
+            ]}
             onPress={() => setShowExerciseSearch(true)}
           >
             <Ionicons name="add-circle" size={22} color={Colors.primary} />
@@ -252,7 +283,90 @@ export default function LogWorkoutScreen() {
           </TouchableOpacity>
         </View>
       )}
+
+      <Modal visible={feedbackVisible} transparent animationType="slide" onRequestClose={() => setFeedbackVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.feedbackCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={[styles.feedbackContent, { paddingBottom: insets.bottom + 18 }]}>
+              <View style={styles.feedbackHandle} />
+              <Text accessibilityRole="header" style={[styles.feedbackTitle, { color: theme.text }]}>
+                Post-workout check-in
+              </Text>
+              <Text style={[styles.feedbackSubtitle, { color: theme.textSecondary }]}>Your answers create a conservative recommendation for your next session. Pain always takes priority over progression.</Text>
+              <RatingRow label="How hard was it?" value={effort} min={1} max={10} onChange={setEffort} theme={theme} low="Easy" high="Max" />
+              <RatingRow label="Pain during training" value={pain} min={0} max={10} onChange={setPain} theme={theme} low="None" high="Severe" />
+              <RatingRow label="Enjoyment" value={enjoyment} min={1} max={5} onChange={setEnjoyment} theme={theme} low="Low" high="High" />
+              <RatingRow label="Ready for next time?" value={readiness} min={1} max={5} onChange={setReadiness} theme={theme} low="Not ready" high="Ready" />
+              {pain >= 7 && (
+                <View style={styles.painNotice}>
+                  <Ionicons name="warning-outline" size={18} color={Colors.accentRed} />
+                  <Text style={styles.painNoticeText}>Stop or modify movements that cause sharp or persistent pain. Consider qualified medical assessment.</Text>
+                </View>
+              )}
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Save workout feedback" style={styles.saveFeedbackBtn} onPress={submitFeedback}>
+                <Text style={styles.saveFeedbackText}>Save Workout</Text>
+              </TouchableOpacity>
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Keep training" style={styles.keepTrainingBtn} onPress={() => setFeedbackVisible(false)}>
+                <Text style={[styles.keepTrainingText, { color: theme.textSecondary }]}>Keep training</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
+  );
+}
+
+function RatingRow({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+  theme,
+  low,
+  high,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+  theme: any;
+  low: string;
+  high: string;
+}) {
+  return (
+    <View style={styles.ratingSection}>
+      <View style={styles.ratingHeader}>
+        <Text style={[styles.ratingLabel, { color: theme.text }]}>{label}</Text>
+        <Text style={[styles.ratingValue, { color: Colors.primary }]}>{value}</Text>
+      </View>
+      <View style={styles.ratingButtons}>
+        {Array.from({ length: max - min + 1 }, (_, index) => min + index).map((option) => (
+          <TouchableOpacity
+            key={option}
+            accessibilityRole="radio"
+            accessibilityLabel={`${label}: ${option}`}
+            accessibilityState={{ checked: option === value }}
+            onPress={() => onChange(option)}
+            style={[
+              styles.ratingButton,
+              {
+                backgroundColor: option === value ? Colors.primary : theme.surface,
+                borderColor: option === value ? Colors.primary : theme.border,
+              },
+            ]}
+          >
+            <Text style={[styles.ratingButtonText, { color: option === value ? "#000" : theme.textSecondary }]}>{option}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      <View style={styles.scaleLabels}>
+        <Text style={[styles.scaleText, { color: theme.textMuted }]}>{low}</Text>
+        <Text style={[styles.scaleText, { color: theme.textMuted }]}>{high}</Text>
+      </View>
+    </View>
   );
 }
 
@@ -290,9 +404,7 @@ function ExerciseLogCard({
   const [selectedSetType, setSelectedSetType] = useState<SetType>("normal");
   const weightRef = useRef<TextInput>(null);
   const completedSets = log.sets.filter((s: any) => s.completed).length;
-  const totalVolume = log.sets
-    .filter((s: any) => s.completed)
-    .reduce((sum: number, s: any) => sum + s.weightKg * s.reps, 0);
+  const totalVolume = log.sets.filter((s: any) => s.completed).reduce((sum: number, s: any) => sum + s.weightKg * s.reps, 0);
 
   const handleAddSet = () => {
     const weight = parseFloat(weightInput) || 0;
@@ -348,7 +460,10 @@ function ExerciseLogCard({
             <View style={[styles.lastPerfRow, { borderBottomColor: theme.border }]}>
               <Text style={[styles.lastPerfLabel, { color: theme.textMuted }]}>Last:</Text>
               <Text style={[styles.lastPerfValue, { color: theme.textSecondary }]}>
-                {lastPerformance.sets.filter((s: any) => s.completed).map((s: any) => `${s.weightKg}×${s.reps}`).join(", ")}
+                {lastPerformance.sets
+                  .filter((s: any) => s.completed)
+                  .map((s: any) => `${s.weightKg}×${s.reps}`)
+                  .join(", ")}
               </Text>
             </View>
           )}
@@ -367,8 +482,22 @@ function ExerciseLogCard({
                   <Text style={[styles.setCell, styles.setNumCol, { color: theme.text }]}>{set.setNumber}</Text>
                   <View style={[styles.typeCol, styles.typeBadgeContainer]}>
                     {set.setType && set.setType !== "normal" ? (
-                      <View style={[styles.typeBadge, { backgroundColor: SET_TYPE_LABELS[set.setType as SetType]?.color + "20" }]}>
-                        <Text style={[styles.typeBadgeText, { color: SET_TYPE_LABELS[set.setType as SetType]?.color }]}>
+                      <View
+                        style={[
+                          styles.typeBadge,
+                          {
+                            backgroundColor: SET_TYPE_LABELS[set.setType as SetType]?.color + "20",
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.typeBadgeText,
+                            {
+                              color: SET_TYPE_LABELS[set.setType as SetType]?.color,
+                            },
+                          ]}
+                        >
                           {SET_TYPE_LABELS[set.setType as SetType]?.short}
                         </Text>
                       </View>
@@ -376,12 +505,8 @@ function ExerciseLogCard({
                       <Text style={[styles.setCell, { color: theme.textMuted }]}>—</Text>
                     )}
                   </View>
-                  <Text style={[styles.setCell, styles.weightCol, { color: theme.text, fontWeight: "600" }]}>
-                    {set.weightKg}
-                  </Text>
-                  <Text style={[styles.setCell, styles.repsCol, { color: theme.text, fontWeight: "600" }]}>
-                    {set.reps}
-                  </Text>
+                  <Text style={[styles.setCell, styles.weightCol, { color: theme.text, fontWeight: "600" }]}>{set.weightKg}</Text>
+                  <Text style={[styles.setCell, styles.repsCol, { color: theme.text, fontWeight: "600" }]}>{set.reps}</Text>
                   <TouchableOpacity style={styles.actionCol} onPress={() => onRemoveSet(setIdx)}>
                     <Ionicons name="close-circle" size={18} color={Colors.accentRed + "60"} />
                   </TouchableOpacity>
@@ -406,7 +531,9 @@ function ExerciseLogCard({
                 <Text
                   style={[
                     styles.setTypeBtnText,
-                    { color: selectedSetType === type ? SET_TYPE_LABELS[type].color : theme.textSecondary },
+                    {
+                      color: selectedSetType === type ? SET_TYPE_LABELS[type].color : theme.textSecondary,
+                    },
                   ]}
                 >
                   {SET_TYPE_LABELS[type].label}
@@ -442,10 +569,7 @@ function ExerciseLogCard({
                 onSubmitEditing={handleAddSet}
               />
             </View>
-            <TouchableOpacity
-              style={[styles.logSetBtn, { backgroundColor: Colors.primary }]}
-              onPress={handleAddSet}
-            >
+            <TouchableOpacity style={[styles.logSetBtn, { backgroundColor: Colors.primary }]} onPress={handleAddSet}>
               <Ionicons name="checkmark" size={20} color="#fff" />
               <Text style={styles.logSetBtnText}>Log</Text>
             </TouchableOpacity>
@@ -466,9 +590,18 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     borderBottomWidth: 1,
   },
-  headerBtn: { padding: 4 },
+  headerBtn: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   timerContainer: { flexDirection: "row", alignItems: "center", gap: 6 },
-  timerText: { fontSize: 20, fontFamily: "Inter_600SemiBold", fontVariant: ["tabular-nums"] },
+  timerText: {
+    fontSize: 20,
+    fontFamily: "Inter_600SemiBold",
+    fontVariant: ["tabular-nums"],
+  },
   finishBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -477,13 +610,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 20,
+    minHeight: 44,
   },
-  finishBtnText: { color: "#fff", fontFamily: "Inter_600SemiBold", fontSize: 14 },
+  finishBtnText: {
+    color: "#fff",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 14,
+  },
   scrollArea: { flex: 1 },
   scrollContent: { padding: 16, gap: 12 },
-  emptyState: { alignItems: "center", justifyContent: "center", paddingTop: 80, gap: 12 },
+  emptyState: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingTop: 80,
+    gap: 12,
+  },
   emptyTitle: { fontSize: 18, fontFamily: "Inter_600SemiBold" },
-  emptySubtitle: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" },
+  emptySubtitle: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+  },
   exerciseCard: { borderRadius: 14, borderWidth: 1, overflow: "hidden" },
   exerciseHeader: {
     flexDirection: "row",
@@ -524,8 +671,17 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     borderBottomWidth: 1,
   },
-  setHeaderCell: { fontSize: 11, fontFamily: "Inter_600SemiBold", textTransform: "uppercase" },
-  setRow: { flexDirection: "row", alignItems: "center", paddingVertical: 7, borderBottomWidth: 0.5 },
+  setHeaderCell: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    textTransform: "uppercase",
+  },
+  setRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 7,
+    borderBottomWidth: 0.5,
+  },
   setCell: { fontSize: 14, fontFamily: "Inter_400Regular" },
   setNumCol: { width: 36, textAlign: "center" },
   typeCol: { width: 44, alignItems: "center" as any },
@@ -564,7 +720,12 @@ const styles = StyleSheet.create({
     height: 44,
   },
   inputLabel: { fontSize: 12, fontFamily: "Inter_500Medium" },
-  setInput: { flex: 1, fontSize: 16, fontFamily: "Inter_600SemiBold", textAlign: "center" },
+  setInput: {
+    flex: 1,
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+    textAlign: "center",
+  },
   logSetBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -574,7 +735,11 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     justifyContent: "center",
   },
-  logSetBtnText: { color: "#fff", fontFamily: "Inter_600SemiBold", fontSize: 14 },
+  logSetBtnText: {
+    color: "#fff",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 14,
+  },
   bottomBar: {
     position: "absolute",
     bottom: 0,
@@ -639,5 +804,101 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   searchResultName: { fontSize: 15, fontFamily: "Inter_500Medium" },
-  searchResultMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
+  searchResultMeta: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    marginTop: 2,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    justifyContent: "flex-end",
+  },
+  feedbackCard: {
+    maxHeight: "94%",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+  },
+  feedbackContent: { paddingHorizontal: 18, paddingTop: 10 },
+  feedbackHandle: {
+    width: 42,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#6F7480",
+    alignSelf: "center",
+    marginBottom: 14,
+  },
+  feedbackTitle: {
+    fontSize: 22,
+    fontFamily: "Inter_700Bold",
+    textAlign: "center",
+  },
+  feedbackSubtitle: {
+    fontSize: 13,
+    lineHeight: 19,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    marginTop: 6,
+    marginBottom: 12,
+  },
+  ratingSection: { marginTop: 11 },
+  ratingHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 7,
+  },
+  ratingLabel: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  ratingValue: { fontSize: 15, fontFamily: "Inter_700Bold" },
+  ratingButtons: { flexDirection: "row", flexWrap: "wrap", gap: 4 },
+  ratingButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  ratingButtonText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  scaleLabels: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 3,
+  },
+  scaleText: { fontSize: 10, fontFamily: "Inter_400Regular" },
+  painNotice: {
+    flexDirection: "row",
+    gap: 8,
+    backgroundColor: Colors.accentRed + "15",
+    padding: 10,
+    borderRadius: 10,
+    marginTop: 10,
+  },
+  painNoticeText: {
+    flex: 1,
+    color: Colors.accentRed,
+    fontSize: 11,
+    lineHeight: 16,
+    fontFamily: "Inter_500Medium",
+  },
+  saveFeedbackBtn: {
+    height: 50,
+    borderRadius: 14,
+    backgroundColor: Colors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 16,
+  },
+  saveFeedbackText: {
+    color: "#000",
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+  },
+  keepTrainingBtn: {
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  keepTrainingText: { fontSize: 14, fontFamily: "Inter_500Medium" },
 });

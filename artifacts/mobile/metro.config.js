@@ -6,7 +6,9 @@ const projectRoot = __dirname;
 
 const config = getDefaultConfig(projectRoot);
 
-config.watchFolders = [workspaceRoot];
+config.watchFolders = Array.from(
+  new Set([...(config.watchFolders || []), workspaceRoot]),
+);
 
 config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, "node_modules"),

@@ -9,6 +9,8 @@ import pushRouter from "./push";
 import supplementsRouter from "./supplements";
 import socialRouter from "./social";
 import coachingRouter from "./coaching";
+import privacyRouter from "./privacy";
+import telemetryRouter from "./telemetry";
 import revenuecatWebhookRouter from "./webhooks/revenuecat";
 import { rateLimit } from "../lib/rateLimit";
 
@@ -16,6 +18,8 @@ const router: IRouter = Router();
 
 router.use(healthRouter);
 router.use(authRouter);
+router.use(privacyRouter);
+router.use(telemetryRouter);
 
 // Webhooks authenticate with their own shared secret, so they bypass the
 // per-identity limiter that would otherwise key every RevenueCat call to the

@@ -1,12 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Platform, Alert, AppState, type AppStateStatus } from "react-native";
 import * as Location from "expo-location";
 import { onDataRestored } from "@/lib/syncEvents";
@@ -112,18 +105,13 @@ const defaultHealthData: HealthData = {
 
 const HealthContext = createContext<HealthContextType | null>(null);
 
-const STORAGE_KEY = "@fitai_health_data";
+const STORAGE_KEY = "@elovia_health_data";
 
 function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
@@ -177,14 +165,8 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
           ...prev,
           syncStatus: {
             ...prev.syncStatus,
-            appleHealth:
-              next.platform?.backend === "healthkit" &&
-              next.platform.available &&
-              next.platform.authorized,
-            googleFit:
-              next.platform?.backend === "health_connect" &&
-              next.platform.available &&
-              next.platform.authorized,
+            appleHealth: next.platform?.backend === "healthkit" && next.platform.available && next.platform.authorized,
+            googleFit: next.platform?.backend === "health_connect" && next.platform.available && next.platform.authorized,
             stepsEnabled: next.hasAnySource,
           },
         };
@@ -243,10 +225,7 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
   /** Explicit user action: request permission, then immediately pull data. */
   const connectHealth = useCallback(async () => {
     if (Platform.OS === "web") {
-      Alert.alert(
-        "Not available on web",
-        "Health syncing needs the iOS or Android app.",
-      );
+      Alert.alert("Not available on web", "Health syncing needs the iOS or Android app.");
       return;
     }
 
@@ -260,10 +239,7 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
           "This build cannot access the system health store. Step tracking still works; install the full app build to sync workouts, sleep, and heart data.",
         );
       } else if (!next.hasAnySource) {
-        Alert.alert(
-          "Permission needed",
-          "Elovia could not access health data. You can grant access later in your device settings.",
-        );
+        Alert.alert("Permission needed", "Elovia could not access health data. You can grant access later in your device settings.");
       }
 
       await refreshStatus();
@@ -284,7 +260,10 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
         setHealthData((prev) => {
           const updated = {
             ...prev,
-            syncStatus: { ...prev.syncStatus, locationEnabled: !prev.syncStatus.locationEnabled },
+            syncStatus: {
+              ...prev.syncStatus,
+              locationEnabled: !prev.syncStatus.locationEnabled,
+            },
           };
           persist(updated);
           return updated;
@@ -293,11 +272,7 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
       }
 
       const isConnected =
-        source === "appleHealth"
-          ? healthData.syncStatus.appleHealth
-          : source === "googleFit"
-            ? healthData.syncStatus.googleFit
-            : healthData.syncStatus.stepsEnabled;
+        source === "appleHealth" ? healthData.syncStatus.appleHealth : source === "googleFit" ? healthData.syncStatus.googleFit : healthData.syncStatus.stepsEnabled;
 
       if (isConnected) {
         Alert.alert(
@@ -360,7 +335,11 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
   const startRunTracking = useCallback(async () => {
     if (Platform.OS === "web") {
       setIsTracking(true);
-      setCurrentRun({ startTime: new Date().toISOString(), route: [], distanceKm: 0 });
+      setCurrentRun({
+        startTime: new Date().toISOString(),
+        route: [],
+        distanceKm: 0,
+      });
       return;
     }
     try {
@@ -370,10 +349,18 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       setIsTracking(true);
-      setCurrentRun({ startTime: new Date().toISOString(), route: [], distanceKm: 0 });
+      setCurrentRun({
+        startTime: new Date().toISOString(),
+        route: [],
+        distanceKm: 0,
+      });
 
       const sub = await Location.watchPositionAsync(
-        { accuracy: Location.Accuracy.High, distanceInterval: 10, timeInterval: 5000 },
+        {
+          accuracy: Location.Accuracy.High,
+          distanceInterval: 10,
+          timeInterval: 5000,
+        },
         (location) => {
           const { latitude, longitude } = location.coords;
           setCurrentRun((prev) => {
@@ -440,7 +427,10 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
     };
 
     setHealthData((prev) => {
-      const updated = { ...prev, runSessions: [...prev.runSessions, session].slice(-50) };
+      const updated = {
+        ...prev,
+        runSessions: [...prev.runSessions, session].slice(-50),
+      };
       persist(updated);
       return updated;
     });
@@ -466,7 +456,10 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
         id: `${Date.now()}${Math.random().toString(36).slice(2, 11)}`,
       };
       setHealthData((prev) => {
-        const updated = { ...prev, runSessions: [...prev.runSessions, session].slice(-50) };
+        const updated = {
+          ...prev,
+          runSessions: [...prev.runSessions, session].slice(-50),
+        };
         persist(updated);
         return updated;
       });

@@ -1,26 +1,13 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import { Platform, Alert } from "react-native";
-import {
-  GoogleAuthProvider,
-  signInWithCredential,
-  onAuthStateChanged,
-  signOut,
-  type User as FirebaseUser,
-} from "firebase/auth";
+import { GoogleAuthProvider, signInWithCredential, onAuthStateChanged, signOut, type User as FirebaseUser } from "firebase/auth";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { auth, getFirebaseAuth } from "./firebase";
-
-const AUTH_STORAGE_KEY = "@fitai_auth_user";
-const AUTH_TOKEN_KEY = "@fitai_auth_token";
+import * as Crypto from "expo-crypto";
+import { getFirebaseAuth } from "./firebase";
 
 function generateUUID(): string {
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
+  return Crypto.randomUUID();
 }
 
 interface User {
@@ -63,39 +50,7 @@ function firebaseUserToUser(fbUser: FirebaseUser): User {
   };
 }
 
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const payload = parts[1];
-    const padded = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = atob(padded);
-    return JSON.parse(decoded);
-  } catch {
-    return null;
-  }
-}
-
-function idTokenToUser(idToken: string): User | null {
-  const payload = decodeJwtPayload(idToken);
-  if (!payload) return null;
-  const sub = (payload.sub as string) || (payload.user_id as string) || "";
-  const email = (payload.email as string) || null;
-  const name = (payload.name as string) || "";
-  const picture = (payload.picture as string) || null;
-  const nameParts = name.split(" ");
-  return {
-    id: sub,
-    email,
-    firstName: nameParts[0] || null,
-    lastName: nameParts.slice(1).join(" ") || null,
-    profileImageUrl: picture,
-  };
-}
-
-const API_BASE = process.env.EXPO_PUBLIC_DOMAIN
-  ? `https://${process.env.EXPO_PUBLIC_DOMAIN}`
-  : "";
+const API_BASE = process.env.EXPO_PUBLIC_DOMAIN ? `https://${process.env.EXPO_PUBLIC_DOMAIN}` : "";
 
 function getErrorMessage(err: unknown): string {
   if (err && typeof err === "object" && "code" in err) {
@@ -131,6 +86,7 @@ async function handleIdTokenFirebase(idToken: string): Promise<FirebaseUser | nu
 
 function loginWithPopupWindow(authUrl: string, state: string): Promise<string> {
   return new Promise((resolve, reject) => {
+    const expectedOrigin = API_BASE ? new URL(API_BASE).origin : window.location.origin;
     const popup = window.open(authUrl, "elovia-auth", "width=500,height=600,menubar=no,toolbar=no");
     if (!popup) {
       reject(new Error("Popup was blocked. Please allow popups and try again."));
@@ -138,6 +94,7 @@ function loginWithPopupWindow(authUrl: string, state: string): Promise<string> {
     }
 
     const handler = (event: MessageEvent) => {
+      if (event.origin !== expectedOrigin) return;
       if ((event.data?.type === "elovia-auth" || event.data?.type === "fitai-auth") && event.data?.state === state) {
         window.removeEventListener("message", handler);
         clearInterval(checkClosed);
@@ -164,68 +121,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [storedToken, setStoredToken] = useState<string | null>(null);
 
   useEffect(() => {
-    if (Platform.OS === "web") {
-      let unsubscribe: (() => void) | null = null;
-      let mounted = true;
-      getFirebaseAuth().then((firebaseAuth) => {
+    let unsubscribe: (() => void) | null = null;
+    let mounted = true;
+    getFirebaseAuth()
+      .then((firebaseAuth) => {
         if (!mounted) return;
-        if (!firebaseAuth) {
-          setIsLoading(false);
-          return;
-        }
         unsubscribe = onAuthStateChanged(firebaseAuth, (fbUser) => {
           if (!mounted) return;
-          if (fbUser) {
-            setUser(firebaseUserToUser(fbUser));
-          } else {
-            setUser(null);
-          }
+          setUser(fbUser ? firebaseUserToUser(fbUser) : null);
           setIsLoading(false);
         });
+      })
+      .catch(() => {
+        if (mounted) setIsLoading(false);
       });
-      return () => { mounted = false; unsubscribe?.(); };
-    } else {
-      AsyncStorage.multiGet([AUTH_STORAGE_KEY, AUTH_TOKEN_KEY])
-        .then(async ([userEntry, tokenEntry]) => {
-          const savedUser = userEntry[1];
-          const savedToken = tokenEntry[1];
-          if (savedUser && savedToken) {
-            try {
-              const fbUser = await handleIdTokenFirebase(savedToken);
-              if (fbUser) {
-                setUser(firebaseUserToUser(fbUser));
-                setStoredToken(savedToken);
-              } else {
-                setUser(null);
-                await AsyncStorage.multiRemove([AUTH_STORAGE_KEY, AUTH_TOKEN_KEY]);
-              }
-            } catch {
-              setUser(null);
-              await AsyncStorage.multiRemove([AUTH_STORAGE_KEY, AUTH_TOKEN_KEY]).catch(() => {});
-            }
-          } else if (savedUser) {
-            setUser(null);
-            await AsyncStorage.multiRemove([AUTH_STORAGE_KEY, AUTH_TOKEN_KEY]).catch(() => {});
-          }
-          setIsLoading(false);
-        })
-        .catch(() => {
-          setIsLoading(false);
-        });
-    }
+    return () => {
+      mounted = false;
+      unsubscribe?.();
+    };
   }, []);
 
   const getIdToken = useCallback(async (): Promise<string | null> => {
-    if (Platform.OS === "web") {
-      const firebaseAuth = await getFirebaseAuth();
-      if (!firebaseAuth?.currentUser) return null;
-      return firebaseAuth.currentUser.getIdToken();
-    }
-    return storedToken;
-  }, [storedToken]);
+    const firebaseAuth = await getFirebaseAuth();
+    if (!firebaseAuth.currentUser) return null;
+    return firebaseAuth.currentUser.getIdToken();
+  }, []);
 
   const login = useCallback(async () => {
     setAuthError(null);
@@ -248,7 +170,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
 
         if (result.type === "success" && result.url) {
-          const returnedStateRaw = result.url.match(/[?&]state=([^&]+)/)?.[1];
+          const returnedStateRaw = result.url.match(/[?&#]state=([^&]+)/)?.[1];
           const returnedState = returnedStateRaw ? decodeURIComponent(returnedStateRaw) : null;
           if (!returnedState || returnedState !== state) {
             const msg = "Security check failed. Please try signing in again.";
@@ -256,23 +178,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             Alert.alert("Sign-In Error", msg);
             return;
           }
-          const rawToken = result.url.match(/[?&]idToken=([^&]+)/)?.[1];
+          const rawToken = result.url.match(/[?&#]idToken=([^&]+)/)?.[1];
           const idToken = rawToken ? decodeURIComponent(rawToken) : null;
           if (idToken) {
-            const fbUser = await handleIdTokenFirebase(idToken);
-            const canonicalUser = fbUser ? firebaseUserToUser(fbUser) : idTokenToUser(idToken);
-            if (canonicalUser) {
-              setUser(canonicalUser);
-              setStoredToken(idToken);
-              await AsyncStorage.multiSet([
-                [AUTH_STORAGE_KEY, JSON.stringify(canonicalUser)],
-                [AUTH_TOKEN_KEY, idToken],
-              ]);
-            } else {
-              const msg = "Could not read account info. Please try again.";
-              setAuthError(msg);
-              Alert.alert("Sign-In Error", msg);
-            }
+            await handleIdTokenFirebase(idToken);
           } else {
             const msg = "No authentication token received. Please try again.";
             setAuthError(msg);
@@ -295,11 +204,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     try {
       const firebaseAuth = await getFirebaseAuth();
-      if (firebaseAuth) await signOut(firebaseAuth);
+      await signOut(firebaseAuth);
       setUser(null);
-      setStoredToken(null);
       setAuthError(null);
-      await AsyncStorage.multiRemove([AUTH_STORAGE_KEY, AUTH_TOKEN_KEY]);
     } catch (err) {
       console.error("Logout error:", err);
       const msg = getErrorMessage(err);

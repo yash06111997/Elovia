@@ -1,6 +1,9 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { onDataRestored } from "@/lib/syncEvents";
+import { recommendTrainingAdjustment, type TrainingAdjustment, type WorkoutFeedback } from "@/lib/trainingAdaptation";
+
+export type { TrainingAdjustment, WorkoutFeedback } from "@/lib/trainingAdaptation";
 
 export interface Exercise {
   id: string;
@@ -71,6 +74,8 @@ export interface WorkoutSession {
   exerciseLogs: ExerciseLog[];
   durationMins: number;
   completed: boolean;
+  feedback?: WorkoutFeedback;
+  adjustment?: TrainingAdjustment;
 }
 
 export type ActivePlanType = "ai" | "custom";
@@ -92,7 +97,7 @@ interface WorkoutContextType {
   removeSetFromExercise: (exerciseIndex: number, setIndex: number) => void;
   removeExerciseFromSession: (exerciseIndex: number) => void;
   logSet: (exerciseId: string, exerciseName: string, set: SetLog) => void;
-  completeSession: (durationMins: number) => void;
+  completeSession: (durationMins: number, feedback: WorkoutFeedback) => TrainingAdjustment | undefined;
   cancelSession: () => void;
   getExerciseHistory: (exerciseId: string) => SetLog[];
   getPersonalRecord: (exerciseId: string) => PersonalRecord | null;
@@ -120,13 +125,13 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   const load = async () => {
     try {
       const [p, s, pr, active, cp, apt, acpid] = await Promise.all([
-        AsyncStorage.getItem("@fitai_plan"),
-        AsyncStorage.getItem("@fitai_sessions"),
-        AsyncStorage.getItem("@fitai_prs"),
-        AsyncStorage.getItem("@fitai_active_session"),
-        AsyncStorage.getItem("@fitai_custom_plans"),
-        AsyncStorage.getItem("@fitai_active_plan_type"),
-        AsyncStorage.getItem("@fitai_active_custom_plan_id"),
+        AsyncStorage.getItem("@elovia_plan"),
+        AsyncStorage.getItem("@elovia_sessions"),
+        AsyncStorage.getItem("@elovia_prs"),
+        AsyncStorage.getItem("@elovia_active_session"),
+        AsyncStorage.getItem("@elovia_custom_plans"),
+        AsyncStorage.getItem("@elovia_active_plan_type"),
+        AsyncStorage.getItem("@elovia_active_custom_plan_id"),
       ]);
       if (p) setPlanState(JSON.parse(p));
       if (s) setSessions(JSON.parse(s));
@@ -150,7 +155,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
 
   const setPlan = useCallback((p: WorkoutPlan) => {
     setPlanState(p);
-    AsyncStorage.setItem("@fitai_plan", JSON.stringify(p));
+    AsyncStorage.setItem("@elovia_plan", JSON.stringify(p));
   }, []);
 
   const startSession = useCallback((day: WorkoutDay) => {
@@ -164,7 +169,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
       completed: false,
     };
     setActiveSession(session);
-    AsyncStorage.setItem("@fitai_active_session", JSON.stringify(session));
+    AsyncStorage.setItem("@elovia_active_session", JSON.stringify(session));
   }, []);
 
   const startFreeSession = useCallback((name?: string) => {
@@ -178,7 +183,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
       completed: false,
     };
     setActiveSession(session);
-    AsyncStorage.setItem("@fitai_active_session", JSON.stringify(session));
+    AsyncStorage.setItem("@elovia_active_session", JSON.stringify(session));
   }, []);
 
   const addExerciseToSession = useCallback((exerciseName: string, exerciseId?: string) => {
@@ -191,8 +196,11 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
         sets: [],
         date: prev.date,
       };
-      const updated = { ...prev, exerciseLogs: [...prev.exerciseLogs, newLog] };
-      AsyncStorage.setItem("@fitai_active_session", JSON.stringify(updated));
+      const updated = {
+        ...prev,
+        exerciseLogs: [...prev.exerciseLogs, newLog],
+      };
+      AsyncStorage.setItem("@elovia_active_session", JSON.stringify(updated));
       return updated;
     });
   }, []);
@@ -204,9 +212,12 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
       if (!logs[exerciseIndex]) return prev;
       const existingSets = logs[exerciseIndex].sets;
       const newSet: SetLog = { ...set, setNumber: existingSets.length + 1 };
-      logs[exerciseIndex] = { ...logs[exerciseIndex], sets: [...existingSets, newSet] };
+      logs[exerciseIndex] = {
+        ...logs[exerciseIndex],
+        sets: [...existingSets, newSet],
+      };
       const updated = { ...prev, exerciseLogs: logs };
-      AsyncStorage.setItem("@fitai_active_session", JSON.stringify(updated));
+      AsyncStorage.setItem("@elovia_active_session", JSON.stringify(updated));
       return updated;
     });
   }, []);
@@ -220,7 +231,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
       sets[setIndex] = { ...sets[setIndex], ...setUpdate };
       logs[exerciseIndex] = { ...logs[exerciseIndex], sets };
       const updated = { ...prev, exerciseLogs: logs };
-      AsyncStorage.setItem("@fitai_active_session", JSON.stringify(updated));
+      AsyncStorage.setItem("@elovia_active_session", JSON.stringify(updated));
       return updated;
     });
   }, []);
@@ -230,11 +241,10 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
       if (!prev) return prev;
       const logs = [...prev.exerciseLogs];
       if (!logs[exerciseIndex]) return prev;
-      const sets = logs[exerciseIndex].sets.filter((_, i) => i !== setIndex)
-        .map((s, i) => ({ ...s, setNumber: i + 1 }));
+      const sets = logs[exerciseIndex].sets.filter((_, i) => i !== setIndex).map((s, i) => ({ ...s, setNumber: i + 1 }));
       logs[exerciseIndex] = { ...logs[exerciseIndex], sets };
       const updated = { ...prev, exerciseLogs: logs };
-      AsyncStorage.setItem("@fitai_active_session", JSON.stringify(updated));
+      AsyncStorage.setItem("@elovia_active_session", JSON.stringify(updated));
       return updated;
     });
   }, []);
@@ -244,91 +254,99 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
       if (!prev) return prev;
       const logs = prev.exerciseLogs.filter((_, i) => i !== exerciseIndex);
       const updated = { ...prev, exerciseLogs: logs };
-      AsyncStorage.setItem("@fitai_active_session", JSON.stringify(updated));
+      AsyncStorage.setItem("@elovia_active_session", JSON.stringify(updated));
       return updated;
     });
   }, []);
 
   const cancelSession = useCallback(() => {
     setActiveSession(null);
-    AsyncStorage.removeItem("@fitai_active_session");
+    AsyncStorage.removeItem("@elovia_active_session");
   }, []);
 
-  const logSet = useCallback(
-    (exerciseId: string, exerciseName: string, set: SetLog) => {
-      setActiveSession((prev) => {
-        if (!prev) return prev;
-        const existingLog = prev.exerciseLogs.find(
-          (l) => l.exerciseId === exerciseId
+  const logSet = useCallback((exerciseId: string, exerciseName: string, set: SetLog) => {
+    setActiveSession((prev) => {
+      if (!prev) return prev;
+      const existingLog = prev.exerciseLogs.find((l) => l.exerciseId === exerciseId);
+      let exerciseLogs: ExerciseLog[];
+      if (existingLog) {
+        exerciseLogs = prev.exerciseLogs.map((l) =>
+          l.exerciseId === exerciseId
+            ? {
+                ...l,
+                sets: [...l.sets.filter((s) => s.setNumber !== set.setNumber), set],
+              }
+            : l,
         );
-        let exerciseLogs: ExerciseLog[];
-        if (existingLog) {
-          exerciseLogs = prev.exerciseLogs.map((l) =>
-            l.exerciseId === exerciseId
-              ? { ...l, sets: [...l.sets.filter((s) => s.setNumber !== set.setNumber), set] }
-              : l
-          );
-        } else {
-          exerciseLogs = [
-            ...prev.exerciseLogs,
-            {
-              exerciseId,
-              exerciseName,
-              sets: [set],
-              date: prev.date,
-            },
-          ];
-        }
-        const updated = { ...prev, exerciseLogs };
-        AsyncStorage.setItem("@fitai_active_session", JSON.stringify(updated));
-        return updated;
-      });
-    },
-    []
-  );
+      } else {
+        exerciseLogs = [
+          ...prev.exerciseLogs,
+          {
+            exerciseId,
+            exerciseName,
+            sets: [set],
+            date: prev.date,
+          },
+        ];
+      }
+      const updated = { ...prev, exerciseLogs };
+      AsyncStorage.setItem("@elovia_active_session", JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
 
   const completeSession = useCallback(
-    (durationMins: number) => {
+    (durationMins: number, feedback: WorkoutFeedback) => {
       if (!activeSession) return;
-      const completed = { ...activeSession, completed: true, durationMins };
+      const adjustment = recommendTrainingAdjustment(feedback);
+      const completed = {
+        ...activeSession,
+        completed: true,
+        durationMins,
+        feedback,
+        adjustment,
+      };
 
       const newSessions = [...sessions, completed].slice(-200);
       setSessions(newSessions);
-      AsyncStorage.setItem("@fitai_sessions", JSON.stringify(newSessions));
+      AsyncStorage.setItem("@elovia_sessions", JSON.stringify(newSessions));
 
       const newPRs = [...personalRecords];
       completed.exerciseLogs.forEach((log) => {
-        log.sets.filter((s) => s.completed).forEach((s) => {
-          const existing = newPRs.find((pr) => pr.exerciseId === log.exerciseId);
-          const volume = s.reps * s.weightKg;
-          if (!existing) {
-            newPRs.push({
-              exerciseId: log.exerciseId,
-              exerciseName: log.exerciseName,
-              maxWeightKg: s.weightKg,
-              maxReps: s.reps,
-              bestVolume: volume,
-              lastPerformed: completed.date,
-            });
-          } else {
-            const idx = newPRs.findIndex((pr) => pr.exerciseId === log.exerciseId);
-            newPRs[idx] = {
-              ...existing,
-              maxWeightKg: Math.max(existing.maxWeightKg, s.weightKg),
-              maxReps: Math.max(existing.maxReps, s.reps),
-              bestVolume: Math.max(existing.bestVolume, volume),
-              lastPerformed: completed.date,
-            };
-          }
-        });
+        log.sets
+          .filter((s) => s.completed)
+          .forEach((s) => {
+            const existing = newPRs.find((pr) => pr.exerciseId === log.exerciseId);
+            const volume = s.reps * s.weightKg;
+            if (!existing) {
+              newPRs.push({
+                exerciseId: log.exerciseId,
+                exerciseName: log.exerciseName,
+                maxWeightKg: s.weightKg,
+                maxReps: s.reps,
+                bestVolume: volume,
+                lastPerformed: completed.date,
+              });
+            } else {
+              const idx = newPRs.findIndex((pr) => pr.exerciseId === log.exerciseId);
+              newPRs[idx] = {
+                ...existing,
+                maxWeightKg: Math.max(existing.maxWeightKg, s.weightKg),
+                maxReps: Math.max(existing.maxReps, s.reps),
+                bestVolume: Math.max(existing.bestVolume, volume),
+                lastPerformed: completed.date,
+              };
+            }
+          });
       });
       setPersonalRecords(newPRs);
-      AsyncStorage.setItem("@fitai_prs", JSON.stringify(newPRs));
+      AsyncStorage.setItem("@elovia_prs", JSON.stringify(newPRs));
 
       setActiveSession(null);
-      AsyncStorage.removeItem("@fitai_active_session");
+      AsyncStorage.removeItem("@elovia_active_session");
+      return adjustment;
     },
-    [activeSession, sessions, personalRecords]
+    [activeSession, sessions, personalRecords],
   );
 
   const getExerciseHistory = useCallback(
@@ -343,21 +361,19 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
       });
       return logs;
     },
-    [sessions]
+    [sessions],
   );
 
   const getPersonalRecord = useCallback(
     (exerciseId: string): PersonalRecord | null => {
       return personalRecords.find((pr) => pr.exerciseId === exerciseId) ?? null;
     },
-    [personalRecords]
+    [personalRecords],
   );
 
   const getLastPerformance = useCallback(
     (exerciseId: string): { date: string; sets: SetLog[] } | null => {
-      const completedSessions = [...sessions]
-        .filter((s) => s.completed)
-        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      const completedSessions = [...sessions].filter((s) => s.completed).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
       for (const session of completedSessions) {
         const log = session.exerciseLogs.find((l) => l.exerciseId === exerciseId);
         if (log && log.sets.some((s) => s.completed)) {
@@ -366,12 +382,10 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
       }
       return null;
     },
-    [sessions]
+    [sessions],
   );
 
-  const todaySession = sessions.find(
-    (s) => s.date === new Date().toISOString().split("T")[0]
-  ) ?? null;
+  const todaySession = sessions.find((s) => s.date === new Date().toISOString().split("T")[0]) ?? null;
 
   const getWeeklyCompletion = useCallback((): number => {
     const today = new Date();
@@ -381,39 +395,30 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
       const d = new Date(s.date);
       return d >= weekStart && d <= today && s.completed;
     });
-    const activePlan = activePlanType === "custom"
-      ? customPlans.find((cp) => cp.id === activeCustomPlanId)
-      : plan;
+    const activePlan = activePlanType === "custom" ? customPlans.find((cp) => cp.id === activeCustomPlanId) : plan;
     const target = activePlan ? activePlan.days.length : 3;
     return Math.min(100, Math.round((weekSessions.length / target) * 100));
   }, [sessions, plan, customPlans, activePlanType, activeCustomPlanId]);
 
-  const addCustomPlan = useCallback(
-    (planData: Omit<CustomWorkoutPlan, "id" | "createdAt" | "updatedAt">): CustomWorkoutPlan => {
-      const newPlan: CustomWorkoutPlan = {
-        ...planData,
-        id: Date.now().toString(),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      setCustomPlans((prev) => {
-        const updated = [...prev, newPlan];
-        AsyncStorage.setItem("@fitai_custom_plans", JSON.stringify(updated));
-        return updated;
-      });
-      return newPlan;
-    },
-    []
-  );
+  const addCustomPlan = useCallback((planData: Omit<CustomWorkoutPlan, "id" | "createdAt" | "updatedAt">): CustomWorkoutPlan => {
+    const newPlan: CustomWorkoutPlan = {
+      ...planData,
+      id: Date.now().toString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    setCustomPlans((prev) => {
+      const updated = [...prev, newPlan];
+      AsyncStorage.setItem("@elovia_custom_plans", JSON.stringify(updated));
+      return updated;
+    });
+    return newPlan;
+  }, []);
 
   const updateCustomPlan = useCallback((updatedPlan: CustomWorkoutPlan) => {
     setCustomPlans((prev) => {
-      const updated = prev.map((p) =>
-        p.id === updatedPlan.id
-          ? { ...updatedPlan, updatedAt: new Date().toISOString() }
-          : p
-      );
-      AsyncStorage.setItem("@fitai_custom_plans", JSON.stringify(updated));
+      const updated = prev.map((p) => (p.id === updatedPlan.id ? { ...updatedPlan, updatedAt: new Date().toISOString() } : p));
+      AsyncStorage.setItem("@elovia_custom_plans", JSON.stringify(updated));
       return updated;
     });
   }, []);
@@ -421,13 +426,13 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   const deleteCustomPlan = useCallback((id: string) => {
     setCustomPlans((prev) => {
       const updated = prev.filter((p) => p.id !== id);
-      AsyncStorage.setItem("@fitai_custom_plans", JSON.stringify(updated));
+      AsyncStorage.setItem("@elovia_custom_plans", JSON.stringify(updated));
       return updated;
     });
     setActiveCustomPlanId((prev) => {
       if (prev === id) {
-        AsyncStorage.setItem("@fitai_active_plan_type", JSON.stringify("ai"));
-        AsyncStorage.removeItem("@fitai_active_custom_plan_id");
+        AsyncStorage.setItem("@elovia_active_plan_type", JSON.stringify("ai"));
+        AsyncStorage.removeItem("@elovia_active_custom_plan_id");
         setActivePlanType("ai");
         return null;
       }
@@ -437,13 +442,13 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
 
   const setActivePlan = useCallback((type: ActivePlanType, customPlanId?: string) => {
     setActivePlanType(type);
-    AsyncStorage.setItem("@fitai_active_plan_type", JSON.stringify(type));
+    AsyncStorage.setItem("@elovia_active_plan_type", JSON.stringify(type));
     if (type === "custom" && customPlanId) {
       setActiveCustomPlanId(customPlanId);
-      AsyncStorage.setItem("@fitai_active_custom_plan_id", JSON.stringify(customPlanId));
+      AsyncStorage.setItem("@elovia_active_custom_plan_id", JSON.stringify(customPlanId));
     } else {
       setActiveCustomPlanId(null);
-      AsyncStorage.removeItem("@fitai_active_custom_plan_id");
+      AsyncStorage.removeItem("@elovia_active_custom_plan_id");
     }
   }, []);
 

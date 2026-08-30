@@ -1,16 +1,5 @@
 import React, { useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  Platform,
-  Alert,
-  ActivityIndicator,
-  Modal,
-  TextInput,
-} from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert, ActivityIndicator, Modal, TextInput } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -39,7 +28,6 @@ export default function WorkoutsScreen() {
     activeSession,
     startSession,
     logSet,
-    completeSession,
     getPersonalRecord,
     getLastPerformance,
     customPlans,
@@ -66,18 +54,16 @@ export default function WorkoutsScreen() {
   const [showPlanSwitcher, setShowPlanSwitcher] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("plan");
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
-  const [aiPreferences, setAiPreferences] = useState<{ bodyParts: string[]; message: string }>({ bodyParts: [], message: "" });
+  const [aiPreferences, setAiPreferences] = useState<{
+    bodyParts: string[];
+    message: string;
+  }>({ bodyParts: [], message: "" });
 
   const topPadding = Platform.OS === "web" ? 67 : insets.top + 12;
   const activeDays = getActivePlanDays();
 
   const activeCustomPlan = customPlans.find((p) => p.id === activeCustomPlanId) ?? null;
-  const displayPlanName =
-    activePlanType === "custom" && activeCustomPlan
-      ? activeCustomPlan.name
-      : plan
-      ? plan.name
-      : "No Plan";
+  const displayPlanName = activePlanType === "custom" && activeCustomPlan ? activeCustomPlan.name : plan ? plan.name : "No Plan";
 
   const handleStartWorkout = (day: WorkoutDay) => {
     startSession(day);
@@ -89,11 +75,10 @@ export default function WorkoutsScreen() {
 
   const handleFinishWorkout = () => {
     if (timerInterval) clearInterval(timerInterval);
-    const durationMins = Math.round(sessionTimer / 60);
-    completeSession(durationMins);
-    setSelectedDay(null);
-    setSessionTimer(0);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    router.push({
+      pathname: "/log-workout",
+      params: { checkIn: "1", elapsedSeconds: String(sessionTimer) },
+    });
   };
 
   const handleRegenerate = () => {
@@ -145,7 +130,9 @@ export default function WorkoutsScreen() {
   };
 
   const formatTimer = (secs: number) => {
-    const m = Math.floor(secs / 60).toString().padStart(2, "0");
+    const m = Math.floor(secs / 60)
+      .toString()
+      .padStart(2, "0");
     const s = (secs % 60).toString().padStart(2, "0");
     return `${m}:${s}`;
   };
@@ -181,7 +168,11 @@ export default function WorkoutsScreen() {
     const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0];
     if (dateStr === today) return "Today";
     if (dateStr === yesterday) return "Yesterday";
-    return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+    return d.toLocaleDateString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    });
   };
 
   if (noPlan && sessions.length === 0) {
@@ -193,7 +184,13 @@ export default function WorkoutsScreen() {
         </View>
 
         <TouchableOpacity
-          style={[styles.optionCard, { backgroundColor: theme.card, borderColor: Colors.accentGreen + "40" }]}
+          style={[
+            styles.optionCard,
+            {
+              backgroundColor: theme.card,
+              borderColor: Colors.accentGreen + "40",
+            },
+          ]}
           onPress={() => router.push("/log-workout")}
           activeOpacity={0.8}
         >
@@ -202,9 +199,7 @@ export default function WorkoutsScreen() {
           </View>
           <View style={styles.optionContent}>
             <Text style={[styles.optionTitle, { color: theme.text }]}>Log Workout</Text>
-            <Text style={[styles.optionDesc, { color: theme.textSecondary }]}>
-              Start an empty workout. Add exercises and log sets one by one as you go.
-            </Text>
+            <Text style={[styles.optionDesc, { color: theme.textSecondary }]}>Start an empty workout. Add exercises and log sets one by one as you go.</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color={theme.textMuted} />
         </TouchableOpacity>
@@ -215,7 +210,10 @@ export default function WorkoutsScreen() {
             a real programme immediately. */}
         <TouchableOpacity
           style={[styles.optionCard, { backgroundColor: theme.card, borderColor: theme.border }]}
-          onPress={() => { Haptics.selectionAsync(); router.push("/plans"); }}
+          onPress={() => {
+            Haptics.selectionAsync();
+            router.push("/plans");
+          }}
           activeOpacity={0.8}
         >
           <View style={[styles.optionIconWrap, { backgroundColor: Colors.accentGreen + "20" }]}>
@@ -223,16 +221,17 @@ export default function WorkoutsScreen() {
           </View>
           <View style={styles.optionContent}>
             <Text style={[styles.optionTitle, { color: theme.text }]}>Training Programmes</Text>
-            <Text style={[styles.optionDesc, { color: theme.textSecondary }]}>
-              Proven programmes built on established training principles. Free on every plan.
-            </Text>
+            <Text style={[styles.optionDesc, { color: theme.textSecondary }]}>Proven programmes built on established training principles. Free on every plan.</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color={theme.textMuted} />
         </TouchableOpacity>
 
         <TouchableOpacity
           style={[styles.optionCard, { backgroundColor: theme.card, borderColor: theme.border }]}
-          onPress={() => { setEditingPlan(undefined); setShowPlanBuilder(true); }}
+          onPress={() => {
+            setEditingPlan(undefined);
+            setShowPlanBuilder(true);
+          }}
           activeOpacity={0.8}
         >
           <View style={[styles.optionIconWrap, { backgroundColor: "#A78BFA20" }]}>
@@ -240,9 +239,7 @@ export default function WorkoutsScreen() {
           </View>
           <View style={styles.optionContent}>
             <Text style={[styles.optionTitle, { color: theme.text }]}>Custom Self Tracking</Text>
-            <Text style={[styles.optionDesc, { color: theme.textSecondary }]}>
-              Build your own workout plan. Choose exercises, sets, and reps. Track your progress manually.
-            </Text>
+            <Text style={[styles.optionDesc, { color: theme.textSecondary }]}>Build your own workout plan. Choose exercises, sets, and reps. Track your progress manually.</Text>
           </View>
           <Ionicons name="chevron-forward" size={20} color={theme.textMuted} />
         </TouchableOpacity>
@@ -263,20 +260,40 @@ export default function WorkoutsScreen() {
           </View>
           <View style={styles.optionContent}>
             <Text style={[styles.optionTitle, { color: theme.text }]}>AI Powered Workout</Text>
-            <Text style={[styles.optionDesc, { color: theme.textSecondary }]}>
-              Get a personalized plan generated by AI based on your goals, equipment, and fitness level.
-            </Text>
+            <Text style={[styles.optionDesc, { color: theme.textSecondary }]}>Get a personalized plan generated by AI based on your goals, equipment, and fitness level.</Text>
           </View>
           {!canAccess("ai_workout") && (
-            <View style={{ backgroundColor: Colors.primary + "20", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, marginRight: 4 }}>
-              <Text style={{ fontSize: 9, fontFamily: "Inter_700Bold", color: Colors.primary }}>PREMIUM</Text>
+            <View
+              style={{
+                backgroundColor: Colors.primary + "20",
+                paddingHorizontal: 8,
+                paddingVertical: 3,
+                borderRadius: 6,
+                marginRight: 4,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 9,
+                  fontFamily: "Inter_700Bold",
+                  color: Colors.primary,
+                }}
+              >
+                PREMIUM
+              </Text>
             </View>
           )}
           <Ionicons name="chevron-forward" size={20} color={theme.textMuted} />
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.quickGenBtn, { backgroundColor: isDark ? "#1A1A24" : "#F0F0F8", borderColor: theme.border }]}
+          style={[
+            styles.quickGenBtn,
+            {
+              backgroundColor: isDark ? "#1A1A24" : "#F0F0F8",
+              borderColor: theme.border,
+            },
+          ]}
           onPress={() => {
             if (!canAccess("ai_workout")) {
               router.push("/paywall");
@@ -289,8 +306,23 @@ export default function WorkoutsScreen() {
           <Ionicons name="flash-outline" size={16} color={Colors.primary} />
           <Text style={[styles.quickGenText, { color: Colors.primary }]}>Quick Generate from Profile</Text>
           {!canAccess("ai_workout") && (
-            <View style={{ backgroundColor: Colors.primary + "20", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
-              <Text style={{ fontSize: 9, fontFamily: "Inter_700Bold", color: Colors.primary }}>PREMIUM</Text>
+            <View
+              style={{
+                backgroundColor: Colors.primary + "20",
+                paddingHorizontal: 8,
+                paddingVertical: 3,
+                borderRadius: 6,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 9,
+                  fontFamily: "Inter_700Bold",
+                  color: Colors.primary,
+                }}
+              >
+                PREMIUM
+              </Text>
             </View>
           )}
         </TouchableOpacity>
@@ -323,11 +355,23 @@ export default function WorkoutsScreen() {
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingTop: topPadding, paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 80 }]}
+        contentContainerStyle={[
+          styles.content,
+          {
+            paddingTop: topPadding,
+            paddingBottom: Platform.OS === "web" ? 34 : insets.bottom + 80,
+          },
+        ]}
         showsVerticalScrollIndicator={false}
       >
         <TouchableOpacity
-          style={[styles.freeWorkoutBtn, { backgroundColor: Colors.accentGreen + "15", borderColor: Colors.accentGreen + "40" }]}
+          style={[
+            styles.freeWorkoutBtn,
+            {
+              backgroundColor: Colors.accentGreen + "15",
+              borderColor: Colors.accentGreen + "40",
+            },
+          ]}
           onPress={() => router.push("/log-workout")}
           activeOpacity={0.8}
         >
@@ -339,7 +383,10 @@ export default function WorkoutsScreen() {
         <View style={[styles.viewToggle, { backgroundColor: theme.card, borderColor: theme.border }]}>
           <TouchableOpacity
             style={[styles.viewToggleBtn, viewMode === "plan" && { backgroundColor: Colors.primary }]}
-            onPress={() => { setViewMode("plan"); Haptics.selectionAsync(); }}
+            onPress={() => {
+              setViewMode("plan");
+              Haptics.selectionAsync();
+            }}
             activeOpacity={0.8}
           >
             <Ionicons name="barbell-outline" size={14} color={viewMode === "plan" ? "#000" : theme.textSecondary} />
@@ -347,16 +394,33 @@ export default function WorkoutsScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.viewToggleBtn, viewMode === "history" && { backgroundColor: Colors.primary }]}
-            onPress={() => { setViewMode("history"); Haptics.selectionAsync(); }}
+            onPress={() => {
+              setViewMode("history");
+              Haptics.selectionAsync();
+            }}
             activeOpacity={0.8}
           >
             <Ionicons name="time-outline" size={14} color={viewMode === "history" ? "#000" : theme.textSecondary} />
-            <Text style={[styles.viewToggleText, { color: viewMode === "history" ? "#000" : theme.textSecondary }]}>History</Text>
+            <Text
+              style={[
+                styles.viewToggleText,
+                {
+                  color: viewMode === "history" ? "#000" : theme.textSecondary,
+                },
+              ]}
+            >
+              History
+            </Text>
             {sessions.length > 0 && (
-              <View style={[styles.historyBadge, { backgroundColor: viewMode === "history" ? "#00000030" : Colors.primary + "30" }]}>
-                <Text style={[styles.historyBadgeText, { color: viewMode === "history" ? "#000" : Colors.primary }]}>
-                  {sessions.filter((s) => s.completed).length}
-                </Text>
+              <View
+                style={[
+                  styles.historyBadge,
+                  {
+                    backgroundColor: viewMode === "history" ? "#00000030" : Colors.primary + "30",
+                  },
+                ]}
+              >
+                <Text style={[styles.historyBadgeText, { color: viewMode === "history" ? "#000" : Colors.primary }]}>{sessions.filter((s) => s.completed).length}</Text>
               </View>
             )}
           </TouchableOpacity>
@@ -366,18 +430,17 @@ export default function WorkoutsScreen() {
           <>
             {/* Plan Header */}
             <View style={styles.planHeader}>
-              <TouchableOpacity
-                style={styles.planNameRow}
-                onPress={() => setShowPlanSwitcher(true)}
-                activeOpacity={0.8}
-              >
+              <TouchableOpacity style={styles.planNameRow} onPress={() => setShowPlanSwitcher(true)} activeOpacity={0.8}>
                 <View>
-                  <Text style={[styles.planName, { color: theme.text }]} numberOfLines={1}>{displayPlanName}</Text>
+                  <Text style={[styles.planName, { color: theme.text }]} numberOfLines={1}>
+                    {displayPlanName}
+                  </Text>
                   <View style={styles.planSubRow}>
                     <Text style={[styles.planMeta, { color: theme.textSecondary }]}>
-                      {activeDays.length} training day{activeDays.length !== 1 ? "s" : ""}
+                      {activeDays.length} training day
+                      {activeDays.length !== 1 ? "s" : ""}
                     </Text>
-                    {(customPlans.length > 0 || plan) ? (
+                    {customPlans.length > 0 || plan ? (
                       <View style={[styles.switchBadge, { backgroundColor: Colors.primary + "20" }]}>
                         <Ionicons name="swap-horizontal" size={11} color={Colors.primary} />
                         <Text style={[styles.switchBadgeText, { color: Colors.primary }]}>Switch</Text>
@@ -389,21 +452,42 @@ export default function WorkoutsScreen() {
 
               <View style={styles.headerActions}>
                 <TouchableOpacity
-                  style={[styles.iconBtn, { backgroundColor: isDark ? "#1A1A24" : "#EDEDF5", borderColor: theme.border }]}
+                  style={[
+                    styles.iconBtn,
+                    {
+                      backgroundColor: isDark ? "#1A1A24" : "#EDEDF5",
+                      borderColor: theme.border,
+                    },
+                  ]}
                   onPress={() => setShowLibrary(true)}
                   activeOpacity={0.8}
                 >
                   <Ionicons name="search" size={16} color={theme.text} />
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.iconBtn, { backgroundColor: isDark ? "#1A1A24" : "#EDEDF5", borderColor: theme.border }]}
-                  onPress={() => { setEditingPlan(undefined); setShowPlanBuilder(true); }}
+                  style={[
+                    styles.iconBtn,
+                    {
+                      backgroundColor: isDark ? "#1A1A24" : "#EDEDF5",
+                      borderColor: theme.border,
+                    },
+                  ]}
+                  onPress={() => {
+                    setEditingPlan(undefined);
+                    setShowPlanBuilder(true);
+                  }}
                   activeOpacity={0.8}
                 >
                   <Ionicons name="add" size={18} color={theme.text} />
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[styles.iconBtn, { backgroundColor: Colors.accent + "20", borderColor: Colors.accent + "40" }]}
+                  style={[
+                    styles.iconBtn,
+                    {
+                      backgroundColor: Colors.accent + "20",
+                      borderColor: Colors.accent + "40",
+                    },
+                  ]}
                   onPress={() => {
                     if (!canAccess("ai_workout")) {
                       router.push("/paywall");
@@ -417,7 +501,13 @@ export default function WorkoutsScreen() {
                 </TouchableOpacity>
                 {activePlanType === "ai" && plan && (
                   <TouchableOpacity
-                    style={[styles.iconBtn, { backgroundColor: Colors.primary + "20", borderColor: Colors.primary + "40" }]}
+                    style={[
+                      styles.iconBtn,
+                      {
+                        backgroundColor: Colors.primary + "20",
+                        borderColor: Colors.primary + "40",
+                      },
+                    ]}
                     onPress={() => {
                       if (!canAccess("ai_workout")) {
                         router.push("/paywall");
@@ -435,18 +525,20 @@ export default function WorkoutsScreen() {
 
             {/* Active Session Banner */}
             {activeSession && (
-              <View style={[styles.activeBanner, { backgroundColor: Colors.accentGreen + "15", borderColor: Colors.accentGreen + "40" }]}>
+              <View
+                style={[
+                  styles.activeBanner,
+                  {
+                    backgroundColor: Colors.accentGreen + "15",
+                    borderColor: Colors.accentGreen + "40",
+                  },
+                ]}
+              >
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.activeTitle, { color: Colors.accentGreen }]}>
-                    Active: {activeSession.workoutDayName}
-                  </Text>
+                  <Text style={[styles.activeTitle, { color: Colors.accentGreen }]}>Active: {activeSession.workoutDayName}</Text>
                   <Text style={[styles.activeTimer, { color: theme.text }]}>{formatTimer(sessionTimer)}</Text>
                 </View>
-                <TouchableOpacity
-                  style={[styles.finishBtn, { backgroundColor: Colors.accentGreen }]}
-                  onPress={handleFinishWorkout}
-                  activeOpacity={0.8}
-                >
+                <TouchableOpacity style={[styles.finishBtn, { backgroundColor: Colors.accentGreen }]} onPress={handleFinishWorkout} activeOpacity={0.8}>
                   <Text style={styles.finishBtnText}>Finish</Text>
                 </TouchableOpacity>
               </View>
@@ -465,17 +557,13 @@ export default function WorkoutsScreen() {
                       <Text style={[styles.dayNumber, { color: theme.textSecondary }]}>Day {dayIdx + 1}</Text>
                       <Text style={[styles.dayName, { color: theme.text }]}>{day.dayName}</Text>
                       <Text style={[styles.dayMeta, { color: theme.textSecondary }]}>
-                        {day.exercises.length} exercise{day.exercises.length !== 1 ? "s" : ""}
+                        {day.exercises.length} exercise
+                        {day.exercises.length !== 1 ? "s" : ""}
                         {day.muscleGroups.length > 0 && ` · ${day.muscleGroups.join(", ")}`}
                       </Text>
                     </View>
                     <TouchableOpacity
-                      style={[
-                        styles.startBtn,
-                        activeSession?.workoutDayId === day.id
-                          ? { backgroundColor: Colors.accentGreen }
-                          : { backgroundColor: Colors.primary },
-                      ]}
+                      style={[styles.startBtn, activeSession?.workoutDayId === day.id ? { backgroundColor: Colors.accentGreen } : { backgroundColor: Colors.primary }]}
                       onPress={() => {
                         if (activeSession?.workoutDayId === day.id) {
                           setSelectedDay(day);
@@ -485,14 +573,8 @@ export default function WorkoutsScreen() {
                       }}
                       activeOpacity={0.8}
                     >
-                      <Ionicons
-                        name={activeSession?.workoutDayId === day.id ? "play" : "play-outline"}
-                        size={14}
-                        color="#000"
-                      />
-                      <Text style={styles.startBtnText}>
-                        {activeSession?.workoutDayId === day.id ? "In Progress" : "Start"}
-                      </Text>
+                      <Ionicons name={activeSession?.workoutDayId === day.id ? "play" : "play-outline"} size={14} color="#000" />
+                      <Text style={styles.startBtnText}>{activeSession?.workoutDayId === day.id ? "In Progress" : "Start"}</Text>
                     </TouchableOpacity>
                   </View>
 
@@ -521,15 +603,18 @@ export default function WorkoutsScreen() {
               <View style={styles.customSection}>
                 <Text style={[styles.customSectionTitle, { color: theme.textSecondary }]}>CUSTOM PLANS</Text>
                 {customPlans.map((cp) => (
-                  <View key={cp.id} style={[styles.customPlanRow, { backgroundColor: theme.card, borderColor: activeCustomPlanId === cp.id && activePlanType === "custom" ? Colors.primary : theme.border }]}>
-                    <TouchableOpacity
-                      style={styles.customPlanInfo}
-                      onPress={() => setActivePlan("custom", cp.id)}
-                      activeOpacity={0.8}
-                    >
-                      {activeCustomPlanId === cp.id && activePlanType === "custom" && (
-                        <Ionicons name="checkmark-circle" size={18} color={Colors.primary} />
-                      )}
+                  <View
+                    key={cp.id}
+                    style={[
+                      styles.customPlanRow,
+                      {
+                        backgroundColor: theme.card,
+                        borderColor: activeCustomPlanId === cp.id && activePlanType === "custom" ? Colors.primary : theme.border,
+                      },
+                    ]}
+                  >
+                    <TouchableOpacity style={styles.customPlanInfo} onPress={() => setActivePlan("custom", cp.id)} activeOpacity={0.8}>
+                      {activeCustomPlanId === cp.id && activePlanType === "custom" && <Ionicons name="checkmark-circle" size={18} color={Colors.primary} />}
                       <View style={{ flex: 1 }}>
                         <Text style={[styles.customPlanName, { color: theme.text }]}>{cp.name}</Text>
                         <Text style={[styles.customPlanMeta, { color: theme.textMuted }]}>
@@ -538,15 +623,15 @@ export default function WorkoutsScreen() {
                       </View>
                     </TouchableOpacity>
                     <TouchableOpacity
-                      onPress={() => { setEditingPlan(cp); setShowPlanBuilder(true); }}
+                      onPress={() => {
+                        setEditingPlan(cp);
+                        setShowPlanBuilder(true);
+                      }}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     >
                       <Ionicons name="create-outline" size={18} color={theme.textSecondary} />
                     </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => handleDeleteCustomPlan(cp.id)}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
+                    <TouchableOpacity onPress={() => handleDeleteCustomPlan(cp.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                       <Ionicons name="trash-outline" size={18} color="#FF5252" />
                     </TouchableOpacity>
                   </View>
@@ -572,22 +657,27 @@ export default function WorkoutsScreen() {
                     <Text style={[styles.historyStatLabel, { color: theme.textSecondary }]}>Total</Text>
                   </View>
                   <View style={styles.historyStatItem}>
-                    <Text style={[styles.historyStatValue, { color: Colors.accentGreen }]}>
-                      {sortedSessions.reduce((s, sess) => s + sess.durationMins, 0)}
-                    </Text>
+                    <Text style={[styles.historyStatValue, { color: Colors.accentGreen }]}>{sortedSessions.reduce((s, sess) => s + sess.durationMins, 0)}</Text>
                     <Text style={[styles.historyStatLabel, { color: theme.textSecondary }]}>Min</Text>
                   </View>
                   <View style={styles.historyStatItem}>
-                    <Text style={[styles.historyStatValue, { color: Colors.accent }]}>
-                      {sortedSessions.reduce((s, sess) => s + sess.exerciseLogs.length, 0)}
-                    </Text>
+                    <Text style={[styles.historyStatValue, { color: Colors.accent }]}>{sortedSessions.reduce((s, sess) => s + sess.exerciseLogs.length, 0)}</Text>
                     <Text style={[styles.historyStatLabel, { color: theme.textSecondary }]}>Exercises</Text>
                   </View>
                   <View style={styles.historyStatItem}>
                     <Text style={[styles.historyStatValue, { color: Colors.accentYellow }]}>
-                      {Math.round(sortedSessions.reduce((s, sess) =>
-                        s + sess.exerciseLogs.flatMap((l) => l.sets).filter((st) => st.completed).reduce((v, st) => v + st.reps * st.weightKg, 0),
-                      0) / 1000)}k
+                      {Math.round(
+                        sortedSessions.reduce(
+                          (s, sess) =>
+                            s +
+                            sess.exerciseLogs
+                              .flatMap((l) => l.sets)
+                              .filter((st) => st.completed)
+                              .reduce((v, st) => v + st.reps * st.weightKg, 0),
+                          0,
+                        ) / 1000,
+                      )}
+                      k
                     </Text>
                     <Text style={[styles.historyStatLabel, { color: theme.textSecondary }]}>Volume</Text>
                   </View>
@@ -605,7 +695,13 @@ export default function WorkoutsScreen() {
                       return (
                         <TouchableOpacity
                           key={session.id}
-                          style={[styles.historyCard, { backgroundColor: theme.card, borderColor: theme.border }]}
+                          style={[
+                            styles.historyCard,
+                            {
+                              backgroundColor: theme.card,
+                              borderColor: theme.border,
+                            },
+                          ]}
                           onPress={() => setExpandedSessionId(isExpanded ? null : session.id)}
                           activeOpacity={0.8}
                         >
@@ -643,16 +739,24 @@ export default function WorkoutsScreen() {
                                 <View key={idx} style={styles.historyExercise}>
                                   <Text style={[styles.historyExName, { color: theme.text }]}>{log.exerciseName}</Text>
                                   <View style={styles.historySets}>
-                                    {log.sets.filter((s) => s.completed).map((set, sIdx) => (
-                                      <View key={sIdx} style={[styles.historySet, { backgroundColor: isDark ? "#1A1A24" : "#F0F0F8" }]}>
-                                        <Text style={[styles.historySetText, { color: theme.text }]}>
-                                          {set.weightKg}kg × {set.reps}
-                                        </Text>
-                                      </View>
-                                    ))}
-                                    {log.sets.filter((s) => s.completed).length === 0 && (
-                                      <Text style={[styles.historyMetaText, { color: theme.textMuted }]}>No sets logged</Text>
-                                    )}
+                                    {log.sets
+                                      .filter((s) => s.completed)
+                                      .map((set, sIdx) => (
+                                        <View
+                                          key={sIdx}
+                                          style={[
+                                            styles.historySet,
+                                            {
+                                              backgroundColor: isDark ? "#1A1A24" : "#F0F0F8",
+                                            },
+                                          ]}
+                                        >
+                                          <Text style={[styles.historySetText, { color: theme.text }]}>
+                                            {set.weightKg}kg × {set.reps}
+                                          </Text>
+                                        </View>
+                                      ))}
+                                    {log.sets.filter((s) => s.completed).length === 0 && <Text style={[styles.historyMetaText, { color: theme.textMuted }]}>No sets logged</Text>}
                                   </View>
                                 </View>
                               ))}
@@ -678,8 +782,16 @@ export default function WorkoutsScreen() {
 
             {plan && (
               <TouchableOpacity
-                style={[styles.switcherOption, { borderColor: activePlanType === "ai" ? Colors.primary : theme.border }]}
-                onPress={() => { setActivePlan("ai"); setShowPlanSwitcher(false); }}
+                style={[
+                  styles.switcherOption,
+                  {
+                    borderColor: activePlanType === "ai" ? Colors.primary : theme.border,
+                  },
+                ]}
+                onPress={() => {
+                  setActivePlan("ai");
+                  setShowPlanSwitcher(false);
+                }}
                 activeOpacity={0.8}
               >
                 <View style={[styles.switcherIcon, { backgroundColor: Colors.primary + "20" }]}>
@@ -696,8 +808,16 @@ export default function WorkoutsScreen() {
             {customPlans.map((cp) => (
               <TouchableOpacity
                 key={cp.id}
-                style={[styles.switcherOption, { borderColor: activePlanType === "custom" && activeCustomPlanId === cp.id ? Colors.primary : theme.border }]}
-                onPress={() => { setActivePlan("custom", cp.id); setShowPlanSwitcher(false); }}
+                style={[
+                  styles.switcherOption,
+                  {
+                    borderColor: activePlanType === "custom" && activeCustomPlanId === cp.id ? Colors.primary : theme.border,
+                  },
+                ]}
+                onPress={() => {
+                  setActivePlan("custom", cp.id);
+                  setShowPlanSwitcher(false);
+                }}
                 activeOpacity={0.8}
               >
                 <View style={[styles.switcherIcon, { backgroundColor: "#A78BFA20" }]}>
@@ -707,15 +827,17 @@ export default function WorkoutsScreen() {
                   <Text style={[styles.switcherOptionName, { color: theme.text }]}>{cp.name}</Text>
                   <Text style={[styles.switcherOptionMeta, { color: theme.textMuted }]}>Custom · {cp.days.length} days</Text>
                 </View>
-                {activePlanType === "custom" && activeCustomPlanId === cp.id && (
-                  <Ionicons name="checkmark-circle" size={20} color={Colors.primary} />
-                )}
+                {activePlanType === "custom" && activeCustomPlanId === cp.id && <Ionicons name="checkmark-circle" size={20} color={Colors.primary} />}
               </TouchableOpacity>
             ))}
 
             <TouchableOpacity
               style={[styles.switcherNewBtn, { borderColor: theme.border }]}
-              onPress={() => { setShowPlanSwitcher(false); setEditingPlan(undefined); setShowPlanBuilder(true); }}
+              onPress={() => {
+                setShowPlanSwitcher(false);
+                setEditingPlan(undefined);
+                setShowPlanBuilder(true);
+              }}
               activeOpacity={0.8}
             >
               <Ionicons name="add" size={16} color={theme.textSecondary} />
@@ -738,15 +860,14 @@ export default function WorkoutsScreen() {
         setPreferences={setAiPreferences}
       />
 
-      <ExerciseLibraryScreen
-        visible={showLibrary}
-        onClose={() => setShowLibrary(false)}
-        userEquipment={appState.profile?.equipment ?? []}
-      />
+      <ExerciseLibraryScreen visible={showLibrary} onClose={() => setShowLibrary(false)} userEquipment={appState.profile?.equipment ?? []} />
 
       <CustomPlanBuilderScreen
         visible={showPlanBuilder}
-        onClose={() => { setShowPlanBuilder(false); setEditingPlan(undefined); }}
+        onClose={() => {
+          setShowPlanBuilder(false);
+          setEditingPlan(undefined);
+        }}
         onSave={(planData) => {
           if (editingPlan) {
             updateCustomPlan({ ...editingPlan, ...planData });
@@ -768,7 +889,10 @@ function AIGenerateModal({ visible, onClose, planType, setPlanType, onGenerate, 
   const toggleBodyPart = (part: string) => {
     const current = preferences.bodyParts || [];
     if (current.includes(part)) {
-      setPreferences({ ...preferences, bodyParts: current.filter((p: string) => p !== part) });
+      setPreferences({
+        ...preferences,
+        bodyParts: current.filter((p: string) => p !== part),
+      });
     } else {
       setPreferences({ ...preferences, bodyParts: [...current, part] });
     }
@@ -782,36 +906,56 @@ function AIGenerateModal({ visible, onClose, planType, setPlanType, onGenerate, 
           <View style={styles.modalHandle} />
           <ScrollView showsVerticalScrollIndicator={false}>
             <Text style={[styles.modalTitle, { color: theme.text }]}>AI Workout Generator</Text>
-            <Text style={[styles.modalDesc, { color: theme.textSecondary }]}>
-              Tell us what you want to train and we'll build a plan just for you.
-            </Text>
+            <Text style={[styles.modalDesc, { color: theme.textSecondary }]}>Tell us what you want to train and we'll build a plan just for you.</Text>
 
             <Text style={[styles.modalLabel, { color: theme.textSecondary }]}>Plan Type</Text>
             <View style={[styles.toggleRow, { backgroundColor: theme.card, borderColor: theme.border }]}>
-              <TouchableOpacity
-                style={[styles.toggleBtn, planType === "daily" && { backgroundColor: Colors.primary }]}
-                onPress={() => setPlanType("daily")}
-                activeOpacity={0.8}
-              >
+              <TouchableOpacity style={[styles.toggleBtn, planType === "daily" && { backgroundColor: Colors.primary }]} onPress={() => setPlanType("daily")} activeOpacity={0.8}>
                 <Ionicons name="today-outline" size={16} color={planType === "daily" ? "#000" : theme.textSecondary} />
-                <Text style={[styles.toggleText, { color: planType === "daily" ? "#000" : theme.textSecondary }]}>
+                <Text
+                  style={[
+                    styles.toggleText,
+                    {
+                      color: planType === "daily" ? "#000" : theme.textSecondary,
+                    },
+                  ]}
+                >
                   Single Day
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.toggleBtn, planType === "scheduled" && { backgroundColor: Colors.primary }]}
+                style={[
+                  styles.toggleBtn,
+                  planType === "scheduled" && {
+                    backgroundColor: Colors.primary,
+                  },
+                ]}
                 onPress={() => setPlanType("scheduled")}
                 activeOpacity={0.8}
               >
                 <Ionicons name="calendar-outline" size={16} color={planType === "scheduled" ? "#000" : theme.textSecondary} />
-                <Text style={[styles.toggleText, { color: planType === "scheduled" ? "#000" : theme.textSecondary }]}>
+                <Text
+                  style={[
+                    styles.toggleText,
+                    {
+                      color: planType === "scheduled" ? "#000" : theme.textSecondary,
+                    },
+                  ]}
+                >
                   Full Week
                 </Text>
               </TouchableOpacity>
             </View>
 
             <Text style={[styles.modalLabel, { color: theme.textSecondary, marginTop: 12 }]}>Target Body Parts</Text>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+            <View
+              style={{
+                flexDirection: "row",
+                flexWrap: "wrap",
+                gap: 8,
+                marginBottom: 12,
+              }}
+            >
               {BODY_PARTS.map((part) => {
                 const selected = (preferences.bodyParts || []).includes(part);
                 return (
@@ -819,16 +963,24 @@ function AIGenerateModal({ visible, onClose, planType, setPlanType, onGenerate, 
                     key={part}
                     onPress={() => toggleBodyPart(part)}
                     style={{
-                      paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20,
+                      paddingHorizontal: 14,
+                      paddingVertical: 8,
+                      borderRadius: 20,
                       backgroundColor: selected ? Colors.primary : theme.card,
-                      borderWidth: 1, borderColor: selected ? Colors.primary : theme.border,
+                      borderWidth: 1,
+                      borderColor: selected ? Colors.primary : theme.border,
                     }}
                     activeOpacity={0.7}
                   >
-                    <Text style={{
-                      fontSize: 13, fontFamily: selected ? "Inter_600SemiBold" : "Inter_400Regular",
-                      color: selected ? "#000" : theme.textSecondary,
-                    }}>{part}</Text>
+                    <Text
+                      style={{
+                        fontSize: 13,
+                        fontFamily: selected ? "Inter_600SemiBold" : "Inter_400Regular",
+                        color: selected ? "#000" : theme.textSecondary,
+                      }}
+                    >
+                      {part}
+                    </Text>
                   </TouchableOpacity>
                 );
               })}
@@ -851,9 +1003,7 @@ function AIGenerateModal({ visible, onClose, planType, setPlanType, onGenerate, 
             <View style={[styles.infoBox, { backgroundColor: theme.card, borderColor: theme.border }]}>
               <Ionicons name="sparkles" size={16} color={Colors.accent} />
               <Text style={[styles.infoText, { color: theme.textSecondary }]}>
-                {planType === "daily"
-                  ? "Generates one optimized workout based on your preferences."
-                  : "Creates a full weekly split tailored to your goals."}
+                {planType === "daily" ? "Generates one optimized workout based on your preferences." : "Creates a full weekly split tailored to your goals."}
               </Text>
             </View>
 
@@ -885,93 +1035,386 @@ const styles = StyleSheet.create({
   empty: { flex: 1, paddingHorizontal: 20, gap: 16 },
   emptyHeader: { alignItems: "center", marginBottom: 8, gap: 6 },
   emptyTitle: { fontSize: 22, fontFamily: "Inter_700Bold" },
-  emptyDesc: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 20 },
-  optionCard: { flexDirection: "row", alignItems: "center", padding: 18, borderRadius: 16, borderWidth: 1, gap: 14 },
-  optionIconWrap: { width: 52, height: 52, borderRadius: 14, alignItems: "center", justifyContent: "center" },
+  emptyDesc: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    lineHeight: 20,
+  },
+  optionCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 18,
+    borderRadius: 16,
+    borderWidth: 1,
+    gap: 14,
+  },
+  optionIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   optionContent: { flex: 1, gap: 4 },
   optionTitle: { fontSize: 16, fontFamily: "Inter_700Bold" },
   optionDesc: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 18 },
-  quickGenBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, padding: 14, borderRadius: 12, borderWidth: 1 },
+  quickGenBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
   quickGenText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  freeWorkoutBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 12, borderWidth: 1 },
+  freeWorkoutBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
   freeWorkoutBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  viewToggle: { flexDirection: "row", borderRadius: 12, borderWidth: 1, padding: 4, gap: 4 },
-  viewToggleBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 9, borderRadius: 9 },
+  viewToggle: {
+    flexDirection: "row",
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 4,
+    gap: 4,
+  },
+  viewToggleBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 9,
+    borderRadius: 9,
+  },
   viewToggleText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  historyBadge: { paddingHorizontal: 6, paddingVertical: 1, borderRadius: 8, marginLeft: 2 },
+  historyBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 8,
+    marginLeft: 2,
+  },
   historyBadgeText: { fontSize: 11, fontFamily: "Inter_700Bold" },
-  planHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 10 },
+  planHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 10,
+  },
   planNameRow: { flex: 1 },
   planName: { fontSize: 19, fontFamily: "Inter_700Bold" },
-  planSubRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 3 },
+  planSubRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 3,
+  },
   planMeta: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  switchBadge: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  switchBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
   switchBadgeText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
-  headerActions: { flexDirection: "row", gap: 8, alignItems: "center", paddingTop: 2 },
-  iconBtn: { width: 36, height: 36, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  activeBanner: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, gap: 12 },
+  headerActions: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+    paddingTop: 2,
+  },
+  iconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  activeBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: 12,
+  },
   activeTitle: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
   activeTimer: { fontSize: 24, fontFamily: "Inter_700Bold", marginTop: 2 },
   finishBtn: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 10 },
   finishBtnText: { color: "#000", fontSize: 14, fontFamily: "Inter_700Bold" },
   dayCard: { borderRadius: 16, borderWidth: 1, overflow: "hidden" },
-  dayHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", padding: 14 },
-  dayNumber: { fontSize: 11, fontFamily: "Inter_500Medium", textTransform: "uppercase", letterSpacing: 0.5 },
+  dayHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    padding: 14,
+  },
+  dayNumber: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
   dayName: { fontSize: 17, fontFamily: "Inter_700Bold", marginTop: 2 },
-  dayMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 3, textTransform: "capitalize" },
-  startBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 },
+  dayMeta: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    marginTop: 3,
+    textTransform: "capitalize",
+  },
+  startBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
   startBtnText: { color: "#000", fontSize: 13, fontFamily: "Inter_700Bold" },
   exerciseList: { paddingHorizontal: 10, paddingBottom: 10, gap: 8 },
-  emptyDays: { borderRadius: 16, borderWidth: 1, padding: 20, alignItems: "center" },
+  emptyDays: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 20,
+    alignItems: "center",
+  },
   emptyDaysText: { fontSize: 14, fontFamily: "Inter_400Regular" },
   customSection: { gap: 8, marginTop: 4 },
-  customSectionTitle: { fontSize: 11, fontFamily: "Inter_600SemiBold", textTransform: "uppercase", letterSpacing: 0.8, paddingHorizontal: 2 },
-  customPlanRow: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 14, borderWidth: 1, gap: 10 },
-  customPlanInfo: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
+  customSectionTitle: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    paddingHorizontal: 2,
+  },
+  customPlanRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    gap: 10,
+  },
+  customPlanInfo: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
   customPlanName: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  customPlanMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
+  customPlanMeta: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    marginTop: 2,
+  },
   historyEmpty: { alignItems: "center", gap: 12, paddingVertical: 60 },
-  historyStats: { flexDirection: "row", borderRadius: 14, borderWidth: 1, padding: 14 },
+  historyStats: {
+    flexDirection: "row",
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 14,
+  },
   historyStatItem: { flex: 1, alignItems: "center", gap: 2 },
   historyStatValue: { fontSize: 18, fontFamily: "Inter_700Bold" },
-  historyStatLabel: { fontSize: 10, fontFamily: "Inter_500Medium", textTransform: "uppercase", letterSpacing: 0.5 },
-  dateHeader: { fontSize: 12, fontFamily: "Inter_600SemiBold", textTransform: "uppercase", letterSpacing: 0.5, marginTop: 6 },
+  historyStatLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_500Medium",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  dateHeader: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginTop: 6,
+  },
   historyCard: { borderRadius: 14, borderWidth: 1, overflow: "hidden" },
-  historyCardHeader: { flexDirection: "row", alignItems: "center", padding: 14, gap: 12 },
-  historyIcon: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  historyCardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 14,
+    gap: 12,
+  },
+  historyIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   historyName: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  historyMeta: { flexDirection: "row", gap: 12, marginTop: 3, flexWrap: "wrap" },
+  historyMeta: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 3,
+    flexWrap: "wrap",
+  },
   historyMetaItem: { flexDirection: "row", alignItems: "center", gap: 4 },
   historyMetaText: { fontSize: 11, fontFamily: "Inter_400Regular" },
-  historyDetails: { borderTopWidth: 1, paddingHorizontal: 14, paddingBottom: 14, paddingTop: 10, gap: 10 },
+  historyDetails: {
+    borderTopWidth: 1,
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    paddingTop: 10,
+    gap: 10,
+  },
   historyExercise: { gap: 4 },
   historyExName: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
   historySets: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   historySet: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   historySetText: { fontSize: 11, fontFamily: "Inter_500Medium" },
-  switcherOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "flex-end" },
-  switcherBackdrop: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.5)" },
-  switcherSheet: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, gap: 10, paddingBottom: 36 },
+  switcherOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: "flex-end",
+  },
+  switcherBackdrop: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
+  switcherSheet: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    gap: 10,
+    paddingBottom: 36,
+  },
   switcherTitle: { fontSize: 18, fontFamily: "Inter_700Bold", marginBottom: 4 },
-  switcherOption: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 14, borderWidth: 1 },
-  switcherIcon: { width: 36, height: 36, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  switcherOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  switcherIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   switcherOptionName: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  switcherOptionMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
-  switcherNewBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, padding: 14, borderRadius: 14, borderWidth: 1, borderStyle: "dashed", marginTop: 4 },
+  switcherOptionMeta: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    marginTop: 2,
+  },
+  switcherNewBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    marginTop: 4,
+  },
   switcherNewBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  modalOverlay: { flex: 1, backgroundColor: "#00000060", justifyContent: "flex-end" },
-  modalSheet: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: 40, gap: 14 },
-  modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: "#444", alignSelf: "center" },
-  modalTitle: { fontSize: 20, fontFamily: "Inter_700Bold", textAlign: "center" },
-  modalDesc: { fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 18 },
-  modalLabel: { fontSize: 12, fontFamily: "Inter_600SemiBold", textTransform: "uppercase", letterSpacing: 0.5, marginTop: 4 },
-  toggleRow: { flexDirection: "row", borderRadius: 12, borderWidth: 1, padding: 4, gap: 4 },
-  toggleBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: 9 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "#00000060",
+    justifyContent: "flex-end",
+  },
+  modalSheet: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingBottom: 40,
+    gap: 14,
+  },
+  modalHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#444",
+    alignSelf: "center",
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontFamily: "Inter_700Bold",
+    textAlign: "center",
+  },
+  modalDesc: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    lineHeight: 18,
+  },
+  modalLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginTop: 4,
+  },
+  toggleRow: {
+    flexDirection: "row",
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 4,
+    gap: 4,
+  },
+  toggleBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 9,
+  },
   toggleText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  infoBox: { flexDirection: "row", alignItems: "flex-start", gap: 10, padding: 14, borderRadius: 12, borderWidth: 1 },
-  infoText: { flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 17 },
-  generateBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, padding: 16, borderRadius: 14, marginTop: 4 },
+  infoBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  infoText: {
+    flex: 1,
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 17,
+  },
+  generateBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    padding: 16,
+    borderRadius: 14,
+    marginTop: 4,
+  },
   generateBtnText: { color: "#000", fontSize: 16, fontFamily: "Inter_700Bold" },
   aiInputBox: { borderRadius: 12, borderWidth: 1, padding: 12, minHeight: 100 },
-  aiInput: { fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 20, minHeight: 80 },
+  aiInput: {
+    fontSize: 14,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 20,
+    minHeight: 80,
+  },
 });

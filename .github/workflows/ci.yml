@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feat/comprehensive-fitness-platform]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm typecheck
+      - run: pnpm --filter @workspace/mobile typecheck
+      - run: pnpm --filter @workspace/api-server typecheck
+      - run: pnpm --filter @workspace/api-server run build

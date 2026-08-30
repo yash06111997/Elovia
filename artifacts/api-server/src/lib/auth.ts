@@ -17,9 +17,9 @@ if (getApps().length === 0) {
   } else {
     console.warn(
       "Firebase Admin: No service account credentials found. " +
-      "Set FIREBASE_SERVICE_ACCOUNT_KEY (JSON string) or GOOGLE_APPLICATION_CREDENTIALS " +
-      "(path to service account file) for token verification to work. " +
-      "Falling back to project-only initialization."
+        "Set FIREBASE_SERVICE_ACCOUNT_KEY (JSON string) or GOOGLE_APPLICATION_CREDENTIALS " +
+        "(path to service account file) for token verification to work. " +
+        "Falling back to project-only initialization.",
     );
     initializeApp({ projectId });
   }
@@ -50,5 +50,22 @@ export async function verifyFirebaseToken(idToken: string): Promise<AuthUser | n
   } catch (err) {
     console.error("verifyFirebaseToken failed:", err instanceof Error ? err.message : err);
     return null;
+  }
+}
+
+/** Permanently remove the identity after the app database has been erased. */
+export async function deleteFirebaseUser(userId: string): Promise<void> {
+  try {
+    await firebaseAuth.deleteUser(userId);
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "auth/user-not-found"
+    ) {
+      return;
+    }
+    throw error;
   }
 }

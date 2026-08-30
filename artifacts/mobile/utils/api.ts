@@ -8,6 +8,10 @@ function getBaseUrl(): string {
   return "http://localhost:8080";
 }
 
+export function getPublicApiUrl(path: string): string {
+  return `${getBaseUrl()}${path}`;
+}
+
 /**
  * Why the client distinguishes these:
  *
@@ -43,12 +47,7 @@ export class ApiError extends Error {
   readonly resetsAt?: string;
   readonly limit?: number;
 
-  constructor(
-    message: string,
-    status: number,
-    code: ApiErrorCode,
-    extra?: { resetsAt?: string; limit?: number },
-  ) {
+  constructor(message: string, status: number, code: ApiErrorCode, extra?: { resetsAt?: string; limit?: number }) {
     super(message);
     this.name = "ApiError";
     this.status = status;
@@ -93,11 +92,7 @@ async function postAuthed<T>(path: string, body: unknown): Promise<T> {
   const token = await getAuthToken();
 
   if (!token) {
-    throw new ApiError(
-      "Please sign in to use AI features.",
-      401,
-      "unauthenticated",
-    );
+    throw new ApiError("Please sign in to use AI features.", 401, "unauthenticated");
   }
 
   const response = await fetch(`${getBaseUrl()}${path}`, {
@@ -110,16 +105,9 @@ async function postAuthed<T>(path: string, body: unknown): Promise<T> {
   });
 
   if (!response.ok) {
-    const payload = await response
-      .json()
-      .catch(() => ({ error: "Unknown error", code: "unknown" as const }));
+    const payload = await response.json().catch(() => ({ error: "Unknown error", code: "unknown" as const }));
 
-    throw new ApiError(
-      payload.error || "Request failed",
-      response.status,
-      (payload.code as ApiErrorCode) || "unknown",
-      { resetsAt: payload.resetsAt, limit: payload.limit },
-    );
+    throw new ApiError(payload.error || "Request failed", response.status, (payload.code as ApiErrorCode) || "unknown", { resetsAt: payload.resetsAt, limit: payload.limit });
   }
 
   return response.json() as Promise<T>;
@@ -145,7 +133,9 @@ export interface FoodRecognitionResult {
 }
 
 export async function recognizeFood(imageBase64: string): Promise<FoodRecognitionResult> {
-  return postAuthed<FoodRecognitionResult>("/api/ai/recognize-food", { imageBase64 });
+  return postAuthed<FoodRecognitionResult>("/api/ai/recognize-food", {
+    imageBase64,
+  });
 }
 
 export interface AIMealPlanResult {
@@ -177,7 +167,10 @@ export async function generateAIMealPlan(
     mealsPerDay: number;
   },
 ): Promise<AIMealPlanResult> {
-  return postAuthed<AIMealPlanResult>("/api/ai/generate-meal-plan", { profile, dietPrefs });
+  return postAuthed<AIMealPlanResult>("/api/ai/generate-meal-plan", {
+    profile,
+    dietPrefs,
+  });
 }
 
 export interface AIWorkoutResult {
@@ -186,11 +179,7 @@ export interface AIWorkoutResult {
   goal: string;
 }
 
-export async function generateAIWorkout(
-  profile: any,
-  planType: "daily" | "scheduled",
-  preferences?: { bodyParts?: string[]; message?: string },
-): Promise<AIWorkoutResult> {
+export async function generateAIWorkout(profile: any, planType: "daily" | "scheduled", preferences?: { bodyParts?: string[]; message?: string }): Promise<AIWorkoutResult> {
   return postAuthed<AIWorkoutResult>("/api/ai/generate-workout", {
     profile,
     planType,
@@ -232,12 +221,12 @@ export interface CoachReply {
   provider: string;
 }
 
-export async function coachChat(
-  messages: CoachMessage[],
-  profile: any,
-  context?: { recentWorkouts?: number; dailyCalorieTarget?: number },
-): Promise<CoachReply> {
-  return postAuthed<CoachReply>("/api/ai/coach-chat", { messages, profile, context });
+export async function coachChat(messages: CoachMessage[], profile: any, context?: { recentWorkouts?: number; dailyCalorieTarget?: number }): Promise<CoachReply> {
+  return postAuthed<CoachReply>("/api/ai/coach-chat", {
+    messages,
+    profile,
+    context,
+  });
 }
 
 export interface AIRecipe {
@@ -267,7 +256,10 @@ export async function generateRecipes(
     message?: string;
   },
 ): Promise<{ recipes: AIRecipe[] }> {
-  return postAuthed<{ recipes: AIRecipe[] }>("/api/ai/generate-recipe", { profile, options });
+  return postAuthed<{ recipes: AIRecipe[] }>("/api/ai/generate-recipe", {
+    profile,
+    options,
+  });
 }
 
 export interface SupplementAnalysis {
@@ -286,15 +278,8 @@ export interface SupplementAnalysis {
   disclaimer: string;
 }
 
-export async function analyseSupplement(
-  supplementId: string,
-  profile: any,
-  refresh = false,
-): Promise<{ analysis: SupplementAnalysis; cached: boolean }> {
-  return postAuthed<{ analysis: SupplementAnalysis; cached: boolean }>(
-    `/api/supplements/${supplementId}/analyse`,
-    { profile, refresh },
-  );
+export async function analyseSupplement(supplementId: string, profile: any, refresh = false): Promise<{ analysis: SupplementAnalysis; cached: boolean }> {
+  return postAuthed<{ analysis: SupplementAnalysis; cached: boolean }>(`/api/supplements/${supplementId}/analyse`, { profile, refresh });
 }
 
 export async function createSupplement(input: {
@@ -349,6 +334,28 @@ async function sendAuthed<T>(path: string, method: string, body?: unknown): Prom
   return response.json() as Promise<T>;
 }
 
+export interface AccountDataExport {
+  exportedAt: string;
+  account: unknown;
+  appData: unknown;
+  entitlement: EntitlementStatus;
+  subscriptions: unknown[];
+  aiUsage: unknown[];
+  pushDevices: unknown[];
+  supplements: unknown[];
+  social: unknown;
+  challenges: unknown;
+  coaching: unknown;
+}
+
+export function exportMyData(): Promise<AccountDataExport> {
+  return getAuthed<AccountDataExport>("/api/privacy/export");
+}
+
+export function deleteMyAccount(): Promise<{ deleted: boolean }> {
+  return sendAuthed<{ deleted: boolean }>("/api/account", "DELETE");
+}
+
 export interface SocialProfile {
   userId: string;
   displayName: string;
@@ -377,7 +384,12 @@ export interface FeedActivity {
   commentCount: number;
   createdAt: string;
   hasKudos: boolean;
-  author: { userId: string; displayName: string; avatarUrl: string | null; isSelf: boolean };
+  author: {
+    userId: string;
+    displayName: string;
+    avatarUrl: string | null;
+    isSelf: boolean;
+  };
 }
 
 export interface ChallengeEntry {
@@ -403,43 +415,44 @@ export const social = {
     sendAuthed<{ profile: SocialProfile }>("/api/social/me", "PATCH", patch),
 
   lookup: (code: string) =>
-    getAuthed<{ user: { userId: string; displayName: string; bio: string | null }; state: string }>(
-      `/api/social/lookup/${encodeURIComponent(code)}`,
-    ),
+    getAuthed<{
+      user: { userId: string; displayName: string; bio: string | null };
+      state: string;
+    }>(`/api/social/lookup/${encodeURIComponent(code)}`),
 
   friends: () =>
-    getAuthed<{ friends: FriendEntry[]; incoming: FriendEntry[]; outgoing: FriendEntry[] }>(
-      "/api/social/friends",
-    ),
+    getAuthed<{
+      friends: FriendEntry[];
+      incoming: FriendEntry[];
+      outgoing: FriendEntry[];
+    }>("/api/social/friends"),
   requestFriend: (userId: string) =>
-    sendAuthed<{ state: string }>("/api/social/friends/request", "POST", { userId }),
-  respondFriend: (friendshipId: string, accept: boolean) =>
-    sendAuthed<{ state: string }>(`/api/social/friends/${friendshipId}/respond`, "POST", { accept }),
-  removeFriend: (friendshipId: string) =>
-    sendAuthed<{ removed: boolean }>(`/api/social/friends/${friendshipId}`, "DELETE"),
+    sendAuthed<{ state: string }>("/api/social/friends/request", "POST", {
+      userId,
+    }),
+  respondFriend: (friendshipId: string, accept: boolean) => sendAuthed<{ state: string }>(`/api/social/friends/${friendshipId}/respond`, "POST", { accept }),
+  removeFriend: (friendshipId: string) => sendAuthed<{ removed: boolean }>(`/api/social/friends/${friendshipId}`, "DELETE"),
 
   feed: (limit = 25) => getAuthed<{ feed: FeedActivity[] }>(`/api/social/feed?limit=${limit}`),
-  share: (input: { kind: string; title: string; caption?: string; payload?: unknown }) =>
-    sendAuthed<{ activity: unknown }>("/api/social/activities", "POST", input),
-  deleteActivity: (id: string) =>
-    sendAuthed<{ deleted: boolean }>(`/api/social/activities/${id}`, "DELETE"),
-  toggleKudos: (id: string) =>
-    sendAuthed<{ hasKudos: boolean; kudosCount: number }>(
-      `/api/social/activities/${id}/kudos`,
-      "POST",
-    ),
+  share: (input: { kind: string; title: string; caption?: string; payload?: unknown }) => sendAuthed<{ activity: unknown }>("/api/social/activities", "POST", input),
+  deleteActivity: (id: string) => sendAuthed<{ deleted: boolean }>(`/api/social/activities/${id}`, "DELETE"),
+  toggleKudos: (id: string) => sendAuthed<{ hasKudos: boolean; kudosCount: number }>(`/api/social/activities/${id}/kudos`, "POST"),
 
   leaderboard: (days = 7) =>
     getAuthed<{
-      leaderboard: { userId: string; displayName: string; activities: number; isSelf: boolean }[];
+      leaderboard: {
+        userId: string;
+        displayName: string;
+        activities: number;
+        isSelf: boolean;
+      }[];
       optedIn: boolean;
     }>(`/api/social/leaderboard?days=${days}`),
 
   challenges: () => getAuthed<{ challenges: ChallengeEntry[] }>("/api/social/challenges"),
   createChallenge: (input: { name: string; description?: string; metric: string; target: number; days: number }) =>
     sendAuthed<{ challenge: ChallengeEntry }>("/api/social/challenges", "POST", input),
-  joinChallenge: (joinCode: string) =>
-    sendAuthed<{ challenge: ChallengeEntry }>("/api/social/challenges/join", "POST", { joinCode }),
+  joinChallenge: (joinCode: string) => sendAuthed<{ challenge: ChallengeEntry }>("/api/social/challenges/join", "POST", { joinCode }),
 };
 
 // ---------------------------------------------------------------------------
@@ -486,8 +499,7 @@ export const coaching = {
       note,
     }),
 
-  cancel: (id: string, reason?: string) =>
-    sendAuthed<{ cancelled: boolean }>(`/api/coaching/sessions/${id}/cancel`, "POST", { reason }),
+  cancel: (id: string, reason?: string) => sendAuthed<{ cancelled: boolean }>(`/api/coaching/sessions/${id}/cancel`, "POST", { reason }),
 
   /**
    * A short-lived signed URL for the session's .ics file.
@@ -496,6 +508,5 @@ export const coaching = {
    * URL — so it carries no auth header. The app trades its token for a signed
    * link here, and only the signed link is handed to Linking.
    */
-  calendarLink: (id: string) =>
-    getAuthed<{ url: string }>(`/api/coaching/sessions/${id}/calendar-link`),
+  calendarLink: (id: string) => getAuthed<{ url: string }>(`/api/coaching/sessions/${id}/calendar-link`),
 };

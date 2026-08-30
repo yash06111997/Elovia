@@ -1,29 +1,10 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import React, { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { AppState, type AppStateStatus } from "react-native";
-import { onDataRestored } from "@/lib/syncEvents";
+import { type PlanType, type PremiumFeatureKey, type SubscriptionPlatform, type SubscriptionStatus } from "@/constants/subscription";
+import { useAuth } from "@/lib/auth";
 import { useRevenueCat } from "@/lib/revenuecat";
-import {
-  TRIAL_DURATION_DAYS,
-  type PlanType,
-  type SubscriptionStatus,
-  type SubscriptionPlatform,
-  type PremiumFeatureKey,
-} from "@/constants/subscription";
-
-const SUB_STORAGE_KEY = "@fitai_subscription";
-
-interface TrialState {
-  trialUsed: boolean;
-  trialStartedAt: string | null;
-  trialEndsAt: string | null;
-}
-
-const defaultTrialState: TrialState = {
-  trialUsed: false,
-  trialStartedAt: null,
-  trialEndsAt: null,
-};
+import { onDataRestored } from "@/lib/syncEvents";
+import { fetchEntitlement, type EntitlementStatus } from "@/utils/api";
 
 interface SubscriptionContextValue {
   isPremium: boolean;
@@ -32,8 +13,8 @@ interface SubscriptionContextValue {
   daysRemaining: number;
   trialEndDate: string | null;
   canAccess: (feature: PremiumFeatureKey) => boolean;
-  startTrial: () => void;
-  clearTrial: () => void;
+  startTrial: () => Promise<void>;
+  refreshEntitlement: () => Promise<EntitlementStatus | null>;
   upgradePlan: (platform: SubscriptionPlatform, period: "monthly" | "yearly") => void;
   restorePurchases: () => Promise<void>;
   cancelSubscription: () => void;
@@ -41,8 +22,6 @@ interface SubscriptionContextValue {
   state: {
     status: SubscriptionStatus;
     planType: PlanType;
-    trialUsed: boolean;
-    trialStartedAt: string | null;
     trialEndsAt: string | null;
     subscriptionPlatform: SubscriptionPlatform;
     premiumAccessUntil: string | null;
@@ -51,6 +30,16 @@ interface SubscriptionContextValue {
   };
 }
 
+const defaultState: SubscriptionContextValue["state"] = {
+  status: "free",
+  planType: "free",
+  trialEndsAt: null,
+  subscriptionPlatform: "none",
+  premiumAccessUntil: null,
+  renewalDate: null,
+  purchaseToken: null,
+};
+
 const SubscriptionContext = createContext<SubscriptionContextValue>({
   isPremium: false,
   isTrialActive: false,
@@ -58,169 +47,117 @@ const SubscriptionContext = createContext<SubscriptionContextValue>({
   daysRemaining: 0,
   trialEndDate: null,
   canAccess: () => false,
-  startTrial: () => {},
-  clearTrial: () => {},
+  startTrial: async () => {},
+  refreshEntitlement: async () => null,
   upgradePlan: () => {},
   restorePurchases: async () => {},
   cancelSubscription: () => {},
   isLoaded: false,
-  state: {
-    status: "free",
-    planType: "free",
-    trialUsed: false,
-    trialStartedAt: null,
-    trialEndsAt: null,
-    subscriptionPlatform: "none",
-    premiumAccessUntil: null,
-    renewalDate: null,
-    purchaseToken: null,
-  },
+  state: defaultState,
 });
 
 function calculateDaysRemaining(trialEndsAt: string | null): number {
   if (!trialEndsAt) return 0;
-  const end = new Date(trialEndsAt).getTime();
-  const now = Date.now();
-  const diff = end - now;
-  return Math.max(0, Math.ceil(diff / (1000 * 60 * 60 * 24)));
+  return Math.max(0, Math.ceil((new Date(trialEndsAt).getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
 }
 
+function normalizeStatus(entitlement: EntitlementStatus): SubscriptionStatus {
+  if (entitlement.hasProAccess && entitlement.tier !== "trial") return "active";
+  if (entitlement.tier === "trial") return "in_trial";
+  if (entitlement.status === "cancelled") return "cancelled";
+  if (entitlement.status === "expired") return "expired";
+  return "free";
+}
+
+function toState(entitlement: EntitlementStatus): SubscriptionContextValue["state"] {
+  const planType: PlanType = entitlement.tier === "trial" ? "trial" : entitlement.tier === "premium" || entitlement.tier === "coaching" ? "premium" : "free";
+
+  return {
+    status: normalizeStatus(entitlement),
+    planType,
+    trialEndsAt: entitlement.trialEndsAt,
+    subscriptionPlatform: "none",
+    premiumAccessUntil: entitlement.currentPeriodEndsAt,
+    renewalDate: entitlement.currentPeriodEndsAt,
+    purchaseToken: null,
+  };
+}
+
+/**
+ * Access is intentionally fail-closed and comes only from the authenticated
+ * API. RevenueCat on the device initiates purchases, but it never grants
+ * features by itself; the webhook-backed server entitlement is authoritative.
+ */
 export function SubscriptionProvider({ children }: { children: ReactNode }) {
+  const { isAuthenticated, isLoading: isAuthLoading, user } = useAuth();
   const rc = useRevenueCat();
-  const [trialState, setTrialState] = useState<TrialState>(defaultTrialState);
+  const [entitlement, setEntitlement] = useState<EntitlementStatus | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
 
-  const loadTrialState = useCallback(() => {
-    AsyncStorage.getItem(SUB_STORAGE_KEY)
-      .then((raw) => {
-        if (raw) {
-          try {
-            const parsed = JSON.parse(raw);
-            setTrialState({
-              trialUsed: parsed.trialUsed ?? false,
-              trialStartedAt: parsed.trialStartedAt ?? null,
-              trialEndsAt: parsed.trialEndsAt ?? null,
-            });
-          } catch {
-            setTrialState(defaultTrialState);
-          }
-        }
-        setIsLoaded(true);
-      })
-      .catch(() => setIsLoaded(true));
-  }, []);
-
-  useEffect(() => {
-    loadTrialState();
-  }, [loadTrialState]);
-
-  useEffect(() => {
-    return onDataRestored(() => {
-      loadTrialState();
-    });
-  }, [loadTrialState]);
-
-  const persistTrialState = useCallback((newState: TrialState) => {
-    setTrialState(newState);
-    AsyncStorage.setItem(SUB_STORAGE_KEY, JSON.stringify(newState));
-  }, []);
-
-  const isTrialExpired =
-    trialState.trialEndsAt && new Date(trialState.trialEndsAt).getTime() <= Date.now();
-  const isTrialActiveLocal =
-    trialState.trialUsed &&
-    !!trialState.trialEndsAt &&
-    !isTrialExpired;
-
-  const rcSubscribed = rc.isSubscribed;
-  const isTrialActive = isTrialActiveLocal && !rcSubscribed;
-  const isPremium = rcSubscribed || isTrialActiveLocal;
-  const isFree = !isPremium;
-
-  useEffect(() => {
-    if (isLoaded) {
-      console.log("[Subscription]", JSON.stringify({
-        isPremium,
-        rcSubscribed,
-        isTrialActiveLocal,
-        trialUsed: trialState.trialUsed,
-        trialEndsAt: trialState.trialEndsAt,
-        rcLoading: rc.isLoading,
-      }));
+  const refreshEntitlement = useCallback(async () => {
+    if (!isAuthenticated) {
+      setEntitlement(null);
+      setIsLoaded(!isAuthLoading);
+      return null;
     }
-  }, [isLoaded, isPremium, rcSubscribed, isTrialActiveLocal, trialState, rc.isLoading]);
-  const daysRemaining = isTrialActive ? calculateDaysRemaining(trialState.trialEndsAt) : 0;
 
-  const trialEndDate = trialState.trialEndsAt
-    ? new Date(trialState.trialEndsAt).toLocaleDateString("en-IN", {
+    try {
+      const next = await fetchEntitlement();
+      setEntitlement(next);
+      return next;
+    } catch (error) {
+      console.warn("Unable to refresh subscription entitlement", error);
+      setEntitlement(null);
+      return null;
+    } finally {
+      setIsLoaded(true);
+    }
+  }, [isAuthenticated, isAuthLoading]);
+
+  useEffect(() => {
+    setIsLoaded(false);
+    void refreshEntitlement();
+  }, [refreshEntitlement, user?.id]);
+
+  useEffect(() => onDataRestored(() => void refreshEntitlement()), [refreshEntitlement]);
+
+  useEffect(() => {
+    const onAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === "active") void refreshEntitlement();
+    };
+    const subscription = AppState.addEventListener("change", onAppStateChange);
+    return () => subscription.remove();
+  }, [refreshEntitlement]);
+
+  const isPremium = entitlement?.hasProAccess === true;
+  const isTrialActive = entitlement?.tier === "trial" && entitlement.hasProAccess;
+  const isFree = !isPremium;
+  const daysRemaining = isTrialActive ? calculateDaysRemaining(entitlement?.trialEndsAt ?? null) : 0;
+  const trialEndDate = entitlement?.trialEndsAt
+    ? new Date(entitlement.trialEndsAt).toLocaleDateString("en-IN", {
         day: "numeric",
         month: "short",
         year: "numeric",
       })
     : null;
 
-  const canAccess = useCallback(
-    (feature: PremiumFeatureKey) => {
-      console.log(`[canAccess] feature=${feature} isPremium=${isPremium} rcSub=${rcSubscribed} trialActive=${isTrialActiveLocal} trialUsed=${trialState.trialUsed}`);
-      return isPremium;
-    },
-    [isPremium, rcSubscribed, isTrialActiveLocal, trialState.trialUsed],
-  );
+  const canAccess = useCallback((_feature: PremiumFeatureKey) => entitlement?.hasProAccess === true, [entitlement?.hasProAccess]);
 
-  const startTrial = useCallback(() => {
-    if (trialState.trialUsed) return;
-    const now = new Date();
-    const end = new Date(now);
-    end.setDate(end.getDate() + TRIAL_DURATION_DAYS);
-
-    persistTrialState({
-      trialUsed: true,
-      trialStartedAt: now.toISOString(),
-      trialEndsAt: end.toISOString(),
-    });
-  }, [trialState.trialUsed, persistTrialState]);
-
-  const clearTrial = useCallback(() => {
-    persistTrialState(defaultTrialState);
-  }, [persistTrialState]);
-
-  const upgradePlan = useCallback(
-    (_platform: SubscriptionPlatform, _period: "monthly" | "yearly") => {
-    },
-    [],
-  );
+  const startTrial = useCallback(async () => {
+    // The server derives a single trial window from the account creation date.
+    // This refresh acknowledges that trial; it never creates mutable local access.
+    await refreshEntitlement();
+  }, [refreshEntitlement]);
 
   const restorePurchases = useCallback(async () => {
-    try {
-      await rc.restore();
-    } catch (e) {
-      console.log("Restore failed:", e);
-    }
-  }, [rc]);
+    await rc.restore();
+    await refreshEntitlement();
+  }, [rc, refreshEntitlement]);
 
-  const cancelSubscription = useCallback(() => {
-  }, []);
+  const upgradePlan = useCallback((_platform: SubscriptionPlatform, _period: "monthly" | "yearly") => {}, []);
 
-  let status: SubscriptionStatus = "free";
-  if (rcSubscribed) {
-    status = "active";
-  } else if (isTrialActive) {
-    status = "in_trial";
-  } else if (trialState.trialUsed && isTrialExpired) {
-    status = "expired";
-  }
-
-  const state = {
-    status,
-    planType: (rcSubscribed ? "premium" : isTrialActive ? "trial" : "free") as PlanType,
-    trialUsed: trialState.trialUsed,
-    trialStartedAt: trialState.trialStartedAt,
-    trialEndsAt: trialState.trialEndsAt,
-    subscriptionPlatform: "none" as SubscriptionPlatform,
-    premiumAccessUntil: null,
-    renewalDate: null,
-    purchaseToken: null,
-  };
+  const cancelSubscription = useCallback(() => {}, []);
+  const state = entitlement ? toState(entitlement) : defaultState;
 
   return (
     <SubscriptionContext.Provider
@@ -232,11 +169,11 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         trialEndDate,
         canAccess,
         startTrial,
-        clearTrial,
+        refreshEntitlement,
         upgradePlan,
         restorePurchases,
         cancelSubscription,
-        isLoaded: isLoaded && !rc.isLoading,
+        isLoaded: isLoaded && !isAuthLoading,
         state,
       }}
     >

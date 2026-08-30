@@ -25,20 +25,17 @@ function AppGuard({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!isLoaded) return;
-    if (!subState.trialUsed || !isFree || !subState.trialEndsAt) return;
+    if (subState.status !== "expired" || !isFree || !subState.trialEndsAt) return;
     const endTime = new Date(subState.trialEndsAt).getTime();
     if (Date.now() < endTime) return;
     setShowTrialExpired(true);
-  }, [isLoaded, subState.trialUsed, subState.trialEndsAt, isFree]);
+  }, [isLoaded, subState.status, subState.trialEndsAt, isFree]);
 
   if (!state.onboardingComplete) return null;
   return (
     <>
       {children}
-      <TrialExpiredModal
-        visible={showTrialExpired}
-        onDismiss={() => setShowTrialExpired(false)}
-      />
+      <TrialExpiredModal visible={showTrialExpired} onDismiss={() => setShowTrialExpired(false)} />
     </>
   );
 }
@@ -60,7 +57,12 @@ function NativeTabLayout() {
           <Label>Diet</Label>
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="progress">
-          <Icon sf={{ default: "chart.line.uptrend.xyaxis", selected: "chart.line.uptrend.xyaxis" }} />
+          <Icon
+            sf={{
+              default: "chart.line.uptrend.xyaxis",
+              selected: "chart.line.uptrend.xyaxis",
+            }}
+          />
           <Label>Progress</Label>
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="profile">
@@ -94,15 +96,9 @@ function ClassicTabLayout() {
           },
           tabBarBackground: () =>
             isIOS ? (
-              <BlurView
-                intensity={100}
-                tint={isDark ? "dark" : "light"}
-                style={StyleSheet.absoluteFill}
-              />
+              <BlurView intensity={100} tint={isDark ? "dark" : "light"} style={StyleSheet.absoluteFill} />
             ) : (
-              <View
-                style={[StyleSheet.absoluteFill, { backgroundColor: theme.tabBar }]}
-              />
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: theme.tabBar }]} />
             ),
         }}
       >
@@ -110,36 +106,21 @@ function ClassicTabLayout() {
           name="index"
           options={{
             title: "Dashboard",
-            tabBarIcon: ({ color }) =>
-              isIOS ? (
-                <SymbolView name="house" tintColor={color} size={22} />
-              ) : (
-                <Ionicons name="home-outline" size={22} color={color} />
-              ),
+            tabBarIcon: ({ color }) => (isIOS ? <SymbolView name="house" tintColor={color} size={22} /> : <Ionicons name="home-outline" size={22} color={color} />),
           }}
         />
         <Tabs.Screen
           name="workouts"
           options={{
             title: "Workouts",
-            tabBarIcon: ({ color }) =>
-              isIOS ? (
-                <SymbolView name="dumbbell" tintColor={color} size={22} />
-              ) : (
-                <Ionicons name="barbell-outline" size={22} color={color} />
-              ),
+            tabBarIcon: ({ color }) => (isIOS ? <SymbolView name="dumbbell" tintColor={color} size={22} /> : <Ionicons name="barbell-outline" size={22} color={color} />),
           }}
         />
         <Tabs.Screen
           name="diet"
           options={{
             title: "Diet",
-            tabBarIcon: ({ color }) =>
-              isIOS ? (
-                <SymbolView name="fork.knife" tintColor={color} size={22} />
-              ) : (
-                <Ionicons name="restaurant-outline" size={22} color={color} />
-              ),
+            tabBarIcon: ({ color }) => (isIOS ? <SymbolView name="fork.knife" tintColor={color} size={22} /> : <Ionicons name="restaurant-outline" size={22} color={color} />),
           }}
         />
         <Tabs.Screen
@@ -147,23 +128,14 @@ function ClassicTabLayout() {
           options={{
             title: "Progress",
             tabBarIcon: ({ color }) =>
-              isIOS ? (
-                <SymbolView name="chart.line.uptrend.xyaxis" tintColor={color} size={22} />
-              ) : (
-                <Ionicons name="trending-up-outline" size={22} color={color} />
-              ),
+              isIOS ? <SymbolView name="chart.line.uptrend.xyaxis" tintColor={color} size={22} /> : <Ionicons name="trending-up-outline" size={22} color={color} />,
           }}
         />
         <Tabs.Screen
           name="profile"
           options={{
             title: "Profile",
-            tabBarIcon: ({ color }) =>
-              isIOS ? (
-                <SymbolView name="person" tintColor={color} size={22} />
-              ) : (
-                <Ionicons name="person-outline" size={22} color={color} />
-              ),
+            tabBarIcon: ({ color }) => (isIOS ? <SymbolView name="person" tintColor={color} size={22} /> : <Ionicons name="person-outline" size={22} color={color} />),
           }}
         />
       </Tabs>

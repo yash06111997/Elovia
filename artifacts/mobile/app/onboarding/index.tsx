@@ -1,34 +1,18 @@
 import React, { useEffect, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  TextInput,
-  Platform,
-} from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Platform, Linking } from "react-native";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import {
-  useApp,
-  UserProfile,
-  FitnessGoal,
-  FitnessLevel,
-  ActivityLevel,
-  WorkoutPreference,
-  FoodPreference,
-  Equipment,
-  DietType,
-} from "@/context/AppContext";
+import { useApp, UserProfile, FitnessGoal, FitnessLevel, ActivityLevel, WorkoutPreference, FoodPreference, Equipment, DietType } from "@/context/AppContext";
 import { useWorkout } from "@/context/WorkoutContext";
 import { useNutrition } from "@/context/NutritionContext";
 import { useAuth } from "@/lib/auth";
 import { generateWorkoutPlan, generateMealPlan } from "@/utils/aiEngine";
 import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
+import { getPublicApiUrl } from "@/utils/api";
+import { trackEvent } from "@/lib/telemetry";
 
 const TOTAL_STEPS = 7;
 
@@ -41,6 +25,7 @@ export default function OnboardingScreen() {
   const { isAuthenticated, login, user, authError } = useAuth();
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
 
   const [form, setForm] = useState<Partial<UserProfile>>({
@@ -97,6 +82,7 @@ export default function OnboardingScreen() {
   };
 
   const handleFinish = async () => {
+    if (!privacyAcknowledged) return;
     setLoading(true);
     const profile = form as UserProfile;
     setProfile(profile);
@@ -105,80 +91,35 @@ export default function OnboardingScreen() {
     setPlan(workoutPlan);
     setMealPlan(mealPlan);
     completeOnboarding();
-    router.replace({ pathname: "/paywall", params: { postOnboarding: "1" } });
+    void trackEvent("onboarding_completed", { stepCount: TOTAL_STEPS });
+    router.replace({
+      pathname: "/plan-preview",
+      params: { postOnboarding: "1" },
+    });
   };
 
   const renderStep = () => {
     switch (step) {
       case 0:
-        return (
-          <StepWelcome
-            isAuthenticated={isAuthenticated}
-            login={login}
-            user={user}
-            authError={authError}
-            isDark={isDark}
-            theme={theme}
-          />
-        );
+        return <StepWelcome isAuthenticated={isAuthenticated} login={login} user={user} authError={authError} isDark={isDark} theme={theme} />;
       case 1:
-        return (
-          <StepPersonal
-            form={form}
-            update={update}
-            isDark={isDark}
-            theme={theme}
-          />
-        );
+        return <StepPersonal form={form} update={update} isDark={isDark} theme={theme} />;
       case 2:
-        return (
-          <StepGoal form={form} update={update} isDark={isDark} theme={theme} />
-        );
+        return <StepGoal form={form} update={update} isDark={isDark} theme={theme} />;
       case 3:
-        return (
-          <StepWorkout
-            form={form}
-            update={update}
-            isDark={isDark}
-            theme={theme}
-          />
-        );
+        return <StepWorkout form={form} update={update} isDark={isDark} theme={theme} />;
       case 4:
-        return (
-          <StepEquipment
-            form={form}
-            toggleEquipment={toggleEquipment}
-            isDark={isDark}
-            theme={theme}
-          />
-        );
+        return <StepEquipment form={form} toggleEquipment={toggleEquipment} isDark={isDark} theme={theme} />;
       case 5:
-        return (
-          <StepDiet form={form} update={update} isDark={isDark} theme={theme} />
-        );
+        return <StepDiet form={form} update={update} isDark={isDark} theme={theme} />;
       case 6:
-        return (
-          <StepHealth
-            form={form}
-            update={update}
-            isDark={isDark}
-            theme={theme}
-          />
-        );
+        return <StepHealth form={form} update={update} privacyAcknowledged={privacyAcknowledged} setPrivacyAcknowledged={setPrivacyAcknowledged} isDark={isDark} theme={theme} />;
       default:
         return null;
     }
   };
 
-  const stepTitles = [
-    "Welcome",
-    "About You",
-    "Your Goals",
-    "Workout Preferences",
-    "Available Equipment",
-    "Diet & Nutrition",
-    "Health Habits",
-  ];
+  const stepTitles = ["Welcome", "About You", "Your Goals", "Workout Preferences", "Available Equipment", "Diet & Nutrition", "Health Habits"];
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ y: 0, animated: false });
@@ -188,12 +129,7 @@ export default function OnboardingScreen() {
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <View style={[styles.topBar, { paddingTop: insets.top + 16 }]}>
         {step > 0 ? (
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => setStep(step - 1)}
-            accessibilityRole="button"
-            accessibilityLabel={`Go back to ${stepTitles[step - 1]}`}
-          >
+          <TouchableOpacity style={styles.backButton} onPress={() => setStep(step - 1)} accessibilityRole="button" accessibilityLabel={`Go back to ${stepTitles[step - 1]}`}>
             <Ionicons name="arrow-back" size={22} color={theme.text} />
           </TouchableOpacity>
         ) : (
@@ -238,17 +174,11 @@ export default function OnboardingScreen() {
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
-        contentContainerStyle={[
-          styles.scrollContent,
-          { paddingBottom: insets.bottom + 100 },
-        ]}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 100 }]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        <Text
-          accessibilityRole="header"
-          style={[styles.stepTitle, { color: theme.text }]}
-        >
+        <Text accessibilityRole="header" style={[styles.stepTitle, { color: theme.text }]}>
           {stepTitles[step]}
         </Text>
         {renderStep()}
@@ -265,25 +195,27 @@ export default function OnboardingScreen() {
         ]}
       >
         <TouchableOpacity
-          style={[styles.nextBtn, loading && { opacity: 0.7 }]}
+          style={[
+            styles.nextBtn,
+            (loading || (step === TOTAL_STEPS - 1 && !privacyAcknowledged)) && {
+              opacity: 0.5,
+            },
+          ]}
           onPress={next}
-          disabled={loading}
+          disabled={loading || (step === TOTAL_STEPS - 1 && !privacyAcknowledged)}
           activeOpacity={0.8}
           accessibilityRole="button"
-          accessibilityLabel={
-            step === TOTAL_STEPS - 1
-              ? "Create my plan"
-              : `Continue to ${stepTitles[step + 1]}`
-          }
-          accessibilityState={{ disabled: loading, busy: loading }}
+          accessibilityLabel={step === TOTAL_STEPS - 1 ? "Create my plan" : `Continue to ${stepTitles[step + 1]}`}
+          accessibilityState={{
+            disabled: loading || (step === TOTAL_STEPS - 1 && !privacyAcknowledged),
+            busy: loading,
+          }}
         >
           {loading ? (
             <Text style={styles.nextBtnText}>Building your plan...</Text>
           ) : (
             <>
-              <Text style={styles.nextBtnText}>
-                {step === TOTAL_STEPS - 1 ? "Create My Plan" : "Continue"}
-              </Text>
+              <Text style={styles.nextBtnText}>{step === TOTAL_STEPS - 1 ? "Create My Plan" : "Continue"}</Text>
               <Ionicons name="arrow-forward" size={18} color="#000" />
             </>
           )}
@@ -293,62 +225,30 @@ export default function OnboardingScreen() {
   );
 }
 
-function StepWelcome({
-  isAuthenticated,
-  login,
-  user,
-  authError,
-  isDark,
-  theme,
-}: any) {
+function StepWelcome({ isAuthenticated, login, user, authError, isDark, theme }: any) {
   return (
     <View style={styles.stepContent}>
       <View style={styles.welcomeIconWrap}>
-        <View
-          style={[
-            styles.welcomeIconCircle,
-            { backgroundColor: Colors.primary + "20" },
-          ]}
-        >
+        <View style={[styles.welcomeIconCircle, { backgroundColor: Colors.primary + "20" }]}>
           <Ionicons name="fitness" size={48} color={Colors.primary} />
         </View>
       </View>
 
-      <Text style={[styles.welcomeHeadline, { color: theme.text }]}>
-        Your AI-Powered{"\n"}Fitness Companion
-      </Text>
-      <Text style={[styles.welcomeSubtext, { color: theme.textSecondary }]}>
-        Personalized workouts, meal plans, and health tracking — all in one
-        place.
-      </Text>
+      <Text style={[styles.welcomeHeadline, { color: theme.text }]}>Your AI-Powered{"\n"}Fitness Companion</Text>
+      <Text style={[styles.welcomeSubtext, { color: theme.textSecondary }]}>Personalized workouts, meal plans, and health tracking — all in one place.</Text>
 
-      <View
-        style={[
-          styles.welcomeCard,
-          { backgroundColor: theme.card, borderColor: theme.border },
-        ]}
-      >
+      <View style={[styles.welcomeCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
         <View style={styles.welcomeFeature}>
           <Ionicons name="barbell-outline" size={20} color={Colors.primary} />
-          <Text style={[styles.welcomeFeatureText, { color: theme.text }]}>
-            Custom workout plans
-          </Text>
+          <Text style={[styles.welcomeFeatureText, { color: theme.text }]}>Custom workout plans</Text>
         </View>
         <View style={styles.welcomeFeature}>
-          <Ionicons
-            name="nutrition-outline"
-            size={20}
-            color={Colors.accentGreen}
-          />
-          <Text style={[styles.welcomeFeatureText, { color: theme.text }]}>
-            AI meal planning
-          </Text>
+          <Ionicons name="nutrition-outline" size={20} color={Colors.accentGreen} />
+          <Text style={[styles.welcomeFeatureText, { color: theme.text }]}>AI meal planning</Text>
         </View>
         <View style={styles.welcomeFeature}>
           <Ionicons name="analytics-outline" size={20} color={Colors.accent} />
-          <Text style={[styles.welcomeFeatureText, { color: theme.text }]}>
-            Progress tracking
-          </Text>
+          <Text style={[styles.welcomeFeatureText, { color: theme.text }]}>Progress tracking</Text>
         </View>
       </View>
 
@@ -362,29 +262,16 @@ function StepWelcome({
             },
           ]}
         >
-          <Ionicons
-            name="checkmark-circle"
-            size={22}
-            color={Colors.accentGreen}
-          />
+          <Ionicons name="checkmark-circle" size={22} color={Colors.accentGreen} />
           <View style={{ flex: 1 }}>
-            <Text style={[styles.signedInTitle, { color: Colors.accentGreen }]}>
-              Signed In
-            </Text>
-            <Text
-              style={[styles.signedInEmail, { color: theme.textSecondary }]}
-            >
-              {user?.email || "Your data will be saved to your account"}
-            </Text>
+            <Text style={[styles.signedInTitle, { color: Colors.accentGreen }]}>Signed In</Text>
+            <Text style={[styles.signedInEmail, { color: theme.textSecondary }]}>{user?.email || "Your data will be saved to your account"}</Text>
           </View>
         </View>
       ) : (
         <View style={styles.welcomeAuthSection}>
           <TouchableOpacity
-            style={[
-              styles.googleSignInBtn,
-              { backgroundColor: theme.card, borderColor: theme.border },
-            ]}
+            style={[styles.googleSignInBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
             onPress={() => {
               login();
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -395,20 +282,10 @@ function StepWelcome({
             accessibilityHint="Signs in so your Elovia data can sync across devices"
           >
             <Ionicons name="logo-google" size={20} color="#4285F4" />
-            <Text style={[styles.googleSignInText, { color: theme.text }]}>
-              Sign in with Google
-            </Text>
+            <Text style={[styles.googleSignInText, { color: theme.text }]}>Sign in with Google</Text>
           </TouchableOpacity>
-          {authError ? (
-            <Text
-              style={[styles.skipAuthText, { color: "#FF4444", marginTop: 8 }]}
-            >
-              {authError}
-            </Text>
-          ) : null}
-          <Text style={[styles.skipAuthText, { color: theme.textMuted }]}>
-            Optional — you can sign in later from your Profile
-          </Text>
+          {authError ? <Text style={[styles.skipAuthText, { color: "#FF4444", marginTop: 8 }]}>{authError}</Text> : null}
+          <Text style={[styles.skipAuthText, { color: theme.textMuted }]}>Optional — you can sign in later from your Profile</Text>
         </View>
       )}
     </View>
@@ -418,26 +295,10 @@ function StepWelcome({
 function StepPersonal({ form, update, isDark, theme }: any) {
   return (
     <View style={styles.stepContent}>
-      <LabelInput
-        label="Full Name"
-        value={form.name}
-        onChangeText={(v: string) => update("name", v)}
-        placeholder="Your name"
-        theme={theme}
-      />
-      <NumberStepper
-        label="Age"
-        value={form.age}
-        min={10}
-        max={90}
-        step={1}
-        onChange={(v: number) => update("age", v)}
-        theme={theme}
-      />
+      <LabelInput label="Full Name" value={form.name} onChangeText={(v: string) => update("name", v)} placeholder="Your name" theme={theme} />
+      <NumberStepper label="Age" value={form.age} min={10} max={90} step={1} onChange={(v: number) => update("age", v)} theme={theme} />
       <View style={styles.field}>
-        <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>
-          Gender
-        </Text>
+        <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Gender</Text>
         <ChipRow
           options={[
             { label: "Male", value: "male" },
@@ -449,33 +310,9 @@ function StepPersonal({ form, update, isDark, theme }: any) {
           theme={theme}
         />
       </View>
-      <NumberStepper
-        label="Height (cm)"
-        value={form.heightCm}
-        min={100}
-        max={250}
-        step={1}
-        onChange={(v: number) => update("heightCm", v)}
-        theme={theme}
-      />
-      <NumberStepper
-        label="Weight (kg)"
-        value={form.weightKg}
-        min={30}
-        max={250}
-        step={0.5}
-        onChange={(v: number) => update("weightKg", v)}
-        theme={theme}
-      />
-      <NumberStepper
-        label="Target Weight (kg)"
-        value={form.targetWeightKg}
-        min={30}
-        max={250}
-        step={0.5}
-        onChange={(v: number) => update("targetWeightKg", v)}
-        theme={theme}
-      />
+      <NumberStepper label="Height (cm)" value={form.heightCm} min={100} max={250} step={1} onChange={(v: number) => update("heightCm", v)} theme={theme} />
+      <NumberStepper label="Weight (kg)" value={form.weightKg} min={30} max={250} step={0.5} onChange={(v: number) => update("weightKg", v)} theme={theme} />
+      <NumberStepper label="Target Weight (kg)" value={form.targetWeightKg} min={30} max={250} step={0.5} onChange={(v: number) => update("targetWeightKg", v)} theme={theme} />
     </View>
   );
 }
@@ -537,19 +374,15 @@ function StepGoal({ form, update, isDark, theme }: any) {
     { label: "Extra Active", value: "extra_active" },
   ];
 
-  const weightDelta =
-    (form.targetWeightKg || form.weightKg || 70) - (form.weightKg || 70);
+  const weightDelta = (form.targetWeightKg || form.weightKg || 70) - (form.weightKg || 70);
   const weeks = form.targetWeeks || 12;
-  const dailyAdjust =
-    weightDelta !== 0 ? Math.round((weightDelta * 7700) / (weeks * 7)) : 0;
+  const dailyAdjust = weightDelta !== 0 ? Math.round((weightDelta * 7700) / (weeks * 7)) : 0;
   const cappedAdjust = Math.max(-1000, Math.min(1000, dailyAdjust));
   const weeklyRateKg = Math.abs(weightDelta) / weeks;
 
   return (
     <View style={styles.stepContent}>
-      <Text style={[styles.sectionLabel, { color: theme.textSecondary }]}>
-        Primary Goal
-      </Text>
+      <Text style={[styles.sectionLabel, { color: theme.textSecondary }]}>Primary Goal</Text>
       {goals.map((g) => (
         <TouchableOpacity
           key={g.value}
@@ -557,8 +390,7 @@ function StepGoal({ form, update, isDark, theme }: any) {
             styles.goalCard,
             {
               backgroundColor: theme.card,
-              borderColor:
-                form.goal === g.value ? Colors.primary : theme.border,
+              borderColor: form.goal === g.value ? Colors.primary : theme.border,
             },
           ]}
           onPress={() => {
@@ -575,50 +407,24 @@ function StepGoal({ form, update, isDark, theme }: any) {
             style={[
               styles.goalIcon,
               {
-                backgroundColor:
-                  Colors.primary + (form.goal === g.value ? "30" : "15"),
+                backgroundColor: Colors.primary + (form.goal === g.value ? "30" : "15"),
               },
             ]}
           >
             <Ionicons name={g.icon as any} size={20} color={Colors.primary} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={[styles.goalLabel, { color: theme.text }]}>
-              {g.label}
-            </Text>
-            <Text style={[styles.goalDesc, { color: theme.textSecondary }]}>
-              {g.desc}
-            </Text>
+            <Text style={[styles.goalLabel, { color: theme.text }]}>{g.label}</Text>
+            <Text style={[styles.goalDesc, { color: theme.textSecondary }]}>{g.desc}</Text>
           </View>
-          {form.goal === g.value && (
-            <Ionicons
-              name="checkmark-circle"
-              size={20}
-              color={Colors.primary}
-            />
-          )}
+          {form.goal === g.value && <Ionicons name="checkmark-circle" size={20} color={Colors.primary} />}
         </TouchableOpacity>
       ))}
 
       {weightDelta !== 0 && (
         <>
-          <Text
-            style={[
-              styles.sectionLabel,
-              { color: theme.textSecondary, marginTop: 16 },
-            ]}
-          >
-            Goal Timeline
-          </Text>
-          <NumberStepper
-            label="Target Weeks"
-            value={form.targetWeeks ?? 12}
-            min={4}
-            max={52}
-            step={1}
-            onChange={(v: number) => update("targetWeeks", v)}
-            theme={theme}
-          />
+          <Text style={[styles.sectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Goal Timeline</Text>
+          <NumberStepper label="Target Weeks" value={form.targetWeeks ?? 12} min={4} max={52} step={1} onChange={(v: number) => update("targetWeeks", v)} theme={theme} />
           <View
             style={[
               styles.timelineInfo,
@@ -628,51 +434,23 @@ function StepGoal({ form, update, isDark, theme }: any) {
               },
             ]}
           >
-            <Ionicons
-              name="analytics-outline"
-              size={18}
-              color={Colors.primary}
-            />
+            <Ionicons name="analytics-outline" size={18} color={Colors.primary} />
             <View style={{ flex: 1 }}>
               <Text style={[styles.timelineText, { color: theme.text }]}>
-                {weightDelta > 0 ? "Gain" : "Lose"}{" "}
-                {Math.abs(weightDelta).toFixed(1)} kg in {weeks} weeks
+                {weightDelta > 0 ? "Gain" : "Lose"} {Math.abs(weightDelta).toFixed(1)} kg in {weeks} weeks
               </Text>
-              <Text
-                style={[styles.timelineDetail, { color: theme.textSecondary }]}
-              >
-                {weeklyRateKg.toFixed(2)} kg/week •{" "}
-                {cappedAdjust > 0 ? "+" : ""}
-                {cappedAdjust} kcal/day{" "}
-                {Math.abs(dailyAdjust) > 1000 ? "(capped)" : ""}
+              <Text style={[styles.timelineDetail, { color: theme.textSecondary }]}>
+                {weeklyRateKg.toFixed(2)} kg/week • {cappedAdjust > 0 ? "+" : ""}
+                {cappedAdjust} kcal/day {Math.abs(dailyAdjust) > 1000 ? "(capped)" : ""}
               </Text>
             </View>
           </View>
         </>
       )}
 
-      <Text
-        style={[
-          styles.sectionLabel,
-          { color: theme.textSecondary, marginTop: 16 },
-        ]}
-      >
-        Fitness Level
-      </Text>
-      <ChipRow
-        options={levels.map((l) => ({ label: l.label, value: l.value }))}
-        selected={form.fitnessLevel}
-        onSelect={(v: string) => update("fitnessLevel", v)}
-        theme={theme}
-      />
-      <Text
-        style={[
-          styles.sectionLabel,
-          { color: theme.textSecondary, marginTop: 16 },
-        ]}
-      >
-        Daily Activity Level
-      </Text>
+      <Text style={[styles.sectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Fitness Level</Text>
+      <ChipRow options={levels.map((l) => ({ label: l.label, value: l.value }))} selected={form.fitnessLevel} onSelect={(v: string) => update("fitnessLevel", v)} theme={theme} />
+      <Text style={[styles.sectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Daily Activity Level</Text>
       <ChipRow
         options={activity.map((a) => ({ label: a.label, value: a.value }))}
         selected={form.activityLevel}
@@ -688,9 +466,7 @@ function StepWorkout({ form, update, isDark, theme }: any) {
   return (
     <View style={styles.stepContent}>
       <View style={styles.field}>
-        <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>
-          Workout Location
-        </Text>
+        <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Workout Location</Text>
         <ChipRow
           options={[
             { label: "Gym", value: "gym" },
@@ -702,15 +478,7 @@ function StepWorkout({ form, update, isDark, theme }: any) {
           theme={theme}
         />
       </View>
-      <NumberStepper
-        label="Days per week"
-        value={form.workoutDaysPerWeek}
-        min={1}
-        max={7}
-        step={1}
-        onChange={(v: number) => update("workoutDaysPerWeek", v)}
-        theme={theme}
-      />
+      <NumberStepper label="Days per week" value={form.workoutDaysPerWeek} min={1} max={7} step={1} onChange={(v: number) => update("workoutDaysPerWeek", v)} theme={theme} />
       <NumberStepper
         label="Session duration (min)"
         value={form.workoutDurationMins}
@@ -746,9 +514,7 @@ function StepEquipment({ form, toggleEquipment, isDark, theme }: any) {
   const selected: Equipment[] = form.equipment ?? [];
   return (
     <View style={styles.stepContent}>
-      <Text style={[styles.hint, { color: theme.textSecondary }]}>
-        Select all equipment you have access to.
-      </Text>
+      <Text style={[styles.hint, { color: theme.textSecondary }]}>Select all equipment you have access to.</Text>
       <View style={styles.equipmentGrid}>
         {items.map((item) => {
           const active = selected.includes(item.value);
@@ -769,27 +535,9 @@ function StepEquipment({ form, toggleEquipment, isDark, theme }: any) {
               accessibilityState={{ checked: active }}
               aria-checked={active}
             >
-              <Ionicons
-                name={item.icon as any}
-                size={18}
-                color={active ? Colors.primary : theme.textSecondary}
-              />
-              <Text
-                style={[
-                  styles.equipLabel,
-                  { color: active ? Colors.primary : theme.text },
-                ]}
-              >
-                {item.label}
-              </Text>
-              {active && (
-                <Ionicons
-                  name="checkmark-circle"
-                  size={14}
-                  color={Colors.primary}
-                  style={{ position: "absolute", top: 6, right: 6 }}
-                />
-              )}
+              <Ionicons name={item.icon as any} size={18} color={active ? Colors.primary : theme.textSecondary} />
+              <Text style={[styles.equipLabel, { color: active ? Colors.primary : theme.text }]}>{item.label}</Text>
+              {active && <Ionicons name="checkmark-circle" size={14} color={Colors.primary} style={{ position: "absolute", top: 6, right: 6 }} />}
             </TouchableOpacity>
           );
         })}
@@ -840,9 +588,7 @@ function StepDiet({ form, update, isDark, theme }: any) {
   ];
   return (
     <View style={styles.stepContent}>
-      <Text style={[styles.sectionLabel, { color: theme.textSecondary }]}>
-        Food Preference
-      </Text>
+      <Text style={[styles.sectionLabel, { color: theme.textSecondary }]}>Food Preference</Text>
       {prefs.map((p) => (
         <TouchableOpacity
           key={p.value}
@@ -850,8 +596,7 @@ function StepDiet({ form, update, isDark, theme }: any) {
             styles.goalCard,
             {
               backgroundColor: theme.card,
-              borderColor:
-                form.foodPreference === p.value ? "#00E676" : theme.border,
+              borderColor: form.foodPreference === p.value ? "#00E676" : theme.border,
             },
           ]}
           onPress={() => {
@@ -868,35 +613,21 @@ function StepDiet({ form, update, isDark, theme }: any) {
             style={[
               styles.goalIcon,
               {
-                backgroundColor:
-                  "#00E676" + (form.foodPreference === p.value ? "30" : "15"),
+                backgroundColor: "#00E676" + (form.foodPreference === p.value ? "30" : "15"),
               },
             ]}
           >
             <Ionicons name={p.icon as any} size={20} color="#00E676" />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={[styles.goalLabel, { color: theme.text }]}>
-              {p.label}
-            </Text>
-            <Text style={[styles.goalDesc, { color: theme.textSecondary }]}>
-              {p.desc}
-            </Text>
+            <Text style={[styles.goalLabel, { color: theme.text }]}>{p.label}</Text>
+            <Text style={[styles.goalDesc, { color: theme.textSecondary }]}>{p.desc}</Text>
           </View>
-          {form.foodPreference === p.value && (
-            <Ionicons name="checkmark-circle" size={20} color="#00E676" />
-          )}
+          {form.foodPreference === p.value && <Ionicons name="checkmark-circle" size={20} color="#00E676" />}
         </TouchableOpacity>
       ))}
 
-      <Text
-        style={[
-          styles.sectionLabel,
-          { color: theme.textSecondary, marginTop: 16 },
-        ]}
-      >
-        Diet Type
-      </Text>
+      <Text style={[styles.sectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Diet Type</Text>
       <View style={styles.dietTypeGrid}>
         {dietTypes.map((dt) => {
           const active = form.dietType === dt.value;
@@ -920,19 +651,8 @@ function StepDiet({ form, update, isDark, theme }: any) {
               accessibilityState={{ checked: active }}
               aria-checked={active}
             >
-              <Ionicons
-                name={dt.icon as any}
-                size={16}
-                color={active ? Colors.primary : theme.textSecondary}
-              />
-              <Text
-                style={[
-                  styles.dietTypeLabel,
-                  { color: active ? Colors.primary : theme.text },
-                ]}
-              >
-                {dt.label}
-              </Text>
+              <Ionicons name={dt.icon as any} size={16} color={active ? Colors.primary : theme.textSecondary} />
+              <Text style={[styles.dietTypeLabel, { color: active ? Colors.primary : theme.text }]}>{dt.label}</Text>
             </TouchableOpacity>
           );
         })}
@@ -974,18 +694,10 @@ function StepDiet({ form, update, isDark, theme }: any) {
   );
 }
 
-function StepHealth({ form, update, isDark, theme }: any) {
+function StepHealth({ form, update, privacyAcknowledged, setPrivacyAcknowledged, isDark, theme }: any) {
   return (
     <View style={styles.stepContent}>
-      <NumberStepper
-        label="Sleep hours per night"
-        value={form.sleepHours}
-        min={3}
-        max={12}
-        step={0.5}
-        onChange={(v: number) => update("sleepHours", v)}
-        theme={theme}
-      />
+      <NumberStepper label="Sleep hours per night" value={form.sleepHours} min={3} max={12} step={0.5} onChange={(v: number) => update("sleepHours", v)} theme={theme} />
       <NumberStepper
         label="Daily water intake (liters)"
         value={form.waterIntakeLiters}
@@ -1003,23 +715,42 @@ function StepHealth({ form, update, isDark, theme }: any) {
         theme={theme}
         multiline
       />
+      <TouchableOpacity
+        style={[
+          styles.consentCard,
+          {
+            backgroundColor: theme.card,
+            borderColor: privacyAcknowledged ? Colors.primary : theme.border,
+          },
+        ]}
+        onPress={() => setPrivacyAcknowledged(!privacyAcknowledged)}
+        accessibilityRole="checkbox"
+        accessibilityLabel="I understand how Elovia uses my fitness and health information"
+        accessibilityState={{ checked: privacyAcknowledged }}
+        activeOpacity={0.8}
+      >
+        <Ionicons name={privacyAcknowledged ? "checkbox" : "square-outline"} size={24} color={privacyAcknowledged ? Colors.primary : theme.textMuted} />
+        <Text style={[styles.consentText, { color: theme.textSecondary }]}>
+          I understand how Elovia uses my fitness and health information to personalise the app. Elovia is not a medical service.
+        </Text>
+      </TouchableOpacity>
+      <View style={styles.legalLinks}>
+        <TouchableOpacity onPress={() => Linking.openURL(getPublicApiUrl("/api/legal/privacy"))} accessibilityRole="link">
+          <Text style={styles.legalLink}>Privacy Notice</Text>
+        </TouchableOpacity>
+        <Text style={{ color: theme.textMuted }}>·</Text>
+        <TouchableOpacity onPress={() => Linking.openURL(getPublicApiUrl("/api/legal/terms"))} accessibilityRole="link">
+          <Text style={styles.legalLink}>Terms of Use</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
 
-function LabelInput({
-  label,
-  value,
-  onChangeText,
-  placeholder,
-  theme,
-  multiline,
-}: any) {
+function LabelInput({ label, value, onChangeText, placeholder, theme, multiline }: any) {
   return (
     <View style={styles.field}>
-      <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>
-        {label}
-      </Text>
+      <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>{label}</Text>
       <TextInput
         style={[
           styles.input,
@@ -1064,23 +795,12 @@ function NumberStepper({ label, value, min, max, step, onChange, theme }: any) {
 
   return (
     <View style={styles.field}>
-      <TouchableOpacity
-        onPress={startEditing}
-        activeOpacity={0.7}
-        accessibilityRole="button"
-        accessibilityLabel={`Edit ${label}`}
-        accessibilityHint={`Current value is ${value}`}
-      >
-        <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>
-          {label}
-        </Text>
+      <TouchableOpacity onPress={startEditing} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={`Edit ${label}`} accessibilityHint={`Current value is ${value}`}>
+        <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>{label}</Text>
       </TouchableOpacity>
       <View style={styles.stepper}>
         <TouchableOpacity
-          style={[
-            styles.stepBtn,
-            { backgroundColor: theme.card, borderColor: theme.border },
-          ]}
+          style={[styles.stepBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
           onPress={() => {
             const v = Math.max(min, +(value - step).toFixed(2));
             onChange(v);
@@ -1115,26 +835,18 @@ function NumberStepper({ label, value, min, max, step, onChange, theme }: any) {
           />
         ) : (
           <TouchableOpacity
-            style={[
-              styles.stepValue,
-              { backgroundColor: theme.card, borderColor: theme.border },
-            ]}
+            style={[styles.stepValue, { backgroundColor: theme.card, borderColor: theme.border }]}
             onPress={startEditing}
             activeOpacity={0.7}
             accessibilityRole="button"
             accessibilityLabel={`${label}: ${value}`}
             accessibilityHint="Double tap to enter a value"
           >
-            <Text style={[styles.stepValueText, { color: theme.text }]}>
-              {value}
-            </Text>
+            <Text style={[styles.stepValueText, { color: theme.text }]}>{value}</Text>
           </TouchableOpacity>
         )}
         <TouchableOpacity
-          style={[
-            styles.stepBtn,
-            { backgroundColor: theme.card, borderColor: theme.border },
-          ]}
+          style={[styles.stepBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
           onPress={() => {
             const v = Math.min(max, +(value + step).toFixed(2));
             onChange(v);
@@ -1162,10 +874,8 @@ function ChipRow({ options, selected, onSelect, theme, wrap }: any) {
           style={[
             styles.chip,
             {
-              backgroundColor:
-                selected === opt.value ? Colors.primary : theme.card,
-              borderColor:
-                selected === opt.value ? Colors.primary : theme.border,
+              backgroundColor: selected === opt.value ? Colors.primary : theme.card,
+              borderColor: selected === opt.value ? Colors.primary : theme.border,
             },
           ]}
           onPress={() => {
@@ -1178,14 +888,7 @@ function ChipRow({ options, selected, onSelect, theme, wrap }: any) {
           accessibilityState={{ checked: selected === opt.value }}
           aria-checked={selected === opt.value}
         >
-          <Text
-            style={[
-              styles.chipText,
-              { color: selected === opt.value ? "#000" : theme.text },
-            ]}
-          >
-            {opt.label}
-          </Text>
+          <Text style={[styles.chipText, { color: selected === opt.value ? "#000" : theme.text }]}>{opt.label}</Text>
         </TouchableOpacity>
       ))}
     </View>
@@ -1214,6 +917,32 @@ const styles = StyleSheet.create({
   scrollContent: { paddingHorizontal: 20, paddingTop: 8 },
   stepTitle: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 20 },
   stepContent: { gap: 16 },
+  consentCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    padding: 15,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  consentText: {
+    flex: 1,
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 19,
+  },
+  legalLinks: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 8,
+  },
+  legalLink: {
+    color: Colors.primary,
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    textDecorationLine: "underline",
+  },
   sectionLabel: {
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",

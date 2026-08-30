@@ -1,33 +1,12 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import React, {
-  createContext,
-  useContext,
-  useEffect,
-  useState,
-  useCallback,
-} from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { onDataRestored } from "@/lib/syncEvents";
 
-export type FitnessGoal =
-  | "fat_loss"
-  | "muscle_gain"
-  | "maintenance"
-  | "general_fitness"
-  | "strength"
-  | "endurance";
+export type FitnessGoal = "fat_loss" | "muscle_gain" | "maintenance" | "general_fitness" | "strength" | "endurance";
 export type FitnessLevel = "beginner" | "intermediate" | "advanced";
-export type ActivityLevel =
-  | "sedentary"
-  | "lightly_active"
-  | "moderately_active"
-  | "very_active"
-  | "extra_active";
+export type ActivityLevel = "sedentary" | "lightly_active" | "moderately_active" | "very_active" | "extra_active";
 export type WorkoutPreference = "gym" | "home" | "mixed";
-export type FoodPreference =
-  | "vegetarian"
-  | "eggetarian"
-  | "non_vegetarian"
-  | "vegan";
+export type FoodPreference = "vegetarian" | "eggetarian" | "non_vegetarian" | "vegan";
 
 export type Equipment =
   | "dumbbells"
@@ -43,15 +22,7 @@ export type Equipment =
   | "smith_machine"
   | "no_equipment";
 
-export type DietType =
-  | "balanced"
-  | "keto"
-  | "low_carb"
-  | "high_protein"
-  | "mediterranean"
-  | "paleo"
-  | "vegetarian_focused"
-  | "custom";
+export type DietType = "balanced" | "keto" | "low_carb" | "high_protein" | "mediterranean" | "paleo" | "vegetarian_focused" | "custom";
 
 export interface UserProfile {
   name: string;
@@ -155,10 +126,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const loadState = async () => {
     try {
-      const saved = await AsyncStorage.getItem("@fitai_state");
+      const saved = await AsyncStorage.getItem("@elovia_state");
       if (saved) {
         const parsed = JSON.parse(saved) as AppState;
-        setState({ ...defaultState, ...parsed, healthMetrics: parsed.healthMetrics ?? [] });
+        setState({
+          ...defaultState,
+          ...parsed,
+          healthMetrics: parsed.healthMetrics ?? [],
+        });
       }
     } catch (e) {
     } finally {
@@ -168,7 +143,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const saveState = async (newState: AppState) => {
     try {
-      await AsyncStorage.setItem("@fitai_state", JSON.stringify(newState));
+      await AsyncStorage.setItem("@elovia_state", JSON.stringify(newState));
     } catch (e) {}
   };
 
@@ -223,8 +198,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const updateTodayMetric = useCallback((updates: Partial<HealthMetric>) => {
     const today = new Date().toISOString().split("T")[0];
     setState((prev) => {
-      const existing =
-        (prev.healthMetrics ?? []).find((m) => m.date === today) ?? { date: today };
+      const existing = (prev.healthMetrics ?? []).find((m) => m.date === today) ?? { date: today };
       const merged = { ...existing, ...updates };
       const filtered = (prev.healthMetrics ?? []).filter((m) => m.date !== today);
       const next = {
@@ -270,10 +244,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const calculateTDEE = useCallback((): number => {
     const p = state.profile;
     if (!p) return 2000;
-    const bmr =
-      p.gender === "male"
-        ? 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age + 5
-        : 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age - 161;
+    const bmr = p.gender === "male" ? 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age + 5 : 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age - 161;
 
     const activityMultipliers: Record<ActivityLevel, number> = {
       sedentary: 1.2,

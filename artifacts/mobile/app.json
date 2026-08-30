@@ -25,11 +25,7 @@
         "ITSAppUsesNonExemptEncryption": false,
         "NSMotionUsageDescription": "Elovia uses motion data to count your daily steps.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Elovia uses your location in the background to detect when you arrive at your gym so it can offer to start your session. You can turn this off at any time.",
-        "UIBackgroundModes": [
-          "location",
-          "fetch",
-          "remote-notification"
-        ]
+        "UIBackgroundModes": ["location", "fetch", "remote-notification"]
       },
       "config": {
         "usesNonExemptEncryption": false
@@ -44,7 +40,6 @@
       "versionCode": 1,
       "permissions": [
         "CAMERA",
-        "READ_EXTERNAL_STORAGE",
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
         "ACTIVITY_RECOGNITION",
@@ -65,7 +60,6 @@
         "FOREGROUND_SERVICE_LOCATION",
         "POST_NOTIFICATIONS",
         "RECEIVE_BOOT_COMPLETED",
-        "SCHEDULE_EXACT_ALARM",
         "VIBRATE"
       ],
       "adaptiveIcon": {

@@ -33,11 +33,7 @@ router.get("/auth/user", (req: Request, res: Response) => {
  * closed rather than redirecting a token somewhere else.
  */
 function getServerDomain(req?: Request): string {
-  const fromEnv =
-    process.env.PUBLIC_DOMAIN ||
-    process.env.RAILWAY_PUBLIC_DOMAIN ||
-    process.env.REPLIT_DEV_DOMAIN ||
-    process.env.REPLIT_DOMAINS?.split(",")[0];
+  const fromEnv = process.env.PUBLIC_DOMAIN || process.env.RAILWAY_PUBLIC_DOMAIN || process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS?.split(",")[0];
 
   if (fromEnv) return fromEnv;
 
@@ -58,6 +54,11 @@ router.get("/auth/google-mobile", (req: Request, res: Response) => {
   const rawReturnUrl = (req.query.returnUrl as string) || "";
   const rawState = (req.query.state as string) || "";
 
+  if (!rawState || rawState.length > 128) {
+    res.status(400).json({ error: "Missing or invalid authentication state" });
+    return;
+  }
+
   if (mode === "redirect" && rawReturnUrl) {
     // This list is the security boundary of the whole flow: anything allowed
     // here receives the user's ID token. It must track app.json's `scheme`
@@ -74,13 +75,8 @@ router.get("/auth/google-mobile", (req: Request, res: Response) => {
       try {
         const parsedUrl = new URL(rawReturnUrl);
         const serverDomain = getServerDomain(req);
-        const allowedHttpHosts = [
-          "localhost",
-          ...(serverDomain ? [serverDomain] : []),
-        ];
-        isHttpsAllowed = allowedHttpHosts.some(
-          (host) => parsedUrl.hostname === host || parsedUrl.hostname.endsWith(`.${host}`)
-        );
+        const allowedHttpHosts = ["localhost", ...(serverDomain ? [serverDomain] : [])];
+        isHttpsAllowed = allowedHttpHosts.some((host) => parsedUrl.hostname === host || parsedUrl.hostname.endsWith(`.${host}`));
       } catch {
         isHttpsAllowed = false;
       }
@@ -158,14 +154,15 @@ router.get("/auth/google-callback", async (req: Request, res: Response) => {
       }),
     });
 
-    const tokenData = await tokenResponse.json() as { id_token?: string; error?: string; error_description?: string };
+    const tokenData = (await tokenResponse.json()) as {
+      id_token?: string;
+      error?: string;
+      error_description?: string;
+    };
 
     if (!tokenResponse.ok || !tokenData.id_token) {
       console.error("Token exchange failed:", tokenData);
-      res.status(500).send(errorPage(
-        "Failed to complete sign-in.",
-        tokenData.error_description || tokenData.error || "Token exchange failed"
-      ));
+      res.status(500).send(errorPage("Failed to complete sign-in.", tokenData.error_description || tokenData.error || "Token exchange failed"));
       return;
     }
 
@@ -173,6 +170,7 @@ router.get("/auth/google-callback", async (req: Request, res: Response) => {
     const appState = oauthState.split("|")[0];
 
     if (pending.mode === "popup") {
+      const popupOrigin = `https://${serverDomain}`;
       res.type("html").send(`<!DOCTYPE html>
 <html><head><title>Sign In Complete</title></head>
 <body><script>
@@ -181,7 +179,7 @@ if (window.opener) {
     type: 'elovia-auth',
     idToken: ${JSON.stringify(idToken)},
     state: ${JSON.stringify(appState)}
-  }, '*');
+  }, ${JSON.stringify(popupOrigin)});
   window.close();
 } else {
   document.body.textContent = 'Sign-in complete. You can close this window.';
@@ -193,7 +191,7 @@ if (window.opener) {
         res.status(400).send(errorPage("No return URL specified.", ""));
         return;
       }
-      const separator = returnUrl.includes("?") ? "&" : "?";
+      const separator = returnUrl.includes("#") ? "&" : "#";
       let url = `${returnUrl}${separator}idToken=${encodeURIComponent(idToken)}`;
       if (appState) {
         url += `&state=${encodeURIComponent(appState)}`;
@@ -206,7 +204,23 @@ if (window.opener) {
   }
 });
 
+function escapeHtml(value: string): string {
+  return value.replace(
+    /[&<>"']/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[character]!,
+  );
+}
+
 function errorPage(message: string, detail: string): string {
+  const safeMessage = escapeHtml(message);
+  const safeDetail = escapeHtml(detail);
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -233,8 +247,8 @@ function errorPage(message: string, detail: string): string {
 <body>
   <div class="container">
     <h1>Sign-In Error</h1>
-    <p>${message}</p>
-    ${detail ? `<p class="detail">${detail}</p>` : ""}
+    <p>${safeMessage}</p>
+    ${safeDetail ? `<p class="detail">${safeDetail}</p>` : ""}
     <button onclick="window.history.back()">Go Back</button>
   </div>
 </body>
