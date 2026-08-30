@@ -19,8 +19,29 @@ router.get("/auth/user", (req: Request, res: Response) => {
   });
 });
 
-function getServerDomain(): string {
-  return process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS?.split(",")[0] || "";
+/**
+ * The public hostname Google should redirect back to.
+ *
+ * This used to read only the REPLIT_* variables, which are undefined anywhere
+ * else - producing the callback URL "https:///api/auth/google-callback", with
+ * an empty host, and an OAuth flow that could never complete off Replit.
+ *
+ * Preference order is deliberate: an explicit value wins, then the one Railway
+ * injects, then the request's own host. The request is last because the Host
+ * header is attacker-controlled; it is a usable fallback only because Google
+ * refuses any redirect_uri that is not pre-registered, so a spoofed host fails
+ * closed rather than redirecting a token somewhere else.
+ */
+function getServerDomain(req?: Request): string {
+  const fromEnv =
+    process.env.PUBLIC_DOMAIN ||
+    process.env.RAILWAY_PUBLIC_DOMAIN ||
+    process.env.REPLIT_DEV_DOMAIN ||
+    process.env.REPLIT_DOMAINS?.split(",")[0];
+
+  if (fromEnv) return fromEnv;
+
+  return req?.get("host") ?? "";
 }
 
 const pendingAuthStates = new Map<string, { returnUrl: string; mode: string; expiresAt: number }>();
@@ -38,14 +59,21 @@ router.get("/auth/google-mobile", (req: Request, res: Response) => {
   const rawState = (req.query.state as string) || "";
 
   if (mode === "redirect" && rawReturnUrl) {
-    const mobileSchemes = ["mobile://", "exp://", "exps://"];
+    // This list is the security boundary of the whole flow: anything allowed
+    // here receives the user's ID token. It must track app.json's `scheme`
+    // exactly - when the bundle moved off the Replit namespace the scheme
+    // changed from "mobile" to "elovia" and this list did not, which rejected
+    // every Google sign-in with "Invalid return URL scheme". Overridable so the
+    // two can be realigned without a deploy if they ever drift again.
+    const appScheme = process.env.MOBILE_APP_SCHEME || "elovia";
+    const mobileSchemes = [`${appScheme}://`, "exp://", "exps://"];
     const isMobileScheme = mobileSchemes.some((scheme) => rawReturnUrl.startsWith(scheme));
 
     let isHttpsAllowed = false;
     if (rawReturnUrl.startsWith("https://") || rawReturnUrl.startsWith("http://localhost")) {
       try {
         const parsedUrl = new URL(rawReturnUrl);
-        const serverDomain = getServerDomain();
+        const serverDomain = getServerDomain(req);
         const allowedHttpHosts = [
           "localhost",
           ...(serverDomain ? [serverDomain] : []),
@@ -68,7 +96,7 @@ router.get("/auth/google-mobile", (req: Request, res: Response) => {
   const state = rawState.replace(/['"\\<>]/g, "");
 
   const googleClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_WEB_CLIENT_ID || "";
-  const serverDomain = getServerDomain();
+  const serverDomain = getServerDomain(req);
   const callbackUrl = `https://${serverDomain}/api/auth/google-callback`;
 
   const oauthState = `${state}|${Date.now()}`;
@@ -114,7 +142,7 @@ router.get("/auth/google-callback", async (req: Request, res: Response) => {
 
   const googleClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_WEB_CLIENT_ID || "";
   const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
-  const serverDomain = getServerDomain();
+  const serverDomain = getServerDomain(req);
   const callbackUrl = `https://${serverDomain}/api/auth/google-callback`;
 
   try {
