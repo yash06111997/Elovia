@@ -47,6 +47,7 @@ router.get("/entitlement", requireAuth, async (req: Request, res: Response) => {
     res.json({
       tier: entitlement.tier,
       hasProAccess: entitlement.hasProAccess,
+      hasCoaching: entitlement.hasCoaching,
       status: entitlement.status,
       trialEndsAt: entitlement.trialEndsAt?.toISOString() ?? null,
       currentPeriodEndsAt: entitlement.currentPeriodEndsAt?.toISOString() ?? null,

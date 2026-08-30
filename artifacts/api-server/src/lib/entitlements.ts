@@ -4,12 +4,26 @@ import { eq } from "drizzle-orm";
 /** Length of the free trial, in days. Must match the client's TRIAL_DURATION_DAYS. */
 export const TRIAL_DURATION_DAYS = 15;
 
-export type AccessTier = "free" | "trial" | "premium";
+/**
+ * Access tiers, lowest to highest.
+ *
+ * "coaching" sits above "premium" and includes everything in it. It is granted
+ * by a SEPARATE RevenueCat entitlement, because one-to-one coaching is a
+ * service with a hard capacity ceiling - a coach can carry roughly 30 clients -
+ * priced roughly 30x the software tier. Conflating the two would make it
+ * impossible to tell a $4.99 subscriber from a $149 one.
+ */
+export type AccessTier = "free" | "trial" | "premium" | "coaching";
+
+/** The RevenueCat entitlement that grants one-to-one coaching. */
+export const COACHING_ENTITLEMENT = "Elovia Coaching";
 
 export interface Entitlement {
   tier: AccessTier;
-  /** True for trial and premium — i.e. may call gated AI routes. */
+  /** True for trial, premium and coaching — i.e. may call gated AI routes. */
   hasProAccess: boolean;
+  /** True only for an active one-to-one coaching subscription. */
+  hasCoaching: boolean;
   status: string;
   trialEndsAt: Date | null;
   currentPeriodEndsAt: Date | null;
@@ -44,9 +58,14 @@ export async function resolveEntitlement(userId: string): Promise<Entitlement> {
       !sub.currentPeriodEndsAt || sub.currentPeriodEndsAt.getTime() > now.getTime();
 
     if (notExpired) {
+      // The coaching entitlement is checked by name: a coaching subscriber
+      // holds both entitlements, and the higher one wins.
+      const isCoaching = sub.entitlementId === COACHING_ENTITLEMENT;
+
       return {
-        tier: "premium",
+        tier: isCoaching ? "coaching" : "premium",
         hasProAccess: true,
+        hasCoaching: isCoaching,
         status: sub.status,
         trialEndsAt: sub.trialEndsAt ?? null,
         currentPeriodEndsAt: sub.currentPeriodEndsAt ?? null,
@@ -60,6 +79,7 @@ export async function resolveEntitlement(userId: string): Promise<Entitlement> {
     return {
       tier: "trial",
       hasProAccess: true,
+      hasCoaching: false,
       status: sub.status || "in_trial",
       trialEndsAt: sub.trialEndsAt,
       currentPeriodEndsAt: sub.currentPeriodEndsAt ?? null,
@@ -82,6 +102,7 @@ export async function resolveEntitlement(userId: string): Promise<Entitlement> {
       return {
         tier: "trial",
         hasProAccess: true,
+        hasCoaching: false,
         status: "in_trial",
         trialEndsAt: trialEnds,
         currentPeriodEndsAt: null,
@@ -91,6 +112,7 @@ export async function resolveEntitlement(userId: string): Promise<Entitlement> {
     return {
       tier: "free",
       hasProAccess: false,
+      hasCoaching: false,
       status: sub?.status === "cancelled" ? "cancelled" : "expired",
       trialEndsAt: trialEnds,
       currentPeriodEndsAt: null,
@@ -101,6 +123,7 @@ export async function resolveEntitlement(userId: string): Promise<Entitlement> {
   return {
     tier: "free",
     hasProAccess: false,
+    hasCoaching: false,
     status: "free",
     trialEndsAt: null,
     currentPeriodEndsAt: null,

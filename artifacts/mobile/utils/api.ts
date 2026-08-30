@@ -191,8 +191,10 @@ export async function generateAIWorkout(
 
 /** Current entitlement + remaining quota, for rendering limits in the UI. */
 export interface EntitlementStatus {
-  tier: "free" | "trial" | "premium";
+  tier: "free" | "trial" | "premium" | "coaching";
   hasProAccess: boolean;
+  /** True only for an active one-to-one coaching subscription. */
+  hasCoaching: boolean;
   status: string;
   trialEndsAt: string | null;
   currentPeriodEndsAt: string | null;

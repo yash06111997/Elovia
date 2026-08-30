@@ -59,6 +59,7 @@ function RootLayoutNav() {
       <Stack.Screen name="achievements" options={{ headerShown: true, title: "Achievements" }} />
       <Stack.Screen name="scan" options={{ headerShown: true, title: "Scan barcode" }} />
       <Stack.Screen name="social" options={{ headerShown: true, title: "Community" }} />
+      <Stack.Screen name="coaching" options={{ headerShown: true, title: "Coaching" }} />
     </Stack>
   );
 }

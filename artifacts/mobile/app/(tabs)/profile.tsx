@@ -380,6 +380,7 @@ export default function ProfileScreen() {
         <NavRow icon="navigate-outline" label="Record a run" hint="GPS tracking with splits" onPress={() => router.push("/run")} theme={theme} />
         <NavRow icon="water-outline" label="Hydration" hint="Track water and set a daily goal" onPress={() => router.push("/hydration")} theme={theme} />
         <NavRow icon="medkit-outline" label="Supplements & medication" hint="Reminders and training context" onPress={() => router.push("/supplements")} theme={theme} />
+        <NavRow icon="videocam-outline" label="1-on-1 coaching" hint="Work with a real coach" onPress={() => router.push("/coaching")} theme={theme} />
         <NavRow icon="chatbubbles-outline" label="Ask your coach" hint="Training and nutrition questions" onPress={() => router.push("/coach")} theme={theme} />
         <NavRow icon="barcode-outline" label="Scan a barcode" hint="Look up packaged food" onPress={() => router.push("/scan")} theme={theme} />
         <NavRow icon="people-outline" label="Community" hint="Friends, feed and challenges" onPress={() => router.push("/social")} theme={theme} />

@@ -175,3 +175,61 @@ export const FAQ_ITEMS = [
     answer: "Go to Profile > Subscription and tap 'Restore Purchases'. This will sync any active subscription from your Apple or Google account.",
   },
 ];
+
+
+// ---------------------------------------------------------------------------
+// Coaching tier
+// ---------------------------------------------------------------------------
+
+/**
+ * One-to-one coaching.
+ *
+ * Priced as a SERVICE, not software. A coach carries roughly 25-35 clients
+ * before quality degrades, so the price has to support a real person's time:
+ * at £149 x 30 clients that is a viable coaching income. Comparable products
+ * (Future, Caliber) sit at $199-200. Below about $99 the economics do not work
+ * and the price itself signals that the coaching is not real.
+ *
+ * Sold OUTSIDE the App Store. Apple's Review Guideline 3.1.3(d)
+ * "Person-to-Person Services" permits one-to-one, real-time services to use
+ * payment methods other than in-app purchase - which live coaching calls are.
+ * That matters here: 30% of £149 is £45, most of the margin on a service where
+ * you are paying a human.
+ *
+ * This exemption does NOT extend to asynchronous messaging or anything
+ * one-to-many. If coaching later gains an in-app message thread, that portion
+ * must move to IAP.
+ */
+export const COACHING = {
+  /** Must match the RevenueCat entitlement name the server checks. */
+  entitlementId: "Elovia Coaching",
+
+  monthlyPrice: 149,
+  currency: "USD",
+  priceLabel: "$149",
+  period: "month",
+
+  headline: "Work with a real coach",
+  subheadline:
+    "Weekly one-to-one calls with a certified coach who reviews your training and adjusts your plan around your life.",
+
+  includes: [
+    "A weekly 45-minute video call, one to one",
+    "Your programme written and revised for you personally",
+    "Nutrition targets adjusted to how you actually eat",
+    "Form review on the lifts you send in",
+    "Everything in Pro, included",
+  ],
+
+  /**
+   * Where the booking flow sends people. Replace with your scheduling link.
+   * Kept in config rather than hardcoded in the screen so it can change
+   * without a rebuild being required to fix a dead link.
+   */
+  bookingUrl: "https://cal.com/elovia/intro",
+
+  /** Shown before anyone pays: a free call to check the fit both ways. */
+  introCallLabel: "Book a free 15-minute intro call",
+  introCallNote:
+    "No payment, no commitment. We talk through your goals and whether coaching is the right fit.",
+} as const;

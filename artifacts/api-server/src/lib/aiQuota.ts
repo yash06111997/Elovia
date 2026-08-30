@@ -36,6 +36,17 @@ const DAILY_LIMITS: Record<AccessTier, Record<AiRoute, number>> = {
     "coach-chat": 25,
     "analyse-supplement": 10,
   },
+  // Coaching clients pay roughly 30x the software tier; metering them like a
+  // $4.99 subscriber would be indefensible. Still bounded, because "unlimited"
+  // plus a scripted client is how you get a surprise invoice.
+  coaching: {
+    "recognize-food": 150,
+    "generate-workout": 60,
+    "generate-meal-plan": 60,
+    "generate-recipe": 120,
+    "coach-chat": 500,
+    "analyse-supplement": 100,
+  },
   premium: {
     "recognize-food": 50,
     "generate-workout": 20,
@@ -52,6 +63,7 @@ export const DAILY_COST_CEILING_MICROS: Record<AccessTier, number> = {
   free: 0,
   trial: 300_000, // $0.30
   premium: 2_000_000, // $2.00
+  coaching: 8_000_000, // $8.00 - still a rounding error against $149/month
 };
 
 export function dailyLimitFor(tier: AccessTier, route: AiRoute): number {
