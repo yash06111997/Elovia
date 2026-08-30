@@ -20,9 +20,21 @@ import {
  * users actually judge.
  */
 const NIM_BASE_URL = process.env.NVIDIA_NIM_BASE_URL ?? "https://integrate.api.nvidia.com/v1";
+/**
+ * NVIDIA retires hosted models on a published end-of-life date, after which the
+ * endpoint returns 410 Gone rather than degrading — meta/llama-3.3-70b-instruct
+ * died on 2026-08-26 and took every structured route with it. Both defaults are
+ * therefore overridable by environment variable, so the next retirement is a
+ * config change rather than a deploy.
+ *
+ * nemotron-3-super was chosen by measurement, not reputation: of the candidates
+ * available on this account it was the only one that returned parseable JSON
+ * for a plan-shaped schema.
+ */
 const STRUCTURED_MODEL =
-  process.env.NVIDIA_NIM_STRUCTURED_MODEL ?? "meta/llama-3.3-70b-instruct";
-const CHAT_MODEL = process.env.NVIDIA_NIM_CHAT_MODEL ?? "meta/llama-3.3-70b-instruct";
+  process.env.NVIDIA_NIM_STRUCTURED_MODEL ?? "nvidia/nemotron-3-super-120b-a12b";
+const CHAT_MODEL =
+  process.env.NVIDIA_NIM_CHAT_MODEL ?? "nvidia/nemotron-3-super-120b-a12b";
 
 /** The subset of the OpenAI-compatible response body we actually read. */
 interface NimChatResponse {
