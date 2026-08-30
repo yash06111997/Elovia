@@ -17,6 +17,19 @@ import { trackEvent } from "@/lib/telemetry";
 
 const TOTAL_STEPS = 7;
 
+/**
+ * Shared by the onboarding steps.
+ *
+ * All of these were `: any`, so nothing checked what the wizard handed each
+ * step. None take `theme` or `isDark` any more either - every one drilled both
+ * down from the screen, which is pure noise now the app is dark-only.
+ */
+interface StepProps {
+  form: Partial<UserProfile>;
+  update: (key: keyof UserProfile, value: any) => void;
+}
+
+
 export default function OnboardingScreen() {
   const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -102,19 +115,19 @@ export default function OnboardingScreen() {
   const renderStep = () => {
     switch (step) {
       case 0:
-        return <StepWelcome isAuthenticated={isAuthenticated} login={login} user={user} authError={authError} isDark={isDark} theme={theme} />;
+        return <StepWelcome isAuthenticated={isAuthenticated} login={login} user={user} authError={authError} />;
       case 1:
-        return <StepPersonal form={form} update={update} isDark={isDark} theme={theme} />;
+        return <StepPersonal form={form} update={update} />;
       case 2:
-        return <StepGoal form={form} update={update} isDark={isDark} theme={theme} />;
+        return <StepGoal form={form} update={update} />;
       case 3:
-        return <StepWorkout form={form} update={update} isDark={isDark} theme={theme} />;
+        return <StepWorkout form={form} update={update} />;
       case 4:
-        return <StepEquipment form={form} toggleEquipment={toggleEquipment} isDark={isDark} theme={theme} />;
+        return <StepEquipment form={form} toggleEquipment={toggleEquipment} />;
       case 5:
-        return <StepDiet form={form} update={update} isDark={isDark} theme={theme} />;
+        return <StepDiet form={form} update={update} />;
       case 6:
-        return <StepHealth form={form} update={update} privacyAcknowledged={privacyAcknowledged} setPrivacyAcknowledged={setPrivacyAcknowledged} isDark={isDark} theme={theme} />;
+        return <StepHealth form={form} update={update} privacyAcknowledged={privacyAcknowledged} setPrivacyAcknowledged={setPrivacyAcknowledged} />;
       default:
         return null;
     }
@@ -252,7 +265,14 @@ export default function OnboardingScreen() {
   );
 }
 
-function StepWelcome({ isAuthenticated, login, user, authError, isDark, theme }: any) {
+function StepWelcome({ isAuthenticated, login, user, authError }: {
+  isAuthenticated: boolean;
+  /** Returns a promise; the caller fires and forgets. */
+  login: () => void | Promise<void>;
+  user: { email?: string | null } | null;
+  authError: string | null;
+}) {
+  const { isDark, theme } = useTheme();
   return (
     <View style={styles.stepContent}>
       <View style={styles.welcomeIconWrap}>
@@ -319,11 +339,12 @@ function StepWelcome({ isAuthenticated, login, user, authError, isDark, theme }:
   );
 }
 
-function StepPersonal({ form, update, isDark, theme }: any) {
+function StepPersonal({ form, update }: StepProps) {
+  const { isDark, theme } = useTheme();
   return (
     <View style={styles.stepContent}>
-      <LabelInput label="Full Name" value={form.name} onChangeText={(v: string) => update("name", v)} placeholder="Your name" theme={theme} />
-      <NumberStepper label="Age" value={form.age} min={10} max={90} step={1} onChange={(v: number) => update("age", v)} theme={theme} />
+      <LabelInput label="Full Name" value={form.name} onChangeText={(v: string) => update("name", v)} placeholder="Your name" />
+      <NumberStepper label="Age" value={form.age} min={10} max={90} step={1} onChange={(v: number) => update("age", v)} />
       <View style={styles.field}>
         <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Gender</Text>
         <ChipRow
@@ -334,17 +355,17 @@ function StepPersonal({ form, update, isDark, theme }: any) {
           ]}
           selected={form.gender}
           onSelect={(v: string) => update("gender", v)}
-          theme={theme}
         />
       </View>
-      <NumberStepper label="Height (cm)" value={form.heightCm} min={100} max={250} step={1} onChange={(v: number) => update("heightCm", v)} theme={theme} />
-      <NumberStepper label="Weight (kg)" value={form.weightKg} min={30} max={250} step={0.5} onChange={(v: number) => update("weightKg", v)} theme={theme} />
-      <NumberStepper label="Target Weight (kg)" value={form.targetWeightKg} min={30} max={250} step={0.5} onChange={(v: number) => update("targetWeightKg", v)} theme={theme} />
+      <NumberStepper label="Height (cm)" value={form.heightCm} min={100} max={250} step={1} onChange={(v: number) => update("heightCm", v)} />
+      <NumberStepper label="Weight (kg)" value={form.weightKg} min={30} max={250} step={0.5} onChange={(v: number) => update("weightKg", v)} />
+      <NumberStepper label="Target Weight (kg)" value={form.targetWeightKg} min={30} max={250} step={0.5} onChange={(v: number) => update("targetWeightKg", v)} />
     </View>
   );
 }
 
-function StepGoal({ form, update, isDark, theme }: any) {
+function StepGoal({ form, update }: StepProps) {
+  const { isDark, theme } = useTheme();
   const goals: {
     label: string;
     value: FitnessGoal;
@@ -451,7 +472,7 @@ function StepGoal({ form, update, isDark, theme }: any) {
       {weightDelta !== 0 && (
         <>
           <Text style={[styles.sectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Goal Timeline</Text>
-          <NumberStepper label="Target Weeks" value={form.targetWeeks ?? 12} min={4} max={52} step={1} onChange={(v: number) => update("targetWeeks", v)} theme={theme} />
+          <NumberStepper label="Target Weeks" value={form.targetWeeks ?? 12} min={4} max={52} step={1} onChange={(v: number) => update("targetWeeks", v)} />
           <View
             style={[
               styles.timelineInfo,
@@ -476,20 +497,20 @@ function StepGoal({ form, update, isDark, theme }: any) {
       )}
 
       <Text style={[styles.sectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Fitness Level</Text>
-      <ChipRow options={levels.map((l) => ({ label: l.label, value: l.value }))} selected={form.fitnessLevel} onSelect={(v: string) => update("fitnessLevel", v)} theme={theme} />
+      <ChipRow options={levels.map((l) => ({ label: l.label, value: l.value }))} selected={form.fitnessLevel} onSelect={(v: string) => update("fitnessLevel", v)} />
       <Text style={[styles.sectionLabel, { color: theme.textSecondary, marginTop: 16 }]}>Daily Activity Level</Text>
       <ChipRow
         options={activity.map((a) => ({ label: a.label, value: a.value }))}
         selected={form.activityLevel}
         onSelect={(v: string) => update("activityLevel", v)}
-        theme={theme}
         wrap
       />
     </View>
   );
 }
 
-function StepWorkout({ form, update, isDark, theme }: any) {
+function StepWorkout({ form, update }: StepProps) {
+  const { isDark, theme } = useTheme();
   return (
     <View style={styles.stepContent}>
       <View style={styles.field}>
@@ -502,10 +523,9 @@ function StepWorkout({ form, update, isDark, theme }: any) {
           ]}
           selected={form.workoutPreference}
           onSelect={(v: string) => update("workoutPreference", v)}
-          theme={theme}
         />
       </View>
-      <NumberStepper label="Days per week" value={form.workoutDaysPerWeek} min={1} max={7} step={1} onChange={(v: number) => update("workoutDaysPerWeek", v)} theme={theme} />
+      <NumberStepper label="Days per week" value={form.workoutDaysPerWeek} min={1} max={7} step={1} onChange={(v: number) => update("workoutDaysPerWeek", v)} />
       <NumberStepper
         label="Session duration (min)"
         value={form.workoutDurationMins}
@@ -513,13 +533,13 @@ function StepWorkout({ form, update, isDark, theme }: any) {
         max={120}
         step={15}
         onChange={(v: number) => update("workoutDurationMins", v)}
-        theme={theme}
       />
     </View>
   );
 }
 
-function StepEquipment({ form, toggleEquipment, isDark, theme }: any) {
+function StepEquipment({ form, toggleEquipment }: Omit<StepProps, "update"> & { toggleEquipment: (eq: Equipment) => void }) {
+  const { isDark, theme } = useTheme();
   const items: { label: string; value: Equipment; icon: string }[] = [
     { label: "Dumbbells", value: "dumbbells", icon: "barbell-outline" },
     { label: "Barbell", value: "barbell", icon: "barbell-outline" },
@@ -573,7 +593,8 @@ function StepEquipment({ form, toggleEquipment, isDark, theme }: any) {
   );
 }
 
-function StepDiet({ form, update, isDark, theme }: any) {
+function StepDiet({ form, update }: StepProps) {
+  const { isDark, theme } = useTheme();
   const prefs: {
     label: string;
     value: FoodPreference;
@@ -690,7 +711,6 @@ function StepDiet({ form, update, isDark, theme }: any) {
         value={form.favoriteFoods}
         onChangeText={(v: string) => update("favoriteFoods", v)}
         placeholder="e.g. chicken, rice, eggs, salmon..."
-        theme={theme}
         multiline
       />
       <LabelInput
@@ -698,7 +718,6 @@ function StepDiet({ form, update, isDark, theme }: any) {
         value={form.dietaryRestrictions}
         onChangeText={(v: string) => update("dietaryRestrictions", v)}
         placeholder="e.g. gluten-free, nut allergy..."
-        theme={theme}
         multiline
       />
       <LabelInput
@@ -706,7 +725,6 @@ function StepDiet({ form, update, isDark, theme }: any) {
         value={form.dislikedFoods}
         onChangeText={(v: string) => update("dislikedFoods", v)}
         placeholder="e.g. broccoli, tofu..."
-        theme={theme}
         multiline
       />
       <LabelInput
@@ -714,17 +732,17 @@ function StepDiet({ form, update, isDark, theme }: any) {
         value={form.mealSuggestions}
         onChangeText={(v: string) => update("mealSuggestions", v)}
         placeholder="e.g. prefer easy recipes, meal prep friendly..."
-        theme={theme}
         multiline
       />
     </View>
   );
 }
 
-function StepHealth({ form, update, privacyAcknowledged, setPrivacyAcknowledged, isDark, theme }: any) {
+function StepHealth({ form, update, privacyAcknowledged, setPrivacyAcknowledged }: StepProps & { privacyAcknowledged: boolean; setPrivacyAcknowledged: (v: boolean) => void }) {
+  const { isDark, theme } = useTheme();
   return (
     <View style={styles.stepContent}>
-      <NumberStepper label="Sleep hours per night" value={form.sleepHours} min={3} max={12} step={0.5} onChange={(v: number) => update("sleepHours", v)} theme={theme} />
+      <NumberStepper label="Sleep hours per night" value={form.sleepHours} min={3} max={12} step={0.5} onChange={(v: number) => update("sleepHours", v)} />
       <NumberStepper
         label="Daily water intake (liters)"
         value={form.waterIntakeLiters}
@@ -732,14 +750,12 @@ function StepHealth({ form, update, privacyAcknowledged, setPrivacyAcknowledged,
         max={6}
         step={0.25}
         onChange={(v: number) => update("waterIntakeLiters", v)}
-        theme={theme}
       />
       <LabelInput
         label="Medical issues / injuries (optional)"
         value={form.medicalNotes}
         onChangeText={(v: string) => update("medicalNotes", v)}
         placeholder="e.g. lower back pain, knee injury..."
-        theme={theme}
         multiline
       />
       <TouchableOpacity
@@ -774,7 +790,15 @@ function StepHealth({ form, update, privacyAcknowledged, setPrivacyAcknowledged,
   );
 }
 
-function LabelInput({ label, value, onChangeText, placeholder, theme, multiline }: any) {
+function LabelInput({ label, value, onChangeText, placeholder, multiline }: {
+  label: string;
+  /** The form is Partial<UserProfile>, so any field may legitimately be absent. */
+  value: string | undefined;
+  onChangeText: (v: string) => void;
+  placeholder?: string;
+  multiline?: boolean;
+}) {
+  const { theme } = useTheme();
   return (
     <View style={styles.field}>
       <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>{label}</Text>
@@ -799,9 +823,20 @@ function LabelInput({ label, value, onChangeText, placeholder, theme, multiline 
   );
 }
 
-function NumberStepper({ label, value, min, max, step, onChange, theme }: any) {
+function NumberStepper({ label, value, min, max, step, onChange }: {
+  label: string;
+  value: number | undefined;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+}) {
+  // The form may not carry this field yet. Falling back to `min` keeps the
+  // stepper in a valid state; arithmetic on undefined would render NaN.
+  const current = value ?? min;
+  const { theme } = useTheme();
   const [editing, setEditing] = useState(false);
-  const [textVal, setTextVal] = useState(String(value));
+  const [textVal, setTextVal] = useState(String(current));
 
   const handleEndEditing = () => {
     setEditing(false);
@@ -811,33 +846,33 @@ function NumberStepper({ label, value, min, max, step, onChange, theme }: any) {
       onChange(clamped);
       setTextVal(String(clamped));
     } else {
-      setTextVal(String(value));
+      setTextVal(String(current));
     }
   };
 
   const startEditing = () => {
-    setTextVal(String(value));
+    setTextVal(String(current));
     setEditing(true);
   };
 
   return (
     <View style={styles.field}>
-      <TouchableOpacity onPress={startEditing} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={`Edit ${label}`} accessibilityHint={`Current value is ${value}`}>
+      <TouchableOpacity onPress={startEditing} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel={`Edit ${label}`} accessibilityHint={`Current current is ${current}`}>
         <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>{label}</Text>
       </TouchableOpacity>
       <View style={styles.stepper}>
         <TouchableOpacity
           style={[styles.stepBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
           onPress={() => {
-            const v = Math.max(min, +(value - step).toFixed(2));
+            const v = Math.max(min, +(current - step).toFixed(2));
             onChange(v);
             setTextVal(String(v));
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           }}
-          disabled={value <= min}
+          disabled={current <= min}
           accessibilityRole="button"
           accessibilityLabel={`Decrease ${label}`}
-          accessibilityState={{ disabled: value <= min }}
+          accessibilityState={{ disabled: current <= min }}
         >
           <Ionicons name="remove" size={18} color={theme.text} />
         </TouchableOpacity>
@@ -866,24 +901,24 @@ function NumberStepper({ label, value, min, max, step, onChange, theme }: any) {
             onPress={startEditing}
             activeOpacity={0.7}
             accessibilityRole="button"
-            accessibilityLabel={`${label}: ${value}`}
-            accessibilityHint="Double tap to enter a value"
+            accessibilityLabel={`${label}: ${current}`}
+            accessibilityHint="Double tap to enter a current"
           >
-            <Text style={[styles.stepValueText, { color: theme.text }]}>{value}</Text>
+            <Text style={[styles.stepValueText, { color: theme.text }]}>{current}</Text>
           </TouchableOpacity>
         )}
         <TouchableOpacity
           style={[styles.stepBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
           onPress={() => {
-            const v = Math.min(max, +(value + step).toFixed(2));
+            const v = Math.min(max, +(current + step).toFixed(2));
             onChange(v);
             setTextVal(String(v));
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           }}
-          disabled={value >= max}
+          disabled={current >= max}
           accessibilityRole="button"
           accessibilityLabel={`Increase ${label}`}
-          accessibilityState={{ disabled: value >= max }}
+          accessibilityState={{ disabled: current >= max }}
         >
           <Ionicons name="add" size={18} color={theme.text} />
         </TouchableOpacity>
@@ -892,7 +927,13 @@ function NumberStepper({ label, value, min, max, step, onChange, theme }: any) {
   );
 }
 
-function ChipRow({ options, selected, onSelect, theme, wrap }: any) {
+function ChipRow({ options, selected, onSelect, wrap }: {
+  options: { value: string; label: string }[];
+  selected: string | undefined;
+  onSelect: (v: string) => void;
+  wrap?: boolean;
+}) {
+  const { theme } = useTheme();
   return (
     <View style={[styles.chipRow, wrap && { flexWrap: "wrap" }]}>
       {options.map((opt: any) => (
