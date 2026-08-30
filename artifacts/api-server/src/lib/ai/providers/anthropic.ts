@@ -1,4 +1,4 @@
-import { anthropic } from "@workspace/integrations-anthropic-ai";
+import { anthropic, isAnthropicConfigured } from "@workspace/integrations-anthropic-ai";
 import {
   ProviderError,
   type AiProvider,
@@ -24,9 +24,8 @@ export class AnthropicProvider implements AiProvider {
   readonly supports = ["vision", "structured", "chat"] as const;
 
   isConfigured(): boolean {
-    // The Replit integration proxy injects credentials; if the client
-    // constructed at import time, we're good.
-    return Boolean(anthropic);
+    // Must be a real check: `anthropic` is a lazy proxy and is always truthy.
+    return isAnthropicConfigured();
   }
 
   async generate(opts: GenerateOptions): Promise<GenerateResult> {

@@ -1,7 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { sql } from "drizzle-orm";
 import { db, subscriptionsTable, aiUsageTable, userDataTable, usersTable } from "@workspace/db";
-import { anthropic } from "@workspace/integrations-anthropic-ai";
+import { isAnthropicConfigured } from "@workspace/integrations-anthropic-ai";
 import { requireAuth } from "../middlewares/aiGate";
 
 const router: IRouter = Router();
@@ -89,12 +89,13 @@ router.get("/diagnostics", requireAuth, async (req: Request, res: Response) => {
   });
 
   // --- Anthropic ----------------------------------------------------------
+  const anthropicReady = isAnthropicConfigured();
   checks.push({
     name: "anthropic",
-    status: anthropic ? "ok" : "error",
-    detail: anthropic
-      ? "Client initialised (vision + structured fallback)"
-      : "Client failed to initialise",
+    status: anthropicReady ? "ok" : "not_configured",
+    detail: anthropicReady
+      ? "API key present (vision + structured fallback)"
+      : "No ANTHROPIC_API_KEY set. Food photo scanning will fail, and plan generation has no fallback if NVIDIA is also unset. Get a key at console.anthropic.com.",
     required: true,
   });
 
