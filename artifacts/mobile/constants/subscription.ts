@@ -222,14 +222,8 @@ export const COACHING = {
   ],
 
   /**
-   * Where the booking flow sends people. Replace with your scheduling link.
-   * Kept in config rather than hardcoded in the screen so it can change
-   * without a rebuild being required to fix a dead link.
+   * Booking happens inside the app against the coach's own availability, so
+   * there is deliberately no external scheduling link here to go stale.
    */
-  bookingUrl: "https://cal.com/elovia/intro",
-
-  /** Shown before anyone pays: a free call to check the fit both ways. */
-  introCallLabel: "Book a free 15-minute intro call",
-  introCallNote:
-    "No payment, no commitment. We talk through your goals and whether coaching is the right fit.",
+  introCallMinutes: 15,
 } as const;
