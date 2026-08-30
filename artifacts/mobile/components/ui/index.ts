@@ -20,3 +20,6 @@ export type { ModalSheetProps } from "./ModalSheet";
 
 export { OptionPicker } from "./OptionPicker";
 export type { Option, OptionPickerProps } from "./OptionPicker";
+
+export { OptionCard, PremiumBadge } from "./OptionCard";
+export type { OptionCardProps } from "./OptionCard";
