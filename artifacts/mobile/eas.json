@@ -22,7 +22,7 @@
         "EXPO_PUBLIC_REVENUECAT_IOS_API_KEY": "appl_oLFdmGeTXzxRrGzqBRbIXqwBNjB",
         "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_tJrCVZClURpSUPUzOOtAwimmOuF",
         "EXPO_PUBLIC_REVENUECAT_TEST_API_KEY": "test_cDJKeSxhGQGSvdxuLrvzMbmYKfA",
-        "EXPO_PUBLIC_DOMAIN": "health-hub-yash06111997.replit.app"
+        "EXPO_PUBLIC_DOMAIN": "elovia-production.up.railway.app"
       }
     },
     "preview": {
@@ -42,7 +42,7 @@
         "EXPO_PUBLIC_REVENUECAT_IOS_API_KEY": "appl_oLFdmGeTXzxRrGzqBRbIXqwBNjB",
         "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_tJrCVZClURpSUPUzOOtAwimmOuF",
         "EXPO_PUBLIC_REVENUECAT_TEST_API_KEY": "test_cDJKeSxhGQGSvdxuLrvzMbmYKfA",
-        "EXPO_PUBLIC_DOMAIN": "health-hub-yash06111997.replit.app"
+        "EXPO_PUBLIC_DOMAIN": "elovia-production.up.railway.app"
       }
     },
     "production": {
@@ -65,7 +65,7 @@
         "EXPO_PUBLIC_REVENUECAT_IOS_API_KEY": "appl_oLFdmGeTXzxRrGzqBRbIXqwBNjB",
         "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_tJrCVZClURpSUPUzOOtAwimmOuF",
         "EXPO_PUBLIC_REVENUECAT_TEST_API_KEY": "test_cDJKeSxhGQGSvdxuLrvzMbmYKfA",
-        "EXPO_PUBLIC_DOMAIN": "health-hub-yash06111997.replit.app"
+        "EXPO_PUBLIC_DOMAIN": "elovia-production.up.railway.app"
       }
     }
   },
