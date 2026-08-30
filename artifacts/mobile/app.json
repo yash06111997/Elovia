@@ -37,6 +37,7 @@
     },
     "android": {
       "package": "com.elovia.app",
+      "allowBackup": false,
       "versionCode": 1,
       "permissions": [
         "CAMERA",
