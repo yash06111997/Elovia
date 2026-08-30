@@ -11,6 +11,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Colors } from "@/constants/colors";
+import { useTheme } from "@/hooks/useTheme";
 import {
   foodCategories,
   searchFoods,
@@ -24,11 +25,13 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   onSelect: (food: FoodItem, servings: number) => void;
-  isDark: boolean;
 }
 
-export function FoodSearch({ visible, onClose, onSelect, isDark }: Props) {
-  const theme = isDark ? Colors.dark : Colors.light;
+export function FoodSearch({ visible, onClose, onSelect }: Props) {
+  // Reads the theme from the hook rather than deriving it from an `isDark`
+  // prop. Deriving it locally is how this file drifted out of step with the
+  // rest of the app in the first place.
+  const { theme } = useTheme();
   const { state: appState } = useApp();
   const dietaryPreference = appState.profile?.foodPreference;
   const [query, setQuery] = useState("");

@@ -622,7 +622,6 @@ export default function DietScreen() {
         visible={foodSearchVisible}
         onClose={() => setFoodSearchVisible(false)}
         onSelect={handleFoodSelect}
-        isDark={isDark}
       />
 
       <Modal visible={aiMealModalVisible} animationType="slide" transparent>
