@@ -15,5 +15,9 @@
   },
   "dependencies": {
     "@replit/revenuecat-sdk": "4.0.0"
-  }
+  },
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "packageManager": "pnpm@10.33.0"
 }
