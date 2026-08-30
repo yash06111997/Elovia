@@ -1,6 +1,6 @@
 import { ref, set, get, serverTimestamp } from "firebase/database";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { db } from "./firebase";
+import { getFirebaseDb } from "./firebase";
 
 const ASYNC_STORAGE_KEYS = [
   "@fitai_state",
@@ -50,6 +50,9 @@ const JSON_FIELDS = new Set([
 ]);
 
 export async function backupToFirestore(userId: string): Promise<void> {
+  const db = getFirebaseDb();
+  if (!db) return;
+
   const values = await AsyncStorage.multiGet(ASYNC_STORAGE_KEYS);
   const data: Record<string, any> = {};
 
@@ -75,6 +78,9 @@ export async function backupToFirestore(userId: string): Promise<void> {
 }
 
 export async function restoreFromFirestore(userId: string): Promise<boolean> {
+  const db = getFirebaseDb();
+  if (!db) return false;
+
   const userRef = ref(db, `users/${userId}`);
   const snapshot = await get(userRef);
 
@@ -104,6 +110,9 @@ export async function restoreFromFirestore(userId: string): Promise<boolean> {
 }
 
 export async function checkFirestoreDataExists(userId: string): Promise<boolean> {
+  const db = getFirebaseDb();
+  if (!db) return false;
+
   const userRef = ref(db, `users/${userId}`);
   const snapshot = await get(userRef);
   return snapshot.exists();

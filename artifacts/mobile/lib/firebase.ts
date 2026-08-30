@@ -13,6 +13,17 @@ const firebaseConfig = {
   appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
 };
 
+/**
+ * True only when every value the SDK actually needs is present.
+ *
+ * Env vars are injected at BUILD time, so a profile that forgets them ships an
+ * app whose config is entirely undefined. Detecting that explicitly lets the
+ * app say so instead of dying on an opaque SDK error.
+ */
+export const isFirebaseConfigured: boolean = Boolean(
+  firebaseConfig.apiKey && firebaseConfig.projectId && firebaseConfig.appId,
+);
+
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
 let auth: Auth | null = null;
@@ -51,6 +62,34 @@ async function getFirebaseAuth(): Promise<Auth> {
   return auth;
 }
 
-const db = getDatabase(app);
+/**
+ * Realtime Database handle, created lazily.
+ *
+ * This used to be `const db = getDatabase(app)` at module scope. With no
+ * databaseURL — which is what happens when a build profile omits the env vars —
+ * getDatabase throws "Can't determine Firebase Database URL" during module
+ * evaluation. Because this file is reached from the root layout, that threw
+ * before React mounted, so the app closed instantly with no error screen and
+ * nothing in the UI to explain it.
+ *
+ * Only the legacy Realtime Database migration path needs this now, so it is
+ * created on demand and returns null rather than throwing.
+ */
+let database: ReturnType<typeof getDatabase> | null = null;
+let databaseAttempted = false;
 
-export { app, auth, db, getFirebaseAuth };
+function getFirebaseDb(): ReturnType<typeof getDatabase> | null {
+  if (databaseAttempted) return database;
+  databaseAttempted = true;
+
+  if (!firebaseConfig.databaseURL) return null;
+
+  try {
+    database = getDatabase(app);
+  } catch {
+    database = null;
+  }
+  return database;
+}
+
+export { app, auth, getFirebaseAuth, getFirebaseDb };
