@@ -5,7 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useApp, CustomMacros, FitnessGoal, FitnessLevel, ActivityLevel, WorkoutPreference, FoodPreference, Equipment, DietType } from "@/context/AppContext";
+import { useApp, CustomMacros, FitnessGoal, FitnessLevel, ActivityLevel, WorkoutPreference, FoodPreference, Equipment, DietType, type UserProfile } from "@/context/AppContext";
 import { useWorkout } from "@/context/WorkoutContext";
 import { useHealth } from "@/context/HealthContext";
 import { useAuth } from "@/lib/auth";
@@ -498,7 +498,6 @@ export default function ProfileScreen() {
                 toggleSync("appleHealth");
                 Haptics.selectionAsync();
               }}
-              theme={theme}
               color={Colors.accentRed}
             />
           )}
@@ -511,7 +510,6 @@ export default function ProfileScreen() {
                 toggleSync("googleFit");
                 Haptics.selectionAsync();
               }}
-              theme={theme}
               color="#4285F4"
             />
           )}
@@ -523,7 +521,6 @@ export default function ProfileScreen() {
               toggleSync("stepsEnabled");
               Haptics.selectionAsync();
             }}
-            theme={theme}
             color={Colors.accentGreen}
           />
           <HealthSyncCard
@@ -534,7 +531,6 @@ export default function ProfileScreen() {
               toggleSync("locationEnabled");
               Haptics.selectionAsync();
             }}
-            theme={theme}
             color={Colors.accent}
           />
         </View>
@@ -936,8 +932,6 @@ export default function ProfileScreen() {
         onClose={() => setEditSection(null)}
         profile={profile}
         updateProfileField={updateProfileField}
-        isDark={isDark}
-        theme={theme}
       />
 
       <DietEditModal
@@ -945,8 +939,6 @@ export default function ProfileScreen() {
         onClose={() => setEditSection(null)}
         profile={profile}
         updateProfileField={updateProfileField}
-        isDark={isDark}
-        theme={theme}
       />
 
       <EquipmentEditModal
@@ -954,8 +946,6 @@ export default function ProfileScreen() {
         onClose={() => setEditSection(null)}
         profile={profile}
         updateProfileField={updateProfileField}
-        isDark={isDark}
-        theme={theme}
       />
 
       <NameGenderEditModal
@@ -963,11 +953,27 @@ export default function ProfileScreen() {
         onClose={() => setEditSection(null)}
         profile={profile}
         updateProfileField={updateProfileField}
-        isDark={isDark}
-        theme={theme}
       />
     </ScrollView>
   );
+}
+
+/**
+ * Shared by the four profile edit sheets.
+ *
+ * These were all typed `: any`, which meant tsc could not check a single prop
+ * and a removed one failed silently at runtime rather than at build time. That
+ * is not hypothetical: an over-broad edit during this refactor stripped `theme`
+ * from five of them and nothing complained.
+ *
+ * `theme` and `isDark` are deliberately absent. Every one of them took both and
+ * drilled them down from the screen; they now read from useTheme directly.
+ */
+interface ProfileEditModalProps {
+  visible: boolean;
+  onClose: () => void;
+  profile: UserProfile;
+  updateProfileField: (key: keyof UserProfile, value: any) => void;
 }
 
 interface MacroInputProps {
@@ -1007,7 +1013,8 @@ function MacroInput({ label, unit, value, onChange, theme, color }: MacroInputPr
 
 
 
-function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDark, theme }: any) {
+function FitnessEditModal({ visible, onClose, profile, updateProfileField }: ProfileEditModalProps) {
+  const { isDark, theme } = useTheme();
   const [goal, setGoal] = useState(profile.goal);
   const [level, setLevel] = useState(profile.fitnessLevel);
   const [activity, setActivity] = useState(profile.activityLevel);
@@ -1035,7 +1042,7 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDar
     <ModalSheet visible={visible} onClose={onClose} title="Edit Fitness Profile">
       <OptionPicker
         label="Primary Goal"
-        options={Object.entries(goalLabels).map(([value, label]) => ({
+        options={(Object.entries(goalLabels) as [typeof goal, string][]).map(([value, label]) => ({
           value,
           label,
         }))}
@@ -1044,7 +1051,7 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDar
       />
       <OptionPicker
         label="Fitness Level"
-        options={Object.entries(levelLabels).map(([value, label]) => ({
+        options={(Object.entries(levelLabels) as [typeof level, string][]).map(([value, label]) => ({
           value,
           label,
         }))}
@@ -1053,7 +1060,7 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDar
       />
       <OptionPicker
         label="Activity Level"
-        options={Object.entries(activityLabels).map(([value, label]) => ({
+        options={(Object.entries(activityLabels) as [typeof activity, string][]).map(([value, label]) => ({
           value,
           label,
         }))}
@@ -1062,7 +1069,7 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDar
       />
       <OptionPicker
         label="Workout Preference"
-        options={Object.entries(prefLabels).map(([value, label]) => ({
+        options={(Object.entries(prefLabels) as [typeof pref, string][]).map(([value, label]) => ({
           value,
           label,
         }))}
@@ -1081,7 +1088,8 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDar
   );
 }
 
-function DietEditModal({ visible, onClose, profile, updateProfileField, isDark, theme }: any) {
+function DietEditModal({ visible, onClose, profile, updateProfileField }: ProfileEditModalProps) {
+  const { isDark, theme } = useTheme();
   const [foodPref, setFoodPref] = useState(profile.foodPreference);
   const [restrictions, setRestrictions] = useState(profile.dietaryRestrictions || "");
   const [dislikes, setDislikes] = useState(profile.dislikedFoods || "");
@@ -1109,7 +1117,7 @@ function DietEditModal({ visible, onClose, profile, updateProfileField, isDark, 
     <ModalSheet visible={visible} onClose={onClose} title="Edit Diet Profile">
       <OptionPicker
         label="Food Preference"
-        options={Object.entries(foodPrefLabels).map(([value, label]) => ({
+        options={(Object.entries(foodPrefLabels) as [typeof foodPref, string][]).map(([value, label]) => ({
           value,
           label,
         }))}
@@ -1182,7 +1190,8 @@ function DietEditModal({ visible, onClose, profile, updateProfileField, isDark, 
   );
 }
 
-function EquipmentEditModal({ visible, onClose, profile, updateProfileField, isDark, theme }: any) {
+function EquipmentEditModal({ visible, onClose, profile, updateProfileField }: ProfileEditModalProps) {
+  const { isDark, theme } = useTheme();
   const [selected, setSelected] = useState<Equipment[]>(profile.equipment || []);
 
   React.useEffect(() => {
@@ -1238,7 +1247,8 @@ function EquipmentEditModal({ visible, onClose, profile, updateProfileField, isD
   );
 }
 
-function NameGenderEditModal({ visible, onClose, profile, updateProfileField, isDark, theme }: any) {
+function NameGenderEditModal({ visible, onClose, profile, updateProfileField }: ProfileEditModalProps) {
+  const { isDark, theme } = useTheme();
   const [name, setName] = useState(profile.name || "");
 
   React.useEffect(() => {
@@ -1297,7 +1307,16 @@ function NameGenderEditModal({ visible, onClose, profile, updateProfileField, is
 
 
 
-function HealthSyncCard({ icon, label, connected, onToggle, theme, color }: any) {
+interface HealthSyncCardProps {
+  icon: React.ComponentProps<typeof Ionicons>["name"];
+  label: string;
+  connected: boolean;
+  onToggle: () => void;
+  color: string;
+}
+
+function HealthSyncCard({ icon, label, connected, onToggle, color }: HealthSyncCardProps) {
+  const { theme } = useTheme();
   return (
     <TouchableOpacity
       style={[
