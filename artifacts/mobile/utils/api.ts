@@ -30,6 +30,9 @@ export type ApiErrorCode =
   | "cost_ceiling_reached"
   | "entitlement_unavailable"
   | "quota_unavailable"
+  // The device could not reach the server at all. Distinct from every other
+  // code here, which describe a server that answered.
+  | "offline"
   // Booking. `slot_taken` is the race two clients lose when they tap the same
   // time at once; it is a retry-with-a-different-slot, not an error to apologise for.
   | "slot_taken"
@@ -71,6 +74,27 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Wrap fetch so a dead connection becomes a typed error rather than a raw
+ * TypeError.
+ *
+ * fetch rejects with TypeError("Network request failed") when the device has
+ * no route to the server. Left alone that string reaches the user verbatim,
+ * which is meaningless to them and, in a basement gym with no signal, is the
+ * message they will see most often. Elovia is used in exactly those places.
+ */
+async function fetchOrOffline(input: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch {
+    throw new ApiError(
+      "You appear to be offline. Your workouts are still saved on this device and will sync when you reconnect.",
+      0,
+      "offline",
+    );
+  }
+}
+
 async function getAuthToken(): Promise<string | null> {
   try {
     const firebaseAuth = await getFirebaseAuth();
@@ -95,7 +119,7 @@ async function postAuthed<T>(path: string, body: unknown): Promise<T> {
     throw new ApiError("Please sign in to use AI features.", 401, "unauthenticated");
   }
 
-  const response = await fetch(`${getBaseUrl()}${path}`, {
+  const response = await fetchOrOffline(`${getBaseUrl()}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -203,7 +227,7 @@ export async function fetchEntitlement(): Promise<EntitlementStatus | null> {
   const token = await getAuthToken();
   if (!token) return null;
 
-  const response = await fetch(`${getBaseUrl()}/api/entitlement`, {
+  const response = await fetchOrOffline(`${getBaseUrl()}/api/entitlement`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
@@ -303,7 +327,7 @@ async function getAuthed<T>(path: string): Promise<T> {
   const token = await getAuthToken();
   if (!token) throw new ApiError("Please sign in.", 401, "unauthenticated");
 
-  const response = await fetch(`${getBaseUrl()}${path}`, {
+  const response = await fetchOrOffline(`${getBaseUrl()}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
@@ -318,7 +342,7 @@ async function sendAuthed<T>(path: string, method: string, body?: unknown): Prom
   const token = await getAuthToken();
   if (!token) throw new ApiError("Please sign in.", 401, "unauthenticated");
 
-  const response = await fetch(`${getBaseUrl()}${path}`, {
+  const response = await fetchOrOffline(`${getBaseUrl()}${path}`, {
     method,
     headers: {
       "Content-Type": "application/json",

@@ -17,6 +17,14 @@ export function handleAiError(error: unknown, fallbackMessage: string): void {
     return;
   }
 
+  // Offline first: the device never reached the server, so nothing about
+  // entitlement, quota or sign-in is knowable. Checking those first would
+  // show an upgrade prompt to someone who is simply in a basement.
+  if (error.code === "offline") {
+    Alert.alert("You're offline", error.message);
+    return;
+  }
+
   if (error.requiresSignIn) {
     Alert.alert("Sign in required", "Please sign in again to use AI features.", [
       { text: "Not now", style: "cancel" },

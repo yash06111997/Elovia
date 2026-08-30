@@ -4,7 +4,7 @@ import { type PlanType, type PremiumFeatureKey, type SubscriptionPlatform, type 
 import { useAuth } from "@/lib/auth";
 import { useRevenueCat } from "@/lib/revenuecat";
 import { onDataRestored } from "@/lib/syncEvents";
-import { fetchEntitlement, type EntitlementStatus } from "@/utils/api";
+import { ApiError, fetchEntitlement, type EntitlementStatus } from "@/utils/api";
 
 interface SubscriptionContextValue {
   isPremium: boolean;
@@ -106,6 +106,21 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       setEntitlement(next);
       return next;
     } catch (error) {
+      // Being offline says nothing about what the user has paid for. Clearing
+      // the entitlement here would downgrade a Pro subscriber to free the
+      // moment they walk into a basement gym, and then show them a paywall for
+      // something they already own - the fastest way to earn a refund request.
+      // Keep the last known entitlement and let the next successful refresh
+      // correct it.
+      if (error instanceof ApiError && error.code === "offline") {
+        console.warn("Offline; keeping last known entitlement");
+        // Returns null rather than the captured `entitlement`: this callback's
+        // deps deliberately exclude it, so reading it here would return a stale
+        // value. What matters is the absence of setEntitlement(null) above -
+        // the state, and therefore the user's access, is left untouched.
+        return null;
+      }
+
       console.warn("Unable to refresh subscription entitlement", error);
       setEntitlement(null);
       return null;
