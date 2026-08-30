@@ -32,6 +32,17 @@ export interface GenerateOptions {
   temperature?: number;
   /** Abort the upstream call after this many ms. */
   timeoutMs?: number;
+  /**
+   * Checked against each provider's raw output before the result is accepted.
+   *
+   * Structured routes parse the model's text into a shape the app can render.
+   * Without this hook that parse happened after the router had already
+   * committed to a provider, so a model returning unusable JSON failed the
+   * whole request instead of falling through to the next one - which for
+   * structured tasks is Claude, the better JSON emitter. Throwing here is
+   * treated exactly like a provider failure.
+   */
+  validate?: (text: string) => void;
 }
 
 export interface TokenUsage {

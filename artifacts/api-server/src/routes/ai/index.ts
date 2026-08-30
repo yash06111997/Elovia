@@ -152,6 +152,11 @@ router.post("/generate-workout", gateAiRoute("generate-workout"), async (req, re
         maxTokens: 4096,
         temperature: 0.7,
         timeoutMs: 90_000,
+        // Run the parse inside the router so an unusable response falls
+        // through to the next provider instead of failing the request.
+        validate: (text) => {
+          normalizeWorkoutPlan(extractJson(text), profile.goal);
+        },
       },
       req.log,
     );

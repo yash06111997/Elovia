@@ -93,6 +93,12 @@ export async function generate(
   for (const provider of chain) {
     try {
       const result = await provider.generate(opts);
+
+      // Validate before accepting. A provider that answers with unparseable
+      // output has failed just as surely as one that timed out, and should
+      // hand over to the next in the chain rather than end the request.
+      opts.validate?.(result.text);
+
       return {
         ...result,
         estimatedCostMicros: estimateCostMicros(result.model, result.usage, result.provider),
