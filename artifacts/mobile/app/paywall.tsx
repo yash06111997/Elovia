@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, ActivityIndicator, Modal, BackHandler, Alert } from "react-native";
+import { getPublicApiUrl } from "@/utils/api";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, ActivityIndicator, Modal, BackHandler, Alert, Linking } from "react-native";
 import { router, useLocalSearchParams, useNavigation } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Colors } from "@/constants/colors";
+import { Space } from "@/constants/design";
 import { useTheme } from "@/hooks/useTheme";
 import { useSubscription } from "@/context/SubscriptionContext";
 import { useRevenueCat } from "@/lib/revenuecat";
@@ -375,6 +377,41 @@ export default function PaywallScreen() {
           )}
         </TouchableOpacity>
 
+        {/*
+          Required by App Store Review 3.1.2 and Play's subscription policy: the
+          purchase screen itself must state the renewal terms and carry working
+          links to the terms and the privacy policy. Burying these in Settings
+          is a routine rejection, and it is the kind of rejection that costs a
+          review cycle rather than an afternoon.
+        */}
+        <View style={styles.legalSection}>
+          <Text style={[styles.legalText, { color: theme.textMuted }]}>
+            Subscriptions renew automatically at the price shown until cancelled. Cancel any time
+            in your {Platform.OS === "ios" ? "Apple ID" : "Google Play"} account settings; cancelling
+            takes effect at the end of the current period. Lifetime access is a one-time purchase
+            and does not renew.
+          </Text>
+          <View style={styles.legalLinks}>
+            <TouchableOpacity
+              onPress={() => Linking.openURL(getPublicApiUrl("/api/legal/terms"))}
+              hitSlop={10}
+              accessibilityRole="link"
+              accessibilityLabel="Terms of Use"
+            >
+              <Text style={[styles.legalLink, { color: theme.textSecondary }]}>Terms of Use</Text>
+            </TouchableOpacity>
+            <Text style={[styles.legalText, { color: theme.textMuted }]}>·</Text>
+            <TouchableOpacity
+              onPress={() => Linking.openURL(getPublicApiUrl("/api/legal/privacy"))}
+              hitSlop={10}
+              accessibilityRole="link"
+              accessibilityLabel="Privacy Policy"
+            >
+              <Text style={[styles.legalLink, { color: theme.textSecondary }]}>Privacy Policy</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
         <View style={styles.trustSection}>
           {PAYWALL_COPY.trustItems.map((item, i) => (
             <View key={i} style={styles.trustRow}>
@@ -594,6 +631,10 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_400Regular",
     textDecorationLine: "underline",
   },
+  legalSection: { gap: Space.sm, paddingHorizontal: Space.xs, marginTop: Space.lg },
+  legalText: { fontSize: 11, lineHeight: 16, fontFamily: "Inter_400Regular", textAlign: "center" },
+  legalLinks: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: Space.sm },
+  legalLink: { fontSize: 11, fontFamily: "Inter_600SemiBold", textDecorationLine: "underline" },
   trustSection: { marginBottom: 28 },
   trustRow: {
     flexDirection: "row",
