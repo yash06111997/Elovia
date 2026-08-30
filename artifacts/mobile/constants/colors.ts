@@ -1,3 +1,14 @@
+/**
+ * The palette.
+ *
+ * Dark-only by design - see hooks/useTheme.ts for why. There is deliberately
+ * no `light` block: a second scheme that twenty screens silently ignored was
+ * worse than no second scheme.
+ *
+ * Screens must reference these roles rather than raw hex. A literal in a screen
+ * is how the app drifted into being "almost consistent" - values close to each
+ * other but never quite the same.
+ */
 export const Colors = {
   primary: "#00D4FF",
   primaryDark: "#0099CC",
@@ -20,18 +31,6 @@ export const Colors = {
     tabBarBorder: "#1E1E2E",
   },
 
-  light: {
-    background: "#F5F6FA",
-    surface: "#FFFFFF",
-    card: "#FFFFFF",
-    cardElevated: "#F0F1F8",
-    border: "#E4E6F0",
-    text: "#0A0A0F",
-    textSecondary: "#5A5A7A",
-    textMuted: "#6E6E86",
-    tabBar: "#FFFFFF",
-    tabBarBorder: "#E4E6F0",
-  },
 };
 
 export default Colors;

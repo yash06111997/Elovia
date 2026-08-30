@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Alert, Switch, Modal, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Alert, Modal, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -73,7 +73,7 @@ type EditSection = "fitness" | "diet" | "equipment" | "health" | "name" | null;
 export default function ProfileScreen() {
   const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
-  const { state: appState, calculateTDEE, calculateMacros, toggleColorScheme, updateProfileField, setCustomMacros } = useApp();
+  const { state: appState, calculateTDEE, calculateMacros, updateProfileField, setCustomMacros } = useApp();
   const { sessions, personalRecords } = useWorkout();
   const {
     healthData,
@@ -849,21 +849,6 @@ export default function ProfileScreen() {
           onPress={() => router.push("/privacy-data")}
           theme={theme}
         />
-        <View style={styles.settingRow}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="moon-outline" size={18} color={theme.textSecondary} />
-            <Text style={[styles.settingLabel, { color: theme.text }]}>Dark Mode</Text>
-          </View>
-          <Switch
-            value={isDark}
-            onValueChange={() => {
-              toggleColorScheme();
-              Haptics.selectionAsync();
-            }}
-            trackColor={{ false: theme.border, true: Colors.primary + "80" }}
-            thumbColor={isDark ? Colors.primary : theme.textMuted}
-          />
-        </View>
       </SectionCard>
 
       <TouchableOpacity
