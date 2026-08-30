@@ -14,6 +14,15 @@ import { backupToCloud, restoreFromCloud, migrateLegacyFirebaseData } from "@/li
 import { emitDataRestored } from "@/lib/syncEvents";
 import { NumberEditModal } from "@/components/NumberEditModal";
 import { Colors } from "@/constants/colors";
+import {
+  NavRow,
+  SectionCard,
+  ModalSheet,
+  OptionPicker,
+  InfoRow,
+  TappableRow,
+  StatItem,
+} from "@/components/ui";
 import { useTheme } from "@/hooks/useTheme";
 
 const goalLabels: Record<string, string> = {
@@ -330,22 +339,21 @@ export default function ProfileScreen() {
       </View>
 
       <View style={[styles.statsCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-        <StatItem label="Workouts" value={sessions.filter((s) => s.completed).length.toString()} theme={theme} />
+        <StatItem label="Workouts" value={sessions.filter((s) => s.completed).length.toString()} />
         <View style={[styles.statDivider, { backgroundColor: theme.border }]} />
-        <StatItem label="PRs" value={personalRecords.length.toString()} theme={theme} />
+        <StatItem label="PRs" value={personalRecords.length.toString()} />
         <View style={[styles.statDivider, { backgroundColor: theme.border }]} />
-        <StatItem label="Streak" value={`${appState.currentStreak}d`} theme={theme} />
+        <StatItem label="Streak" value={`${appState.currentStreak}d`} />
       </View>
 
-      <SectionCard title="Body Stats" isDark={isDark} theme={theme} subtitle="Tap values to edit">
-        <TappableRow label="Age" value={`${profile.age} years`} theme={theme} onPress={() => setEditField("age")} />
-        <TappableRow label="Gender" value={profile.gender.charAt(0).toUpperCase() + profile.gender.slice(1)} theme={theme} onPress={() => setEditSection("name")} />
-        <TappableRow label="Height" value={`${profile.heightCm} cm`} theme={theme} onPress={() => setEditField("heightCm")} />
-        <TappableRow label="Weight" value={`${profile.weightKg} kg`} theme={theme} onPress={() => setEditField("weightKg")} />
+      <SectionCard title="Body Stats" subtitle="Tap values to edit">
+        <TappableRow label="Age" value={`${profile.age} years`} onPress={() => setEditField("age")} />
+        <TappableRow label="Gender" value={profile.gender.charAt(0).toUpperCase() + profile.gender.slice(1)} onPress={() => setEditSection("name")} />
+        <TappableRow label="Height" value={`${profile.heightCm} cm`} onPress={() => setEditField("heightCm")} />
+        <TappableRow label="Weight" value={`${profile.weightKg} kg`} onPress={() => setEditField("weightKg")} />
         <TappableRow
           label="Target Weight"
           value={`${profile.targetWeightKg || profile.weightKg} kg`}
-          theme={theme}
           onPress={() => setEditField("targetWeightKg")}
           badge={weightDirection !== "maintain" ? `${Math.abs(weightDelta).toFixed(1)} kg to ${weightDirection}` : undefined}
           badgeColor={weightDirection === "lose" ? Colors.accent : weightDirection === "gain" ? Colors.accentGreen : undefined}
@@ -354,17 +362,16 @@ export default function ProfileScreen() {
           <TappableRow
             label="Timeline"
             value={`${targetWeeks} weeks`}
-            theme={theme}
             onPress={() => setEditField("targetWeeks")}
             badge={`${weeklyRateKg} kg/wk • ${dailyCalAdjust > 0 ? "+" : ""}${dailyCalAdjust} kcal/day`}
             badgeColor={Colors.primary}
           />
         )}
-        <InfoRow label="BMI" value={`${(profile.weightKg / (profile.heightCm / 100) ** 2).toFixed(1)}`} theme={theme} />
-        <InfoRow label="TDEE" value={`${tdee} kcal`} theme={theme} highlight />
+        <InfoRow label="BMI" value={`${(profile.weightKg / (profile.heightCm / 100) ** 2).toFixed(1)}`} />
+        <InfoRow label="TDEE" value={`${tdee} kcal`} highlight />
       </SectionCard>
 
-      <SectionCard title="Daily Nutrition Targets" isDark={isDark} theme={theme}>
+      <SectionCard title="Daily Nutrition Targets">
         <View style={styles.macroActionsRow}>
           <TouchableOpacity
             style={[
@@ -411,29 +418,29 @@ export default function ProfileScreen() {
             </TouchableOpacity>
           )}
         </View>
-        <InfoRow label="Calories" value={`${macros.calories} kcal`} theme={theme} highlight />
-        <InfoRow label="Protein" value={`${macros.protein} g`} theme={theme} />
-        <InfoRow label="Carbs" value={`${macros.carbs} g`} theme={theme} />
-        <InfoRow label="Fats" value={`${macros.fats} g`} theme={theme} />
+        <InfoRow label="Calories" value={`${macros.calories} kcal`} highlight />
+        <InfoRow label="Protein" value={`${macros.protein} g`} />
+        <InfoRow label="Carbs" value={`${macros.carbs} g`} />
+        <InfoRow label="Fats" value={`${macros.fats} g`} />
       </SectionCard>
 
-      <SectionCard title="Fitness Profile" isDark={isDark} theme={theme} subtitle="Tap to edit" onEdit={() => setEditSection("fitness")}>
-        <TappableRow label="Goal" value={goalLabels[profile.goal]} theme={theme} onPress={() => setEditSection("fitness")} />
-        <TappableRow label="Level" value={levelLabels[profile.fitnessLevel]} theme={theme} onPress={() => setEditSection("fitness")} />
-        <TappableRow label="Activity" value={activityLabels[profile.activityLevel]} theme={theme} onPress={() => setEditSection("fitness")} />
-        <TappableRow label="Workout Days" value={`${profile.workoutDaysPerWeek} days/week`} theme={theme} onPress={() => setEditField("workoutDaysPerWeek")} />
-        <TappableRow label="Session Length" value={`${profile.workoutDurationMins} min`} theme={theme} onPress={() => setEditField("workoutDurationMins")} />
-        <TappableRow label="Preference" value={prefLabels[profile.workoutPreference]} theme={theme} onPress={() => setEditSection("fitness")} />
+      <SectionCard title="Fitness Profile" subtitle="Tap to edit" onEdit={() => setEditSection("fitness")}>
+        <TappableRow label="Goal" value={goalLabels[profile.goal]} onPress={() => setEditSection("fitness")} />
+        <TappableRow label="Level" value={levelLabels[profile.fitnessLevel]} onPress={() => setEditSection("fitness")} />
+        <TappableRow label="Activity" value={activityLabels[profile.activityLevel]} onPress={() => setEditSection("fitness")} />
+        <TappableRow label="Workout Days" value={`${profile.workoutDaysPerWeek} days/week`} onPress={() => setEditField("workoutDaysPerWeek")} />
+        <TappableRow label="Session Length" value={`${profile.workoutDurationMins} min`} onPress={() => setEditField("workoutDurationMins")} />
+        <TappableRow label="Preference" value={prefLabels[profile.workoutPreference]} onPress={() => setEditSection("fitness")} />
       </SectionCard>
 
-      <SectionCard title="Diet Profile" isDark={isDark} theme={theme} subtitle="Tap to edit" onEdit={() => setEditSection("diet")}>
-        <TappableRow label="Food Type" value={foodPrefLabels[profile.foodPreference]} theme={theme} onPress={() => setEditSection("diet")} />
-        <TappableRow label="Restrictions" value={profile.dietaryRestrictions || "None"} theme={theme} onPress={() => setEditSection("diet")} />
-        <TappableRow label="Dislikes" value={profile.dislikedFoods || "None"} theme={theme} onPress={() => setEditSection("diet")} />
-        <TappableRow label="Medical Notes" value={profile.medicalNotes || "None"} theme={theme} onPress={() => setEditSection("diet")} />
+      <SectionCard title="Diet Profile" subtitle="Tap to edit" onEdit={() => setEditSection("diet")}>
+        <TappableRow label="Food Type" value={foodPrefLabels[profile.foodPreference]} onPress={() => setEditSection("diet")} />
+        <TappableRow label="Restrictions" value={profile.dietaryRestrictions || "None"} onPress={() => setEditSection("diet")} />
+        <TappableRow label="Dislikes" value={profile.dislikedFoods || "None"} onPress={() => setEditSection("diet")} />
+        <TappableRow label="Medical Notes" value={profile.medicalNotes || "None"} onPress={() => setEditSection("diet")} />
       </SectionCard>
 
-      <SectionCard title="Equipment" isDark={isDark} theme={theme} subtitle="Tap to edit" onEdit={() => setEditSection("equipment")}>
+      <SectionCard title="Equipment" subtitle="Tap to edit" onEdit={() => setEditSection("equipment")}>
         <TouchableOpacity onPress={() => setEditSection("equipment")} activeOpacity={0.7}>
           <View style={styles.equipmentList}>
             {profile.equipment.map((eq) => (
@@ -458,27 +465,27 @@ export default function ProfileScreen() {
         </TouchableOpacity>
       </SectionCard>
 
-      <SectionCard title="Health Habits" isDark={isDark} theme={theme} subtitle="Tap to edit">
-        <TappableRow label="Sleep" value={`${profile.sleepHours} hours/night`} theme={theme} onPress={() => setEditField("sleepHours")} />
-        <TappableRow label="Water Goal" value={`${profile.waterIntakeLiters} L/day`} theme={theme} onPress={() => setEditField("waterIntakeLiters")} />
+      <SectionCard title="Health Habits" subtitle="Tap to edit">
+        <TappableRow label="Sleep" value={`${profile.sleepHours} hours/night`} onPress={() => setEditField("sleepHours")} />
+        <TappableRow label="Water Goal" value={`${profile.waterIntakeLiters} L/day`} onPress={() => setEditField("waterIntakeLiters")} />
       </SectionCard>
 
       {/* Everything built on top of the core tabs lives here rather than
           crowding the bottom nav, which Material caps at five items. */}
-      <SectionCard title="More" isDark={isDark} theme={theme} subtitle="Tools & tracking">
-        <NavRow icon="library-outline" label="Training programmes" hint="Curated plans, free on every tier" onPress={() => router.push("/plans")} theme={theme} />
-        <NavRow icon="navigate-outline" label="Record a run" hint="GPS tracking with splits" onPress={() => router.push("/run")} theme={theme} />
-        <NavRow icon="water-outline" label="Hydration" hint="Track water and set a daily goal" onPress={() => router.push("/hydration")} theme={theme} />
-        <NavRow icon="medkit-outline" label="Supplements & medication" hint="Reminders and training context" onPress={() => router.push("/supplements")} theme={theme} />
-        <NavRow icon="videocam-outline" label="1-on-1 coaching" hint="Work with a real coach" onPress={() => router.push("/coaching")} theme={theme} />
-        <NavRow icon="chatbubbles-outline" label="Ask your coach" hint="Training and nutrition questions" onPress={() => router.push("/coach")} theme={theme} />
-        <NavRow icon="barcode-outline" label="Scan a barcode" hint="Look up packaged food" onPress={() => router.push("/scan")} theme={theme} />
-        <NavRow icon="people-outline" label="Community" hint="Friends, feed and challenges" onPress={() => router.push("/social")} theme={theme} />
-        <NavRow icon="trophy-outline" label="Achievements" hint="Level, streaks and badges" onPress={() => router.push("/achievements")} theme={theme} />
-        <NavRow icon="location-outline" label="My places" hint="Start a session when you reach the gym" onPress={() => router.push("/places")} theme={theme} />
+      <SectionCard title="More" subtitle="Tools & tracking">
+        <NavRow icon="library-outline" label="Training programmes" hint="Curated plans, free on every tier" onPress={() => router.push("/plans")} />
+        <NavRow icon="navigate-outline" label="Record a run" hint="GPS tracking with splits" onPress={() => router.push("/run")} />
+        <NavRow icon="water-outline" label="Hydration" hint="Track water and set a daily goal" onPress={() => router.push("/hydration")} />
+        <NavRow icon="medkit-outline" label="Supplements & medication" hint="Reminders and training context" onPress={() => router.push("/supplements")} />
+        <NavRow icon="videocam-outline" label="1-on-1 coaching" hint="Work with a real coach" onPress={() => router.push("/coaching")} />
+        <NavRow icon="chatbubbles-outline" label="Ask your coach" hint="Training and nutrition questions" onPress={() => router.push("/coach")} />
+        <NavRow icon="barcode-outline" label="Scan a barcode" hint="Look up packaged food" onPress={() => router.push("/scan")} />
+        <NavRow icon="people-outline" label="Community" hint="Friends, feed and challenges" onPress={() => router.push("/social")} />
+        <NavRow icon="trophy-outline" label="Achievements" hint="Level, streaks and badges" onPress={() => router.push("/achievements")} />
+        <NavRow icon="location-outline" label="My places" hint="Start a session when you reach the gym" onPress={() => router.push("/places")} />
       </SectionCard>
 
-      <SectionCard title="Health Data Sync" isDark={isDark} theme={theme} subtitle="Connect devices & apps">
+      <SectionCard title="Health Data Sync" subtitle="Connect devices & apps">
         <View style={styles.healthSyncGrid}>
           {/* Only the card for THIS platform is shown. Offering an Apple Health
               toggle on Android (and vice versa) was always a dead control. */}
@@ -679,7 +686,7 @@ export default function ProfileScreen() {
         {healthData.lastSynced && <Text style={[styles.lastSynced, { color: theme.textMuted }]}>Last synced: {new Date(healthData.lastSynced).toLocaleString()}</Text>}
       </SectionCard>
 
-      <SectionCard title="Subscription" isDark={isDark} theme={theme} subtitle={isTrialActive ? `Premium Trial · ${daysRemaining} days left` : isPremium ? "Premium" : "Free Plan"}>
+      <SectionCard title="Subscription" subtitle={isTrialActive ? `Premium Trial · ${daysRemaining} days left` : isPremium ? "Premium" : "Free Plan"}>
         <View style={{ gap: 12 }}>
           <View
             style={[
@@ -756,7 +763,7 @@ export default function ProfileScreen() {
         </View>
       </SectionCard>
 
-      <SectionCard title="Account" isDark={isDark} theme={theme} subtitle={isAuthenticated ? user?.email || "Signed in" : "Sign in to save your data"}>
+      <SectionCard title="Account" subtitle={isAuthenticated ? user?.email || "Signed in" : "Sign in to save your data"}>
         {isAuthenticated ? (
           <View style={{ gap: 10 }}>
             <View style={styles.accountUserRow}>
@@ -841,13 +848,12 @@ export default function ProfileScreen() {
         )}
       </SectionCard>
 
-      <SectionCard title="Settings" isDark={isDark} theme={theme}>
+      <SectionCard title="Settings">
         <NavRow
           icon="shield-checkmark-outline"
           label="Privacy & Data"
           hint="Privacy notice, export and account deletion"
           onPress={() => router.push("/privacy-data")}
-          theme={theme}
         />
       </SectionCard>
 
@@ -997,81 +1003,9 @@ function MacroInput({ label, unit, value, onChange, theme, color }: MacroInputPr
   );
 }
 
-function NavRow({ icon, label, hint, onPress, theme }: { icon: any; label: string; hint?: string; onPress: () => void; theme: any }) {
-  return (
-    <TouchableOpacity style={styles.navRow} onPress={onPress} activeOpacity={0.7}>
-      <View style={[styles.navIcon, { backgroundColor: Colors.primary + "15" }]}>
-        <Ionicons name={icon} size={17} color={Colors.primary} />
-      </View>
-      <View style={{ flex: 1 }}>
-        <Text style={[styles.navLabel, { color: theme.text }]}>{label}</Text>
-        {hint ? <Text style={[styles.navHint, { color: theme.textMuted }]}>{hint}</Text> : null}
-      </View>
-      <Ionicons name="chevron-forward" size={16} color={theme.textMuted} />
-    </TouchableOpacity>
-  );
-}
 
-function SectionCard({ title, children, isDark, theme, subtitle, onEdit }: any) {
-  return (
-    <View style={[styles.sectionCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-      <View style={styles.sectionHeaderRow}>
-        <Text style={[styles.sectionTitle, { color: theme.text }]}>{title}</Text>
-        {subtitle && <Text style={[styles.sectionSubtitle, { color: theme.textMuted }]}>{subtitle}</Text>}
-      </View>
-      {children}
-    </View>
-  );
-}
 
-function ModalSheet({ visible, onClose, title, children, theme }: any) {
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.macroOverlay}>
-        <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={onClose} />
-        <ScrollView style={{ maxHeight: "85%" }} bounces={false} keyboardShouldPersistTaps="handled">
-          <View style={[styles.macroSheet, { backgroundColor: theme.surface }]}>
-            <View style={styles.macroHandle} />
-            <Text style={[styles.macroTitle, { color: theme.text }]}>{title}</Text>
-            {children}
-          </View>
-        </ScrollView>
-      </View>
-    </Modal>
-  );
-}
 
-function OptionPicker({ label, options, selected, onSelect, theme }: any) {
-  return (
-    <View style={{ gap: 8 }}>
-      <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>{label}</Text>
-      <View style={styles.optionGrid}>
-        {options.map((opt: any) => {
-          const active = selected === opt.value;
-          return (
-            <TouchableOpacity
-              key={opt.value}
-              style={[
-                styles.optionChip,
-                {
-                  backgroundColor: active ? Colors.primary + "20" : theme.card,
-                  borderColor: active ? Colors.primary : theme.border,
-                },
-              ]}
-              onPress={() => {
-                onSelect(opt.value);
-                Haptics.selectionAsync();
-              }}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.optionChipText, { color: active ? Colors.primary : theme.text }]}>{opt.label}</Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    </View>
-  );
-}
 
 function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDark, theme }: any) {
   const [goal, setGoal] = useState(profile.goal);
@@ -1098,7 +1032,7 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDar
   };
 
   return (
-    <ModalSheet visible={visible} onClose={onClose} title="Edit Fitness Profile" theme={theme}>
+    <ModalSheet visible={visible} onClose={onClose} title="Edit Fitness Profile">
       <OptionPicker
         label="Primary Goal"
         options={Object.entries(goalLabels).map(([value, label]) => ({
@@ -1107,7 +1041,6 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDar
         }))}
         selected={goal}
         onSelect={setGoal}
-        theme={theme}
       />
       <OptionPicker
         label="Fitness Level"
@@ -1117,7 +1050,6 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDar
         }))}
         selected={level}
         onSelect={setLevel}
-        theme={theme}
       />
       <OptionPicker
         label="Activity Level"
@@ -1127,7 +1059,6 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDar
         }))}
         selected={activity}
         onSelect={setActivity}
-        theme={theme}
       />
       <OptionPicker
         label="Workout Preference"
@@ -1137,7 +1068,6 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField, isDar
         }))}
         selected={pref}
         onSelect={setPref}
-        theme={theme}
       />
       <View style={styles.macroActions}>
         <TouchableOpacity style={[styles.macroCancelBtn, { borderColor: theme.border }]} onPress={onClose}>
@@ -1176,7 +1106,7 @@ function DietEditModal({ visible, onClose, profile, updateProfileField, isDark, 
   };
 
   return (
-    <ModalSheet visible={visible} onClose={onClose} title="Edit Diet Profile" theme={theme}>
+    <ModalSheet visible={visible} onClose={onClose} title="Edit Diet Profile">
       <OptionPicker
         label="Food Preference"
         options={Object.entries(foodPrefLabels).map(([value, label]) => ({
@@ -1185,7 +1115,6 @@ function DietEditModal({ visible, onClose, profile, updateProfileField, isDark, 
         }))}
         selected={foodPref}
         onSelect={setFoodPref}
-        theme={theme}
       />
       <View style={{ gap: 6 }}>
         <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Restrictions / Allergies</Text>
@@ -1274,7 +1203,7 @@ function EquipmentEditModal({ visible, onClose, profile, updateProfileField, isD
   };
 
   return (
-    <ModalSheet visible={visible} onClose={onClose} title="Edit Equipment" theme={theme}>
+    <ModalSheet visible={visible} onClose={onClose} title="Edit Equipment">
       <View style={styles.optionGrid}>
         {allEquipment.map((eq) => {
           const active = selected.includes(eq.value);
@@ -1325,7 +1254,7 @@ function NameGenderEditModal({ visible, onClose, profile, updateProfileField, is
   };
 
   return (
-    <ModalSheet visible={visible} onClose={onClose} title="Edit Name & Gender" theme={theme}>
+    <ModalSheet visible={visible} onClose={onClose} title="Edit Name & Gender">
       <View style={{ gap: 6 }}>
         <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Name</Text>
         <TextInput
@@ -1353,7 +1282,6 @@ function NameGenderEditModal({ visible, onClose, profile, updateProfileField, is
         ]}
         selected={profile.gender}
         onSelect={(v: string) => updateProfileField("gender", v)}
-        theme={theme}
       />
       <View style={styles.macroActions}>
         <TouchableOpacity style={[styles.macroCancelBtn, { borderColor: theme.border }]} onPress={onClose}>
@@ -1367,31 +1295,7 @@ function NameGenderEditModal({ visible, onClose, profile, updateProfileField, is
   );
 }
 
-function InfoRow({ label, value, theme, highlight }: any) {
-  return (
-    <View style={[styles.infoRow, { borderBottomColor: theme.border }]}>
-      <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>{label}</Text>
-      <Text style={[styles.infoValue, { color: highlight ? Colors.primary : theme.text }]}>{value}</Text>
-    </View>
-  );
-}
 
-function TappableRow({ label, value, theme, onPress, badge, badgeColor }: any) {
-  return (
-    <TouchableOpacity style={[styles.infoRow, { borderBottomColor: theme.border }]} onPress={onPress} activeOpacity={0.6}>
-      <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>{label}</Text>
-      <View style={styles.tappableRight}>
-        {badge && (
-          <View style={[styles.badge, { backgroundColor: (badgeColor || Colors.primary) + "20" }]}>
-            <Text style={[styles.badgeText, { color: badgeColor || Colors.primary }]}>{badge}</Text>
-          </View>
-        )}
-        <Text style={[styles.infoValue, { color: Colors.primary }]}>{value}</Text>
-        <Ionicons name="pencil" size={12} color={Colors.primary} style={{ marginLeft: 4 }} />
-      </View>
-    </TouchableOpacity>
-  );
-}
 
 function HealthSyncCard({ icon, label, connected, onToggle, theme, color }: any) {
   return (
@@ -1417,14 +1321,6 @@ function HealthSyncCard({ icon, label, connected, onToggle, theme, color }: any)
   );
 }
 
-function StatItem({ label, value, theme }: any) {
-  return (
-    <View style={styles.statItem}>
-      <Text style={[styles.statValue, { color: theme.text }]}>{value}</Text>
-      <Text style={[styles.statLabel, { color: theme.textSecondary }]}>{label}</Text>
-    </View>
-  );
-}
 
 const styles = StyleSheet.create({
   navRow: {
