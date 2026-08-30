@@ -234,8 +234,8 @@ export default function DietScreen() {
               style={[styles.iconBtn, { backgroundColor: Colors.primary + "20" }]}
               onPress={handleScanFood}
               activeOpacity={0.8}
-              disabled={scanning}
-            >
+              disabled={scanning} accessibilityRole="button" accessibilityLabel="Open camera"
+        >
               {scanning ? (
                 <ActivityIndicator size="small" color={Colors.primary} />
               ) : canAccess("ai_food_scan") ? (
@@ -252,8 +252,8 @@ export default function DietScreen() {
             <TouchableOpacity
               style={[styles.iconBtn, { backgroundColor: Colors.accent + "20" }]}
               onPress={() => setFoodSearchVisible(true)}
-              activeOpacity={0.8}
-            >
+              activeOpacity={0.8} accessibilityRole="button" accessibilityLabel="Search"
+        >
               <Ionicons name="search" size={18} color={Colors.accent} />
             </TouchableOpacity>
             <TouchableOpacity
@@ -491,8 +491,8 @@ export default function DietScreen() {
                     </TouchableOpacity>
                     <TouchableOpacity
                       onPress={() => handleDeleteCustomMealPlan(cp.id)}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} accessibilityRole="button" accessibilityLabel="Delete"
+        >
                       <Ionicons name="trash-outline" size={18} color={Colors.accentRed} />
                     </TouchableOpacity>
                   </View>
@@ -586,7 +586,7 @@ export default function DietScreen() {
           <View style={[styles.modalContent, { backgroundColor: theme.surface }]}>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: theme.text }]}>Log Food</Text>
-              <TouchableOpacity onPress={() => setLogModalVisible(false)}>
+              <TouchableOpacity onPress={() => setLogModalVisible(false)} accessibilityRole="button" accessibilityLabel="Close">
                 <Ionicons name="close" size={22} color={theme.textSecondary} />
               </TouchableOpacity>
             </View>
@@ -630,7 +630,7 @@ export default function DietScreen() {
           <View style={[styles.aiModalContent, { backgroundColor: theme.surface }]}>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: theme.text }]}>AI Meal Plan</Text>
-              <TouchableOpacity onPress={() => setAiMealModalVisible(false)}>
+              <TouchableOpacity onPress={() => setAiMealModalVisible(false)} accessibilityRole="button" accessibilityLabel="Close">
                 <Ionicons name="close" size={22} color={theme.textSecondary} />
               </TouchableOpacity>
             </View>
@@ -741,7 +741,7 @@ function LogEntryCard({ entry, isDark, theme, onRemove }: { entry: FoodLogEntry;
           <Text style={[styles.logMacro, { color: Colors.accentGreen }]}>{Math.round(entry.fats)}g F</Text>
         </View>
       </View>
-      <TouchableOpacity onPress={onRemove} style={styles.removeBtn}>
+      <TouchableOpacity onPress={onRemove} style={styles.removeBtn} accessibilityRole="button" accessibilityLabel="Delete">
         <Ionicons name="trash-outline" size={16} color={Colors.accentRed} />
       </TouchableOpacity>
     </View>

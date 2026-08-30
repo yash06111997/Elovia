@@ -147,7 +147,7 @@ export default function PaywallScreen() {
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 20 : insets.top + 8 }]}>
         {!isPostOnboarding && (
-          <TouchableOpacity onPress={() => router.back()} style={styles.closeBtn} activeOpacity={0.7}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.closeBtn} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel="Close">
             <Ionicons name="close" size={24} color={theme.text} />
           </TouchableOpacity>
         )}

@@ -214,8 +214,8 @@ export default function LogWorkoutScreen() {
                 onPress={() => {
                   setShowExerciseSearch(false);
                   setSearchQuery("");
-                }}
-              >
+                }} accessibilityRole="button" accessibilityLabel="Clear"
+        >
                 <Ionicons name="close-circle" size={24} color={theme.textMuted} />
               </TouchableOpacity>
             </View>
@@ -439,7 +439,7 @@ function ExerciseLogCard({
             {totalVolume > 0 ? ` · ${totalVolume.toLocaleString()} kg vol` : ""}
           </Text>
         </View>
-        <TouchableOpacity onPress={onRemoveExercise} style={styles.removeExBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+        <TouchableOpacity onPress={onRemoveExercise} style={styles.removeExBtn} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} accessibilityRole="button" accessibilityLabel="Delete">
           <Ionicons name="trash-outline" size={18} color={Colors.accentRed + "80"} />
         </TouchableOpacity>
         <Ionicons name={isExpanded ? "chevron-up" : "chevron-down"} size={20} color={theme.textMuted} />
@@ -507,7 +507,7 @@ function ExerciseLogCard({
                   </View>
                   <Text style={[styles.setCell, styles.weightCol, { color: theme.text, fontWeight: "600" }]}>{set.weightKg}</Text>
                   <Text style={[styles.setCell, styles.repsCol, { color: theme.text, fontWeight: "600" }]}>{set.reps}</Text>
-                  <TouchableOpacity style={styles.actionCol} onPress={() => onRemoveSet(setIdx)}>
+                  <TouchableOpacity style={styles.actionCol} onPress={() => onRemoveSet(setIdx)} accessibilityRole="button" accessibilityLabel="Clear">
                     <Ionicons name="close-circle" size={18} color={Colors.accentRed + "60"} />
                   </TouchableOpacity>
                 </View>

@@ -129,8 +129,8 @@ export default function HydrationScreen() {
                 handleAdd(ml);
                 setCustomMl("");
               }
-            }}
-          >
+            }} accessibilityRole="button" accessibilityLabel="Add"
+        >
             <Ionicons name="add" size={20} color={customMl ? "#000" : theme.textMuted} />
           </TouchableOpacity>
         </View>
@@ -176,7 +176,7 @@ export default function HydrationScreen() {
                     minute: "2-digit",
                   })}
                 </Text>
-                <TouchableOpacity onPress={() => removeWaterEntry(entry.id)} hitSlop={10}>
+                <TouchableOpacity onPress={() => removeWaterEntry(entry.id)} hitSlop={10} accessibilityRole="button" accessibilityLabel="Close">
                   <Ionicons name="close" size={16} color={theme.textMuted} />
                 </TouchableOpacity>
               </View>

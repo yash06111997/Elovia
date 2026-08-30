@@ -390,8 +390,8 @@ export default function WorkoutsScreen() {
                     },
                   ]}
                   onPress={() => setShowLibrary(true)}
-                  activeOpacity={0.8}
-                >
+                  activeOpacity={0.8} accessibilityRole="button" accessibilityLabel="Search"
+        >
                   <Ionicons name="search" size={16} color={theme.text} />
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -406,8 +406,8 @@ export default function WorkoutsScreen() {
                     setEditingPlan(undefined);
                     setShowPlanBuilder(true);
                   }}
-                  activeOpacity={0.8}
-                >
+                  activeOpacity={0.8} accessibilityRole="button" accessibilityLabel="Add"
+        >
                   <Ionicons name="add" size={18} color={theme.text} />
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -561,7 +561,7 @@ export default function WorkoutsScreen() {
                     >
                       <Ionicons name="create-outline" size={18} color={theme.textSecondary} />
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => handleDeleteCustomPlan(cp.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <TouchableOpacity onPress={() => handleDeleteCustomPlan(cp.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }} accessibilityRole="button" accessibilityLabel="Delete">
                       <Ionicons name="trash-outline" size={18} color={Colors.accentRed} />
                     </TouchableOpacity>
                   </View>

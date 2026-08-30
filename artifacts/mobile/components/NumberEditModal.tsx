@@ -67,8 +67,8 @@ export function NumberEditModal({
                 const v = Math.max(min, parseFloat(input || "0") - step);
                 setInput(v.toFixed(step < 1 ? 1 : 0));
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              }}
-            >
+              }} accessibilityRole="button" accessibilityLabel="Decrease"
+        >
               <Ionicons name="remove" size={20} color={theme.text} />
             </TouchableOpacity>
 
@@ -90,8 +90,8 @@ export function NumberEditModal({
                 const v = Math.min(max, parseFloat(input || "0") + step);
                 setInput(v.toFixed(step < 1 ? 1 : 0));
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              }}
-            >
+              }} accessibilityRole="button" accessibilityLabel="Add"
+        >
               <Ionicons name="add" size={20} color={theme.text} />
             </TouchableOpacity>
           </View>

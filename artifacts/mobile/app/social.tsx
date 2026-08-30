@@ -120,7 +120,7 @@ export default function SocialScreen() {
           title: "Community",
           headerShown: true,
           headerRight: () => (
-            <PressableScale onPress={() => setSettingsVisible(true)} hitSlop={12}>
+            <PressableScale onPress={() => setSettingsVisible(true)} hitSlop={12} accessibilityRole="button" accessibilityLabel="Settings">
               <Ionicons name="settings-outline" size={21} color={theme.text} />
             </PressableScale>
           ),
@@ -300,8 +300,8 @@ export default function SocialScreen() {
                       onPress={async () => {
                         await social.respondFriend(request.friendshipId, true);
                         void load();
-                      }}
-                    >
+                      }} accessibilityRole="button" accessibilityLabel="Confirm"
+        >
                       <Ionicons name="checkmark" size={16} color="#000" />
                     </PressableScale>
                     <PressableScale
@@ -309,8 +309,8 @@ export default function SocialScreen() {
                       onPress={async () => {
                         await social.respondFriend(request.friendshipId, false);
                         void load();
-                      }}
-                    >
+                      }} accessibilityRole="button" accessibilityLabel="Close"
+        >
                       <Ionicons name="close" size={16} color={theme.textMuted} />
                     </PressableScale>
                   </View>
@@ -354,8 +354,8 @@ export default function SocialScreen() {
                               },
                             },
                           ])
-                        }
-                      >
+                        } accessibilityRole="button" accessibilityLabel="More options"
+        >
                         <Ionicons name="ellipsis-horizontal" size={18} color={theme.textMuted} />
                       </PressableScale>
                     </View>
@@ -440,7 +440,7 @@ export default function SocialScreen() {
         <PressableScale
           style={[styles.fab, { backgroundColor: Colors.primary, bottom: insets.bottom + 20 }]}
           onPress={() => setAddVisible(true)}
-          haptic
+          haptic accessibilityRole="button" accessibilityLabel="Add"
         >
           <Ionicons name="add" size={26} color="#000" />
         </PressableScale>
@@ -554,7 +554,7 @@ function AddModal({
           <Text style={[styles.modalTitle, { color: theme.text }]}>
             {mode === "friend" ? "Add a friend" : "Challenges"}
           </Text>
-          <PressableScale onPress={onClose} hitSlop={12}>
+          <PressableScale onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Close">
             <Ionicons name="close" size={24} color={theme.textMuted} />
           </PressableScale>
         </View>
@@ -660,7 +660,7 @@ function SettingsModal({
       <View style={[styles.container, { backgroundColor: theme.background }]}>
         <View style={[styles.modalHeader, { borderBottomColor: theme.border }]}>
           <Text style={[styles.modalTitle, { color: theme.text }]}>Privacy</Text>
-          <PressableScale onPress={onClose} hitSlop={12}>
+          <PressableScale onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Close">
             <Ionicons name="close" size={24} color={theme.textMuted} />
           </PressableScale>
         </View>

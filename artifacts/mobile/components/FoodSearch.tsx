@@ -82,7 +82,7 @@ export function FoodSearch({ visible, onClose, onSelect }: Props) {
         <View style={[styles.container, { backgroundColor: theme.surface }]}>
           <View style={styles.header}>
             <Text style={[styles.title, { color: theme.text }]}>Search Food</Text>
-            <TouchableOpacity onPress={handleClose}>
+            <TouchableOpacity onPress={handleClose} accessibilityRole="button" accessibilityLabel="Close">
               <Ionicons name="close" size={22} color={theme.textSecondary} />
             </TouchableOpacity>
           </View>
@@ -98,7 +98,7 @@ export function FoodSearch({ visible, onClose, onSelect }: Props) {
               autoCorrect={false}
             />
             {query.length > 0 && (
-              <TouchableOpacity onPress={() => setQuery("")}>
+              <TouchableOpacity onPress={() => setQuery("")} accessibilityRole="button" accessibilityLabel="Clear">
                 <Ionicons name="close-circle" size={18} color={theme.textMuted} />
               </TouchableOpacity>
             )}
@@ -185,8 +185,8 @@ export function FoodSearch({ visible, onClose, onSelect }: Props) {
                   <Text style={[styles.servingsLabel, { color: theme.textSecondary }]}>Servings:</Text>
                   <TouchableOpacity
                     style={[styles.servBtn, { backgroundColor: theme.cardElevated }]}
-                    onPress={() => { const v = Math.max(0.5, (parseFloat(servings) || 1) - 0.5); setServings(v.toString()); }}
-                  >
+                    onPress={() => { const v = Math.max(0.5, (parseFloat(servings) || 1) - 0.5); setServings(v.toString()); }} accessibilityRole="button" accessibilityLabel="Decrease"
+        >
                     <Ionicons name="remove" size={16} color={theme.text} />
                   </TouchableOpacity>
                   <TextInput
@@ -198,8 +198,8 @@ export function FoodSearch({ visible, onClose, onSelect }: Props) {
                   />
                   <TouchableOpacity
                     style={[styles.servBtn, { backgroundColor: theme.cardElevated }]}
-                    onPress={() => { const v = (parseFloat(servings) || 1) + 0.5; setServings(v.toString()); }}
-                  >
+                    onPress={() => { const v = (parseFloat(servings) || 1) + 0.5; setServings(v.toString()); }} accessibilityRole="button" accessibilityLabel="Add"
+        >
                     <Ionicons name="add" size={16} color={theme.text} />
                   </TouchableOpacity>
                 </View>

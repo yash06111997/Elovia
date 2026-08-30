@@ -414,7 +414,7 @@ function BookingSheet({
       <View style={[styles.container, { backgroundColor: theme.background }]}>
         <View style={[styles.sheetHeader, { borderBottomColor: theme.border }]}>
           <Text style={[styles.sheetTitle, { color: theme.text }]}>Confirm booking</Text>
-          <PressableScale onPress={onClose} hitSlop={12}>
+          <PressableScale onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Close">
             <Ionicons name="close" size={24} color={theme.textMuted} />
           </PressableScale>
         </View>

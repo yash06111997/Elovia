@@ -241,14 +241,14 @@ function FoundProduct({
         <Text style={[styles.servingLabel, { color: theme.textSecondary }]}>Servings</Text>
         <TouchableOpacity
           onPress={() => onServingsChange(Math.max(0.5, servings - 0.5))}
-          hitSlop={10}
+          hitSlop={10} accessibilityRole="button" accessibilityLabel="Decrease"
         >
           <Ionicons name="remove-circle-outline" size={26} color={theme.textMuted} />
         </TouchableOpacity>
         <Text style={[styles.servingValue, { color: theme.text }]}>{servings}</Text>
         <TouchableOpacity
           onPress={() => onServingsChange(Math.min(20, servings + 0.5))}
-          hitSlop={10}
+          hitSlop={10} accessibilityRole="button" accessibilityLabel="Increase"
         >
           <Ionicons name="add-circle-outline" size={26} color={Colors.primary} />
         </TouchableOpacity>

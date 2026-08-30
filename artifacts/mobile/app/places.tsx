@@ -157,7 +157,7 @@ export default function PlacesScreen() {
                     {kind.label} · {place.radius}m radius
                   </Text>
                 </View>
-                <PressableScale onPress={() => removePlace(place)} hitSlop={12}>
+                <PressableScale onPress={() => removePlace(place)} hitSlop={12} accessibilityRole="button" accessibilityLabel="Delete">
                   <Ionicons name="trash-outline" size={18} color={theme.textMuted} />
                 </PressableScale>
               </View>
@@ -192,7 +192,7 @@ export default function PlacesScreen() {
         <PressableScale
           style={[styles.fab, { backgroundColor: Colors.primary, bottom: insets.bottom + 20 }]}
           onPress={() => setAddVisible(true)}
-          haptic
+          haptic accessibilityRole="button" accessibilityLabel="Add"
         >
           <Ionicons name="add" size={26} color="#000" />
         </PressableScale>
@@ -305,7 +305,7 @@ function AddPlaceModal({
       <View style={[styles.container, { backgroundColor: theme.background }]}>
         <View style={[styles.modalHeader, { borderBottomColor: theme.border }]}>
           <Text style={[styles.modalTitle, { color: theme.text }]}>Save this place</Text>
-          <PressableScale onPress={onClose} hitSlop={12}>
+          <PressableScale onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Close">
             <Ionicons name="close" size={24} color={theme.textMuted} />
           </PressableScale>
         </View>

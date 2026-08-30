@@ -191,7 +191,7 @@ export default function CoachScreen() {
           ]}
           onPress={() => void send(draft)}
           disabled={!draft.trim() || sending}
-          activeOpacity={0.85}
+          activeOpacity={0.85} accessibilityRole="button" accessibilityLabel="Send"
         >
           <Ionicons
             name="arrow-up"

@@ -149,7 +149,7 @@ export default function PlansScreen() {
                   {selected.tagline}
                 </Text>
               </View>
-              <TouchableOpacity onPress={() => setSelected(null)} hitSlop={12}>
+              <TouchableOpacity onPress={() => setSelected(null)} hitSlop={12} accessibilityRole="button" accessibilityLabel="Close">
                 <Ionicons name="close" size={24} color={theme.textMuted} />
               </TouchableOpacity>
             </View>

@@ -182,8 +182,8 @@ export default function SupplementsScreen() {
           { backgroundColor: Colors.primary, bottom: insets.bottom + 20 },
         ]}
         onPress={() => setAddVisible(true)}
-        activeOpacity={0.85}
-      >
+        activeOpacity={0.85} accessibilityRole="button" accessibilityLabel="Add"
+        >
         <Ionicons name="add" size={26} color="#000" />
       </TouchableOpacity>
 
@@ -259,7 +259,7 @@ function AddSupplementModal({
       <View style={[styles.container, { backgroundColor: theme.background }]}>
         <View style={[styles.modalHeader, { borderBottomColor: theme.border }]}>
           <Text style={[styles.modalTitle, { color: theme.text }]}>Add entry</Text>
-          <TouchableOpacity onPress={onClose} hitSlop={12}>
+          <TouchableOpacity onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Close">
             <Ionicons name="close" size={24} color={theme.textMuted} />
           </TouchableOpacity>
         </View>
@@ -406,7 +406,7 @@ function DetailModal({
           <Text style={[styles.modalTitle, { color: theme.text }]} numberOfLines={1}>
             {supplement?.name ?? ""}
           </Text>
-          <TouchableOpacity onPress={onClose} hitSlop={12}>
+          <TouchableOpacity onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Close">
             <Ionicons name="close" size={24} color={theme.textMuted} />
           </TouchableOpacity>
         </View>
