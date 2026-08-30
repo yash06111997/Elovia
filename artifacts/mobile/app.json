@@ -94,7 +94,7 @@
       [
         "expo-router",
         {
-          "origin": "https://replit.com/"
+          "origin": "https://elovia-production.up.railway.app"
         }
       ],
       "expo-font",
