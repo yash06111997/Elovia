@@ -26,6 +26,15 @@ export type ApiErrorCode =
   | "cost_ceiling_reached"
   | "entitlement_unavailable"
   | "quota_unavailable"
+  // Booking. `slot_taken` is the race two clients lose when they tap the same
+  // time at once; it is a retry-with-a-different-slot, not an error to apologise for.
+  | "slot_taken"
+  | "intro_used"
+  | "coaching_required"
+  | "no_coach"
+  | "too_late"
+  | "in_past"
+  | "bad_request"
   | "unknown";
 
 export class ApiError extends Error {
@@ -431,4 +440,62 @@ export const social = {
     sendAuthed<{ challenge: ChallengeEntry }>("/api/social/challenges", "POST", input),
   joinChallenge: (joinCode: string) =>
     sendAuthed<{ challenge: ChallengeEntry }>("/api/social/challenges/join", "POST", { joinCode }),
+};
+
+// ---------------------------------------------------------------------------
+// Coaching
+// ---------------------------------------------------------------------------
+
+export interface CoachingSlot {
+  /** Absolute ISO instant. Render it in the device's own timezone. */
+  startsAt: string;
+  durationMins: number;
+}
+
+export interface CoachingSession {
+  id: string;
+  startsAt: string;
+  durationMins: number;
+  status: string;
+  kind: "intro" | "coaching";
+  meetingUrl: string | null;
+  clientNote: string | null;
+  coachNote: string | null;
+  coachName: string;
+  isPast: boolean;
+  canCancel: boolean;
+  cancelBlockedReason: string | null;
+}
+
+export const coaching = {
+  slots: () =>
+    getAuthed<{
+      slots: CoachingSlot[];
+      acceptingClients: boolean;
+      coachName?: string;
+      cancellationNoticeHours?: number;
+      reason?: string;
+    }>("/api/coaching/slots"),
+
+  sessions: () => getAuthed<{ sessions: CoachingSession[] }>("/api/coaching/sessions"),
+
+  book: (startsAt: string, kind: "intro" | "coaching", note?: string) =>
+    sendAuthed<{ session: CoachingSession }>("/api/coaching/sessions", "POST", {
+      startsAt,
+      kind,
+      note,
+    }),
+
+  cancel: (id: string, reason?: string) =>
+    sendAuthed<{ cancelled: boolean }>(`/api/coaching/sessions/${id}/cancel`, "POST", { reason }),
+
+  /**
+   * A short-lived signed URL for the session's .ics file.
+   *
+   * Two steps rather than one because the OS, not the app, opens the final
+   * URL — so it carries no auth header. The app trades its token for a signed
+   * link here, and only the signed link is handed to Linking.
+   */
+  calendarLink: (id: string) =>
+    getAuthed<{ url: string }>(`/api/coaching/sessions/${id}/calendar-link`),
 };
