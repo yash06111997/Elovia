@@ -28,6 +28,34 @@ interface Check {
 router.get("/diagnostics", requireAuth, async (req: Request, res: Response) => {
   const checks: Check[] = [];
 
+  // --- Google OAuth -------------------------------------------------------
+  // Checked because a missing value here fails at Google rather than in our
+  // logs: the user sees "Missing required parameter: client_id" from an
+  // unfamiliar domain, with nothing on our side recording why.
+  {
+    const clientId =
+      process.env.GOOGLE_WEB_CLIENT_ID || process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    const domain =
+      process.env.PUBLIC_DOMAIN ||
+      process.env.RAILWAY_PUBLIC_DOMAIN ||
+      req.get("host");
+
+    const missing: string[] = [];
+    if (!clientId) missing.push("GOOGLE_WEB_CLIENT_ID");
+    if (!clientSecret) missing.push("GOOGLE_CLIENT_SECRET");
+
+    checks.push({
+      name: "google_oauth",
+      status: missing.length === 0 ? "ok" : "not_configured",
+      detail:
+        missing.length === 0
+          ? `Configured. Google must list https://${domain}/api/auth/google-callback as an authorised redirect URI.`
+          : `Missing ${missing.join(" and ")}; Google sign-in cannot work.`,
+      required: true,
+    });
+  }
+
   // --- Database -----------------------------------------------------------
   if (!process.env.DATABASE_URL) {
     checks.push({
