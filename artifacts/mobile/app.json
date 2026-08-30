@@ -15,7 +15,7 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "app.replit.elovia",
+      "bundleIdentifier": "com.elovia.app",
       "infoPlist": {
         "NSCameraUsageDescription": "Elovia uses the camera to scan food items and log your meals with AI food recognition.",
         "NSPhotoLibraryUsageDescription": "Elovia needs access to your photos to let you select food images for AI meal logging.",
@@ -40,7 +40,7 @@
       }
     },
     "android": {
-      "package": "app.replit.elovia",
+      "package": "com.elovia.app",
       "versionCode": 1,
       "permissions": [
         "CAMERA",
