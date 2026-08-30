@@ -10,6 +10,8 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import "../global.css";
+
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AutoSync } from "@/components/AutoSync";
 import { AuthProvider } from "@/lib/auth";

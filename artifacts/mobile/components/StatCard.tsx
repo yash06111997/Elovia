@@ -1,4 +1,5 @@
 import React from "react";
+import { Colors } from "@/constants/colors";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -19,19 +20,19 @@ export function StatCard({
   value,
   unit,
   icon,
-  iconColor = "#00D4FF",
+  iconColor = Colors.primary,
   isDark = true,
   onPress,
   trend,
   subtitle,
 }: Props) {
-  const cardBg = isDark ? "#1A1A24" : "#FFFFFF";
-  const textColor = isDark ? "#FFFFFF" : "#0A0A0F";
-  const mutedColor = isDark ? "#8A8A9E" : "#5A5A7A";
-  const borderColor = isDark ? "#2A2A3A" : "#E4E6F0";
+  const cardBg = Colors.dark.card;
+  const textColor = Colors.dark.text;
+  const mutedColor = Colors.dark.textSecondary;
+  const borderColor = Colors.dark.border;
 
   const trendColor =
-    trend === "up" ? "#00E676" : trend === "down" ? "#FF3D71" : "#8A8A9E";
+    trend === "up" ? Colors.accentGreen : trend === "down" ? Colors.accentRed : Colors.dark.textSecondary;
   const trendIcon =
     trend === "up" ? "trending-up" : trend === "down" ? "trending-down" : undefined;
 

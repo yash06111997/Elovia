@@ -159,7 +159,7 @@ function NutritionTab({ weeklyCalories, macros, isDark, theme }: any) {
                 <Text style={[styles.barValue, { color: theme.textSecondary }]}>
                   {day.calories > 0 ? (day.calories >= 1000 ? `${(day.calories / 1000).toFixed(1)}k` : day.calories) : ""}
                 </Text>
-                <View style={[styles.barTrack, { backgroundColor: isDark ? "#1A1A24" : "#E4E6F0" }]}>
+                <View style={[styles.barTrack, { backgroundColor: Colors.dark.card }]}>
                   <View
                     style={[
                       styles.barFill,

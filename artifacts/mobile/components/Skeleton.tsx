@@ -1,4 +1,5 @@
 import React, { useEffect } from "react";
+import { Colors } from "@/constants/colors";
 import { View, Text, StyleSheet, type ViewStyle, type StyleProp } from "react-native";
 import Animated, {
   useAnimatedStyle,
@@ -55,7 +56,7 @@ export function Skeleton({
           width: width ?? "100%",
           height,
           borderRadius: radius,
-          backgroundColor: isDark ? "#22222E" : "#E4E6F0",
+          backgroundColor: Colors.dark.cardElevated,
         },
         animatedStyle,
         style,

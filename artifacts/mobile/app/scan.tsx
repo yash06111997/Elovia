@@ -264,7 +264,7 @@ function FoundProduct({
             </View>
           )}
           {nova && (
-            <View style={[styles.badge, { backgroundColor: isDark ? "#FFFFFF12" : "#00000008" }]}>
+            <View style={[styles.badge, { backgroundColor: Colors.dark.text + "12" }]}>
               <Text style={[styles.badgeText, { color: theme.textSecondary }]}>{nova}</Text>
             </View>
           )}

@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Semantic } from "@/constants/design";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert, ActivityIndicator, Modal, TextInput } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -234,8 +235,8 @@ export default function WorkoutsScreen() {
           }}
           activeOpacity={0.8}
         >
-          <View style={[styles.optionIconWrap, { backgroundColor: "#A78BFA20" }]}>
-            <Ionicons name="barbell-outline" size={28} color="#A78BFA" />
+          <View style={[styles.optionIconWrap, { backgroundColor: Semantic.manual + "20" }]}>
+            <Ionicons name="barbell-outline" size={28} color={Semantic.manual} />
           </View>
           <View style={styles.optionContent}>
             <Text style={[styles.optionTitle, { color: theme.text }]}>Custom Self Tracking</Text>
@@ -290,7 +291,7 @@ export default function WorkoutsScreen() {
           style={[
             styles.quickGenBtn,
             {
-              backgroundColor: isDark ? "#1A1A24" : "#F0F0F8",
+              backgroundColor: Colors.dark.card,
               borderColor: theme.border,
             },
           ]}
@@ -455,7 +456,7 @@ export default function WorkoutsScreen() {
                   style={[
                     styles.iconBtn,
                     {
-                      backgroundColor: isDark ? "#1A1A24" : "#EDEDF5",
+                      backgroundColor: Colors.dark.card,
                       borderColor: theme.border,
                     },
                   ]}
@@ -468,7 +469,7 @@ export default function WorkoutsScreen() {
                   style={[
                     styles.iconBtn,
                     {
-                      backgroundColor: isDark ? "#1A1A24" : "#EDEDF5",
+                      backgroundColor: Colors.dark.card,
                       borderColor: theme.border,
                     },
                   ]}
@@ -632,7 +633,7 @@ export default function WorkoutsScreen() {
                       <Ionicons name="create-outline" size={18} color={theme.textSecondary} />
                     </TouchableOpacity>
                     <TouchableOpacity onPress={() => handleDeleteCustomPlan(cp.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                      <Ionicons name="trash-outline" size={18} color="#FF5252" />
+                      <Ionicons name="trash-outline" size={18} color={Colors.accentRed} />
                     </TouchableOpacity>
                   </View>
                 ))}
@@ -747,7 +748,7 @@ export default function WorkoutsScreen() {
                                           style={[
                                             styles.historySet,
                                             {
-                                              backgroundColor: isDark ? "#1A1A24" : "#F0F0F8",
+                                              backgroundColor: Colors.dark.card,
                                             },
                                           ]}
                                         >
@@ -820,8 +821,8 @@ export default function WorkoutsScreen() {
                 }}
                 activeOpacity={0.8}
               >
-                <View style={[styles.switcherIcon, { backgroundColor: "#A78BFA20" }]}>
-                  <Ionicons name="list" size={16} color="#A78BFA" />
+                <View style={[styles.switcherIcon, { backgroundColor: Semantic.manual + "20" }]}>
+                  <Ionicons name="list" size={16} color={Semantic.manual} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.switcherOptionName, { color: theme.text }]}>{cp.name}</Text>

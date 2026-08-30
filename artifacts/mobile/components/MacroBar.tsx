@@ -1,4 +1,5 @@
 import React from "react";
+import { Colors } from "@/constants/colors";
 import { View, Text, StyleSheet } from "react-native";
 import Animated, {
   useAnimatedStyle,
@@ -28,9 +29,9 @@ export function MacroBar({ label, current, target, unit = "g", color, isDark = t
     width: `${progress.value * 100}%`,
   }));
 
-  const textColor = isDark ? "#FFFFFF" : "#0A0A0F";
-  const mutedColor = isDark ? "#8A8A9E" : "#5A5A7A";
-  const trackColor = isDark ? "#1A1A24" : "#E4E6F0";
+  const textColor = Colors.dark.text;
+  const mutedColor = Colors.dark.textSecondary;
+  const trackColor = Colors.dark.card;
 
   return (
     <View style={styles.container}>

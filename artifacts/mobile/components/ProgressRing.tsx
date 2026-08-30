@@ -1,4 +1,5 @@
 import React from "react";
+import { Colors } from "@/constants/colors";
 import { View, Text, StyleSheet } from "react-native";
 import Svg, { Circle } from "react-native-svg";
 
@@ -15,8 +16,8 @@ export function ProgressRing({
   progress,
   size = 80,
   strokeWidth = 8,
-  color = "#00D4FF",
-  backgroundColor = "#1A1A24",
+  color = Colors.primary,
+  backgroundColor = Colors.dark.card,
   children,
 }: Props) {
   const radius = (size - strokeWidth) / 2;

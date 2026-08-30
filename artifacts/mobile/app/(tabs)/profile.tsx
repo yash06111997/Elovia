@@ -492,7 +492,7 @@ export default function ProfileScreen() {
                 Haptics.selectionAsync();
               }}
               theme={theme}
-              color="#FF2D55"
+              color={Colors.accentRed}
             />
           )}
           {Platform.OS === "android" && (
@@ -575,7 +575,7 @@ export default function ProfileScreen() {
               <Text style={[styles.stepsValue, { color: theme.text }]}>{healthData.todaySteps.toLocaleString()} steps today</Text>
               <Text style={[styles.stepsGoal, { color: theme.textSecondary }]}>Goal: 10,000 steps</Text>
             </View>
-            <View style={[styles.stepsProgress, { backgroundColor: isDark ? "#1A1A24" : "#E4E6F0" }]}>
+            <View style={[styles.stepsProgress, { backgroundColor: Colors.dark.card }]}>
               <View
                 style={[
                   styles.stepsProgressFill,

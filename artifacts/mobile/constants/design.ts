@@ -152,6 +152,21 @@ export const Semantic = {
   warning: "#FFD600",
   danger: "#FF3D71",
   info: "#00D4FF",
+
+  /**
+   * User-authored content, as opposed to AI-generated.
+   *
+   * Diet screens distinguish a plan the user built from one the model wrote,
+   * and that distinction was previously carried by a hardcoded violet
+   * (#A78BFA) appearing thirteen times with no token behind it. The role is
+   * real and worth keeping; the violet was not - it sat outside the palette
+   * and read as the stock "AI app" accent.
+   *
+   * Paired against `Colors.accent` (#FF6B35, the AI path). The two differ in
+   * lightness as well as hue, so they stay separable for the ~8% of men with
+   * red-green colour deficiency, who cannot rely on hue alone.
+   */
+  manual: "#66E5FF",
   /** Macro colours, kept stable so charts stay legible across screens. */
   protein: "#00D4FF",
   carbs: "#FF6B35",

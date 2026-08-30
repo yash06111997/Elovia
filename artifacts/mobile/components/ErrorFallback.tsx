@@ -1,4 +1,5 @@
 import { Feather } from "@expo/vector-icons";
+import { Colors } from "@/constants/colors";
 import { reloadAppAsync } from "expo";
 import React, { useState } from "react";
 import {
@@ -23,12 +24,12 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
   const insets = useSafeAreaInsets();
 
   const theme = {
-    background: isDark ? "#000000" : "#FFFFFF",
-    backgroundSecondary: isDark ? "#1C1C1E" : "#F2F2F7",
-    text: isDark ? "#FFFFFF" : "#000000",
+    background: "#000000",
+    backgroundSecondary: "#1C1C1E",
+    text: Colors.dark.text,
     textSecondary: isDark ? "rgba(255, 255, 255, 0.7)" : "rgba(0, 0, 0, 0.7)",
     link: "#007AFF",
-    buttonText: "#FFFFFF",
+    buttonText: Colors.dark.text,
   };
 
   const [isModalVisible, setIsModalVisible] = useState(false);

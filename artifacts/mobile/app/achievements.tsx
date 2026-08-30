@@ -195,7 +195,7 @@ function LevelRing({
           cx={SIZE / 2}
           cy={SIZE / 2}
           r={radius}
-          stroke={isDark ? "#2A2A3A" : "#E4E6F0"}
+          stroke={Colors.dark.border}
           strokeWidth={STROKE}
           fill="none"
         />
@@ -288,7 +288,7 @@ function AchievementBadge({
         style={[
           styles.badgeIcon,
           {
-            backgroundColor: unlocked ? Colors.primary + "20" : isDark ? "#1E1E2A" : "#F0F1F8",
+            backgroundColor: unlocked ? Colors.primary + "20" : Colors.dark.tabBarBorder,
           },
         ]}
       >

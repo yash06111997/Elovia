@@ -64,9 +64,9 @@ export default function DashboardScreen() {
         </View>
         <View style={styles.headerRight}>
           {appState.currentStreak > 0 && (
-            <View style={[styles.streakBadge, { backgroundColor: "#FF6B3520" }]}>
-              <Ionicons name="flame" size={14} color="#FF6B35" />
-              <Text style={[styles.streakText, { color: "#FF6B35" }]}>
+            <View style={[styles.streakBadge, { backgroundColor: Colors.accent + "20" }]}>
+              <Ionicons name="flame" size={14} color={Colors.accent} />
+              <Text style={[styles.streakText, { color: Colors.accent }]}>
                 {appState.currentStreak} day streak
               </Text>
             </View>
@@ -126,7 +126,7 @@ export default function DashboardScreen() {
             size={90}
             strokeWidth={9}
             color={Colors.primary}
-            backgroundColor={isDark ? "#1A1A24" : "#E4E6F0"}
+            backgroundColor={Colors.dark.card}
           >
             <View style={{ alignItems: "center" }}>
               <Text style={[styles.calorieVal, { color: theme.text }]}>
@@ -165,7 +165,7 @@ export default function DashboardScreen() {
           title="Steps"
           value={steps >= 1000 ? `${(steps / 1000).toFixed(1)}k` : `${steps}`}
           icon="footsteps-outline"
-          iconColor="#FF6B35"
+          iconColor={Colors.accent}
           isDark={isDark}
         />
         <StatCard

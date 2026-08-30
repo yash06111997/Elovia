@@ -284,7 +284,7 @@ function StepWelcome({ isAuthenticated, login, user, authError, isDark, theme }:
             <Ionicons name="logo-google" size={20} color="#4285F4" />
             <Text style={[styles.googleSignInText, { color: theme.text }]}>Sign in with Google</Text>
           </TouchableOpacity>
-          {authError ? <Text style={[styles.skipAuthText, { color: "#FF4444", marginTop: 8 }]}>{authError}</Text> : null}
+          {authError ? <Text style={[styles.skipAuthText, { color: Colors.accentRed, marginTop: 8 }]}>{authError}</Text> : null}
           <Text style={[styles.skipAuthText, { color: theme.textMuted }]}>Optional — you can sign in later from your Profile</Text>
         </View>
       )}
@@ -596,7 +596,7 @@ function StepDiet({ form, update, isDark, theme }: any) {
             styles.goalCard,
             {
               backgroundColor: theme.card,
-              borderColor: form.foodPreference === p.value ? "#00E676" : theme.border,
+              borderColor: form.foodPreference === p.value ? Colors.accentGreen : theme.border,
             },
           ]}
           onPress={() => {
@@ -613,17 +613,17 @@ function StepDiet({ form, update, isDark, theme }: any) {
             style={[
               styles.goalIcon,
               {
-                backgroundColor: "#00E676" + (form.foodPreference === p.value ? "30" : "15"),
+                backgroundColor: Colors.accentGreen + (form.foodPreference === p.value ? "30" : "15"),
               },
             ]}
           >
-            <Ionicons name={p.icon as any} size={20} color="#00E676" />
+            <Ionicons name={p.icon as any} size={20} color={Colors.accentGreen} />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={[styles.goalLabel, { color: theme.text }]}>{p.label}</Text>
             <Text style={[styles.goalDesc, { color: theme.textSecondary }]}>{p.desc}</Text>
           </View>
-          {form.foodPreference === p.value && <Ionicons name="checkmark-circle" size={20} color="#00E676" />}
+          {form.foodPreference === p.value && <Ionicons name="checkmark-circle" size={20} color={Colors.accentGreen} />}
         </TouchableOpacity>
       ))}
 

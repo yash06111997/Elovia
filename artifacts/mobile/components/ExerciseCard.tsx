@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { Colors } from "@/constants/colors";
 import {
   View,
   Text,
@@ -48,12 +49,12 @@ export function ExerciseCard({
     }))
   );
 
-  const cardBg = isDark ? "#1A1A24" : "#FFFFFF";
-  const textColor = isDark ? "#FFFFFF" : "#0A0A0F";
-  const mutedColor = isDark ? "#8A8A9E" : "#5A5A7A";
-  const borderColor = isDark ? "#2A2A3A" : "#E4E6F0";
-  const inputBg = isDark ? "#0A0A0F" : "#F5F6FA";
-  const surfaceBg = isDark ? "#13131A" : "#F5F6FA";
+  const cardBg = Colors.dark.card;
+  const textColor = Colors.dark.text;
+  const mutedColor = Colors.dark.textSecondary;
+  const borderColor = Colors.dark.border;
+  const inputBg = Colors.dark.background;
+  const surfaceBg = Colors.dark.surface;
 
   const completedSets = sets.filter((s) => s.completed).length;
 
@@ -114,9 +115,9 @@ export function ExerciseCard({
     >
       {showPRFlash && (
         <Animated.View style={[styles.prFlash, { opacity: prAnim }]}>
-          <Ionicons name="trophy" size={20} color="#FFD600" />
+          <Ionicons name="trophy" size={20} color={Colors.accentYellow} />
           <Text style={styles.prFlashText}>NEW PR!</Text>
-          <Ionicons name="trophy" size={20} color="#FFD600" />
+          <Ionicons name="trophy" size={20} color={Colors.accentYellow} />
         </Animated.View>
       )}
 
@@ -126,8 +127,8 @@ export function ExerciseCard({
         activeOpacity={0.8}
       >
         <View style={styles.headerLeft}>
-          <View style={[styles.muscleBadge, { backgroundColor: "#00D4FF20" }]}>
-            <Text style={[styles.muscleText, { color: "#00D4FF" }]}>
+          <View style={[styles.muscleBadge, { backgroundColor: Colors.primary + "20" }]}>
+            <Text style={[styles.muscleText, { color: Colors.primary }]}>
               {exercise.muscleGroup}
             </Text>
           </View>
@@ -141,7 +142,7 @@ export function ExerciseCard({
         <View style={styles.headerRight}>
           {personalRecord && (
             <View style={styles.trophyBadge}>
-              <Ionicons name="trophy" size={12} color="#FFD600" />
+              <Ionicons name="trophy" size={12} color={Colors.accentYellow} />
             </View>
           )}
           {isActive && (
@@ -163,7 +164,7 @@ export function ExerciseCard({
         <View style={styles.details}>
           {exercise.notes ? (
             <View style={[styles.notesBox, { backgroundColor: inputBg }]}>
-              <Ionicons name="information-circle" size={14} color="#00D4FF" />
+              <Ionicons name="information-circle" size={14} color={Colors.primary} />
               <Text style={[styles.notesText, { color: mutedColor }]}>
                 {exercise.notes}
               </Text>
@@ -176,8 +177,8 @@ export function ExerciseCard({
                 {personalRecord && (
                   <View style={styles.perfItem}>
                     <View style={styles.perfHeader}>
-                      <Ionicons name="trophy" size={13} color="#FFD600" />
-                      <Text style={[styles.perfLabel, { color: "#FFD600" }]}>Best</Text>
+                      <Ionicons name="trophy" size={13} color={Colors.accentYellow} />
+                      <Text style={[styles.perfLabel, { color: Colors.accentYellow }]}>Best</Text>
                     </View>
                     <Text style={[styles.perfValue, { color: textColor }]}>
                       {personalRecord.maxWeightKg}kg × {personalRecord.maxReps}
@@ -190,8 +191,8 @@ export function ExerciseCard({
                 {lastPerformance && (
                   <View style={styles.perfItem}>
                     <View style={styles.perfHeader}>
-                      <Ionicons name="time-outline" size={13} color="#00D4FF" />
-                      <Text style={[styles.perfLabel, { color: "#00D4FF" }]}>Last</Text>
+                      <Ionicons name="time-outline" size={13} color={Colors.primary} />
+                      <Text style={[styles.perfLabel, { color: Colors.primary }]}>Last</Text>
                     </View>
                     <Text style={[styles.perfValue, { color: textColor }]}>
                       {lastBestWeight}kg × {lastBestReps}
@@ -205,7 +206,7 @@ export function ExerciseCard({
               {lastPerformance && (
                 <View style={styles.lastSetsRow}>
                   {lastPerformance.sets.filter(s => s.completed).map((s, i) => (
-                    <View key={i} style={[styles.lastSetChip, { backgroundColor: isDark ? "#1E1E2E" : "#E8E8F0" }]}>
+                    <View key={i} style={[styles.lastSetChip, { backgroundColor: Colors.dark.tabBarBorder }]}>
                       <Text style={[styles.lastSetText, { color: mutedColor }]}>
                         {s.weightKg}kg×{s.reps}
                       </Text>
@@ -248,8 +249,8 @@ export function ExerciseCard({
                   <TouchableOpacity
                     style={[
                       styles.checkBtn,
-                      { backgroundColor: isDark ? "#2A2A3A" : "#E4E6F0" },
-                      set.completed && { backgroundColor: "#00E676" },
+                      { backgroundColor: Colors.dark.border },
+                      set.completed && { backgroundColor: Colors.accentGreen },
                       { flex: 0.5 },
                     ]}
                     onPress={() => toggleSet(idx)}
@@ -277,7 +278,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   cardComplete: {
-    borderColor: "#00E676",
+    borderColor: Colors.accentGreen,
   },
   header: {
     flexDirection: "row",
@@ -319,18 +320,18 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
     borderRadius: 12,
-    backgroundColor: "#FFD60020",
+    backgroundColor: Colors.accentYellow + "20",
     alignItems: "center",
     justifyContent: "center",
   },
   progressBadge: {
-    backgroundColor: "#00D4FF20",
+    backgroundColor: Colors.primary + "20",
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 8,
   },
   progressText: {
-    color: "#00D4FF",
+    color: Colors.primary,
     fontSize: 11,
     fontFamily: "Inter_600SemiBold",
   },
@@ -410,13 +411,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
     paddingVertical: 6,
-    backgroundColor: "#FFD60020",
+    backgroundColor: Colors.accentYellow + "20",
     zIndex: 10,
   },
   prFlashText: {
     fontSize: 13,
     fontFamily: "Inter_700Bold",
-    color: "#FFD600",
+    color: Colors.accentYellow,
     letterSpacing: 1,
   },
   setsTable: {
@@ -442,7 +443,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   completedRow: {
-    backgroundColor: "#00E67610",
+    backgroundColor: Colors.accentGreen + "10",
   },
   setNum: {
     fontSize: 13,

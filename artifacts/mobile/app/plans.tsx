@@ -123,7 +123,7 @@ export default function PlansScreen() {
               {plan.tags.map((tag) => (
                 <View
                   key={tag}
-                  style={[styles.tag, { backgroundColor: isDark ? "#FFFFFF10" : "#00000008" }]}
+                  style={[styles.tag, { backgroundColor: Colors.dark.text + "10" }]}
                 >
                   <Text style={[styles.tagText, { color: theme.textSecondary }]}>{tag}</Text>
                 </View>

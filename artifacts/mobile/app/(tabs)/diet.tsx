@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Semantic } from "@/constants/design";
 import {
   View,
   Text,
@@ -256,7 +257,7 @@ export default function DietScreen() {
               <Ionicons name="search" size={18} color={Colors.accent} />
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.iconBtn, { backgroundColor: "#FF6B35" + "20" }]}
+              style={[styles.iconBtn, { backgroundColor: Colors.accent + "20" }]}
               onPress={() => {
                 if (!canAccess("ai_meal_plan")) {
                   router.push("/paywall");
@@ -267,7 +268,7 @@ export default function DietScreen() {
               activeOpacity={0.8}
             >
               <View style={{ position: "relative" }}>
-                <Ionicons name="sparkles" size={18} color="#FF6B35" />
+                <Ionicons name="sparkles" size={18} color={Colors.accent} />
                 {!canAccess("ai_meal_plan") && (
                   <View style={{ position: "absolute", top: -4, right: -4, backgroundColor: Colors.primary, borderRadius: 5, width: 10, height: 10, alignItems: "center", justifyContent: "center" }}>
                     <Ionicons name="lock-closed" size={6} color="#000" />
@@ -325,12 +326,12 @@ export default function DietScreen() {
               activeOpacity={0.8}
             >
               <View style={[styles.planTypeIcon, {
-                backgroundColor: activeMealPlanType === "ai" ? Colors.accent + "20" : "#A78BFA20",
+                backgroundColor: activeMealPlanType === "ai" ? Colors.accent + "20" : Semantic.manual + "20",
               }]}>
                 <Ionicons
                   name={activeMealPlanType === "ai" ? "sparkles" : "list"}
                   size={16}
-                  color={activeMealPlanType === "ai" ? Colors.accent : "#A78BFA"}
+                  color={activeMealPlanType === "ai" ? Colors.accent : Semantic.manual}
                 />
               </View>
               <View style={{ flex: 1 }}>
@@ -353,12 +354,12 @@ export default function DietScreen() {
               </Text>
               <View style={{ flexDirection: "row", gap: 8 }}>
                 <TouchableOpacity
-                  style={[styles.smallBtn, { borderColor: "#A78BFA" + "40" }]}
+                  style={[styles.smallBtn, { borderColor: Semantic.manual + "40" }]}
                   onPress={() => { setEditingMealPlan(undefined); setShowMealPlanBuilder(true); }}
                   activeOpacity={0.8}
                 >
-                  <Ionicons name="add" size={14} color="#A78BFA" />
-                  <Text style={[styles.smallBtnText, { color: "#A78BFA" }]}>Custom</Text>
+                  <Ionicons name="add" size={14} color={Semantic.manual} />
+                  <Text style={[styles.smallBtnText, { color: Semantic.manual }]}>Custom</Text>
                 </TouchableOpacity>
                 {activeMealPlanType === "ai" && mealPlan && (
                   <TouchableOpacity
@@ -396,8 +397,8 @@ export default function DietScreen() {
                   onPress={() => { setEditingMealPlan(undefined); setShowMealPlanBuilder(true); }}
                   activeOpacity={0.8}
                 >
-                  <View style={[styles.dietOptionIcon, { backgroundColor: "#A78BFA20" }]}>
-                    <Ionicons name="create-outline" size={26} color="#A78BFA" />
+                  <View style={[styles.dietOptionIcon, { backgroundColor: Semantic.manual + "20" }]}>
+                    <Ionicons name="create-outline" size={26} color={Semantic.manual} />
                   </View>
                   <View style={styles.dietOptionContent}>
                     <Text style={[styles.dietOptionTitle, { color: theme.text }]}>Custom Meal Plan</Text>
@@ -437,7 +438,7 @@ export default function DietScreen() {
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={[styles.dietQuickGenBtn, { backgroundColor: isDark ? "#1A1A24" : "#F0F0F8", borderColor: theme.border }]}
+                  style={[styles.dietQuickGenBtn, { backgroundColor: Colors.dark.card, borderColor: theme.border }]}
                   onPress={() => {
                     if (!canAccess("ai_meal_plan")) {
                       router.push("/paywall");
@@ -492,7 +493,7 @@ export default function DietScreen() {
                       onPress={() => handleDeleteCustomMealPlan(cp.id)}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     >
-                      <Ionicons name="trash-outline" size={18} color="#FF5252" />
+                      <Ionicons name="trash-outline" size={18} color={Colors.accentRed} />
                     </TouchableOpacity>
                   </View>
                 ))}
@@ -553,8 +554,8 @@ export default function DietScreen() {
                 onPress={() => { setActiveMealPlan("custom", cp.id); setShowPlanSwitcher(false); }}
                 activeOpacity={0.8}
               >
-                <View style={[styles.switcherIcon, { backgroundColor: "#A78BFA20" }]}>
-                  <Ionicons name="list" size={16} color="#A78BFA" />
+                <View style={[styles.switcherIcon, { backgroundColor: Semantic.manual + "20" }]}>
+                  <Ionicons name="list" size={16} color={Semantic.manual} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.switcherOptionName, { color: theme.text }]}>{cp.name}</Text>

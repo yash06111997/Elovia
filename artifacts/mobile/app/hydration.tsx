@@ -248,7 +248,7 @@ function WaterRing({ progress, isDark }: { progress: number; isDark: boolean }) 
         cx={SIZE / 2}
         cy={SIZE / 2}
         r={radius}
-        stroke={isDark ? "#2A2A3A" : "#E4E6F0"}
+        stroke={Colors.dark.border}
         strokeWidth={STROKE}
         fill="none"
       />

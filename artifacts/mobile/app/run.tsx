@@ -339,7 +339,7 @@ function RouteMap({
     <View
       style={[
         styles.map,
-        { backgroundColor: isDark ? "#12121A" : "#EEF0F7", borderColor: theme.border },
+        { backgroundColor: Colors.dark.surface, borderColor: theme.border },
       ]}
     >
       {geometry ? (
