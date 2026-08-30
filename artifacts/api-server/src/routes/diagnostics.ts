@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { db, subscriptionsTable, aiUsageTable, userDataTable, usersTable } from "@workspace/db";
 import { isAnthropicConfigured } from "@workspace/integrations-anthropic-ai";
 import { requireAuth } from "../middlewares/aiGate";
+import { STRUCTURED_MODEL as NVIDIA_STRUCTURED_MODEL } from "../lib/ai/providers/nvidia";
 
 const router: IRouter = Router();
 
@@ -133,7 +134,10 @@ router.get("/diagnostics", requireAuth, async (req: Request, res: Response) => {
     name: "nvidia_nim",
     status: hasNvidia ? "ok" : "not_configured",
     detail: hasNvidia
-      ? `Configured (${process.env.NVIDIA_NIM_STRUCTURED_MODEL ?? "meta/llama-3.3-70b-instruct"})`
+      // Imported, not re-derived. This line previously carried its own copy of
+      // the default and went on reporting a model that had been retired for
+      // days after the provider had already moved off it.
+      ? `Configured (${NVIDIA_STRUCTURED_MODEL})`
       : "NVIDIA_API_KEY not set. Structured generation routes to Claude instead - functional, just more expensive.",
     required: false,
   });

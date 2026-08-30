@@ -31,9 +31,9 @@ const NIM_BASE_URL = process.env.NVIDIA_NIM_BASE_URL ?? "https://integrate.api.n
  * available on this account it was the only one that returned parseable JSON
  * for a plan-shaped schema.
  */
-const STRUCTURED_MODEL =
+export const STRUCTURED_MODEL =
   process.env.NVIDIA_NIM_STRUCTURED_MODEL ?? "nvidia/nemotron-3-super-120b-a12b";
-const CHAT_MODEL =
+export const CHAT_MODEL =
   process.env.NVIDIA_NIM_CHAT_MODEL ?? "nvidia/nemotron-3-super-120b-a12b";
 
 /** The subset of the OpenAI-compatible response body we actually read. */
