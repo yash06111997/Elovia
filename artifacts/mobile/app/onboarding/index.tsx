@@ -10,6 +10,7 @@ import { useNutrition } from "@/context/NutritionContext";
 import { useAuth } from "@/lib/auth";
 import { generateWorkoutPlan, generateMealPlan } from "@/utils/aiEngine";
 import { Colors } from "@/constants/colors";
+import { Space, MIN_TOUCH } from "@/constants/design";
 import { useTheme } from "@/hooks/useTheme";
 import { getPublicApiUrl } from "@/utils/api";
 import { trackEvent } from "@/lib/telemetry";
@@ -220,6 +221,32 @@ export default function OnboardingScreen() {
             </>
           )}
         </TouchableOpacity>
+
+        {/*
+          Steps 4-6 (workout, equipment, diet) collect preferences that every
+          field already has a working default for, and that the app asks again
+          at the point they are used: the meal generator re-prompts for diet
+          type, favourite foods and suggestions, seeded from the profile but
+          editable there. Asking cold, before the user has seen anything, is
+          the weaker of the two moments.
+
+          Skip jumps TO the final step rather than past it, because that step
+          carries the privacy acknowledgement. Skipping a preference is fine;
+          skipping consent is not.
+        */}
+        {step >= 3 && step < TOTAL_STEPS - 1 ? (
+          <TouchableOpacity
+            style={styles.skipBtn}
+            onPress={() => setStep(TOTAL_STEPS - 1)}
+            accessibilityRole="button"
+            accessibilityLabel="Skip the remaining preferences"
+            accessibilityHint="Uses sensible defaults. You can change these any time in your profile."
+          >
+            <Text style={[styles.skipText, { color: theme.textMuted }]}>
+              Skip — you can set these later
+            </Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
     </View>
   );
@@ -1071,6 +1098,14 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   nextBtnText: { color: "#000", fontSize: 16, fontFamily: "Inter_700Bold" },
+  skipBtn: {
+    alignItems: "center",
+    paddingTop: Space.md,
+    paddingBottom: Space.xs,
+    minHeight: MIN_TOUCH,
+    justifyContent: "center",
+  },
+  skipText: { fontSize: 13, fontFamily: "Inter_500Medium" },
   welcomeIconWrap: { alignItems: "center", marginTop: 20, marginBottom: 16 },
   welcomeIconCircle: {
     width: 100,
