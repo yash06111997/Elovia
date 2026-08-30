@@ -18,6 +18,15 @@ import Anthropic from "@anthropic-ai/sdk";
  * The base URL is optional. Set ANTHROPIC_BASE_URL (or the AI_INTEGRATIONS_
  * variant) only when routing through a proxy; otherwise the SDK's default
  * endpoint is used.
+ *
+ * ANTHROPIC_WORKSPACE_ID is optional but REQUIRED for identity-linked keys.
+ * Those are scoped to a person rather than a workspace, so the API cannot infer
+ * which workspace to bill and rejects every request with:
+ *
+ *   "anthropic-workspace-id is required when authenticating with an
+ *    identity-linked API key"
+ *
+ * A plain workspace key needs no such header, which is why this stays optional.
  */
 
 function resolveApiKey(): string | undefined {
@@ -26,6 +35,14 @@ function resolveApiKey(): string | undefined {
     process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY ||
     undefined
   );
+}
+
+/**
+ * Workspace to bill requests to. Only meaningful for identity-linked keys;
+ * harmless to send with a workspace key that already implies one.
+ */
+function resolveWorkspaceId(): string | undefined {
+  return process.env.ANTHROPIC_WORKSPACE_ID || undefined;
 }
 
 function resolveBaseUrl(): string | undefined {
@@ -58,9 +75,16 @@ export function getAnthropic(): Anthropic | null {
   if (!apiKey) return null;
 
   const baseURL = resolveBaseUrl();
+  const workspaceId = resolveWorkspaceId();
 
   try {
-    client = new Anthropic({ apiKey, ...(baseURL ? { baseURL } : {}) });
+    client = new Anthropic({
+      apiKey,
+      ...(baseURL ? { baseURL } : {}),
+      ...(workspaceId
+        ? { defaultHeaders: { "anthropic-workspace-id": workspaceId } }
+        : {}),
+    });
   } catch {
     client = null;
   }
