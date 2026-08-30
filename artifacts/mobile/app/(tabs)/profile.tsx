@@ -907,7 +907,6 @@ export default function ProfileScreen() {
           min={currentEditConfig.min}
           max={currentEditConfig.max}
           step={currentEditConfig.step}
-          isDark={isDark}
         />
       )}
 

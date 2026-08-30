@@ -12,6 +12,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Colors } from "@/constants/colors";
+import { useTheme } from "@/hooks/useTheme";
 
 interface Props {
   visible: boolean;
@@ -23,7 +24,6 @@ interface Props {
   min?: number;
   max?: number;
   step?: number;
-  isDark: boolean;
 }
 
 export function NumberEditModal({
@@ -36,10 +36,10 @@ export function NumberEditModal({
   min = 0,
   max = 999,
   step = 1,
-  isDark,
 }: Props) {
   const [input, setInput] = useState(value.toString());
-  const theme = isDark ? Colors.dark : Colors.light;
+  // Theme comes from the hook, not from a prop - see FoodSearch for why.
+  const { theme } = useTheme();
 
   const handleSave = () => {
     const num = parseFloat(input);
