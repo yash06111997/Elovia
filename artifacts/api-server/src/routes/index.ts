@@ -8,6 +8,7 @@ import diagnosticsRouter from "./diagnostics";
 import pushRouter from "./push";
 import supplementsRouter from "./supplements";
 import socialRouter from "./social";
+import coachingRouter from "./coaching";
 import revenuecatWebhookRouter from "./webhooks/revenuecat";
 import { rateLimit } from "../lib/rateLimit";
 
@@ -26,6 +27,7 @@ router.use(diagnosticsRouter);
 router.use(pushRouter);
 router.use(supplementsRouter);
 router.use(socialRouter);
+router.use(coachingRouter);
 
 /**
  * A coarse ceiling in front of the AI routes.
