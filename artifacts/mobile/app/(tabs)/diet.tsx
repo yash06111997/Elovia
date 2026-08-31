@@ -297,9 +297,9 @@ export default function DietScreen() {
               /{macros.calories} kcal
             </Text>
           </View>
-          <MacroBar label="Protein" current={consumed.protein} target={macros.protein} color={Colors.primary} isDark={isDark} />
-          <MacroBar label="Carbs" current={consumed.carbs} target={macros.carbs} color={Colors.accent} isDark={isDark} />
-          <MacroBar label="Fats" current={consumed.fats} target={macros.fats} color={Colors.accentGreen} isDark={isDark} />
+          <MacroBar label="Protein" current={consumed.protein} target={macros.protein} color={Colors.primary} />
+          <MacroBar label="Carbs" current={consumed.carbs} target={macros.carbs} color={Colors.accent} />
+          <MacroBar label="Fats" current={consumed.fats} target={macros.fats} color={Colors.accentGreen} />
         </View>
 
         <View style={[styles.tabBar, { backgroundColor: theme.card, borderColor: theme.border }]}>
@@ -385,7 +385,6 @@ export default function DietScreen() {
                 <MealCard
                   key={meal.id}
                   meal={meal}
-                  isDark={isDark}
                   onLog={handleLogMeal}
                   logged={loggedMealIds.includes(meal.id)}
                 />
@@ -514,7 +513,7 @@ export default function DietScreen() {
               </View>
             ) : (
               todayLog.map((entry) => (
-                <LogEntryCard key={entry.id} entry={entry} isDark={isDark} theme={theme} onRemove={() => removeLogEntry(entry.id)} />
+                <LogEntryCard key={entry.id} entry={entry} onRemove={() => removeLogEntry(entry.id)} />
               ))
             )}
           </>
@@ -590,14 +589,14 @@ export default function DietScreen() {
                 <Ionicons name="close" size={22} color={theme.textSecondary} />
               </TouchableOpacity>
             </View>
-            <QuickInput label="Food Name" value={quickLog.name} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, name: v }))} placeholder="e.g. Grilled chicken" theme={theme} />
+            <QuickInput label="Food Name" value={quickLog.name} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, name: v }))} placeholder="e.g. Grilled chicken" />
             <View style={styles.macroInputRow}>
-              <QuickInputSmall label="Calories" value={quickLog.calories} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, calories: v }))} theme={theme} />
-              <QuickInputSmall label="Protein (g)" value={quickLog.protein} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, protein: v }))} theme={theme} />
+              <QuickInputSmall label="Calories" value={quickLog.calories} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, calories: v }))} />
+              <QuickInputSmall label="Protein (g)" value={quickLog.protein} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, protein: v }))} />
             </View>
             <View style={styles.macroInputRow}>
-              <QuickInputSmall label="Carbs (g)" value={quickLog.carbs} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, carbs: v }))} theme={theme} />
-              <QuickInputSmall label="Fats (g)" value={quickLog.fats} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, fats: v }))} theme={theme} />
+              <QuickInputSmall label="Carbs (g)" value={quickLog.carbs} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, carbs: v }))} />
+              <QuickInputSmall label="Fats (g)" value={quickLog.fats} onChangeText={(v: string) => setQuickLog((p) => ({ ...p, fats: v }))} />
             </View>
             <View style={styles.mealTypeRow}>
               {(["breakfast", "lunch", "dinner", "snack"] as const).map((type) => (
@@ -729,7 +728,8 @@ export default function DietScreen() {
   );
 }
 
-function LogEntryCard({ entry, isDark, theme, onRemove }: { entry: FoodLogEntry; isDark: boolean; theme: any; onRemove: () => void }) {
+function LogEntryCard({ entry, onRemove }: { entry: FoodLogEntry; onRemove: () => void }) {
+  const { theme } = useTheme();
   return (
     <View style={[styles.logEntry, { backgroundColor: theme.card, borderColor: theme.border }]}>
       <View style={{ flex: 1 }}>
@@ -748,7 +748,8 @@ function LogEntryCard({ entry, isDark, theme, onRemove }: { entry: FoodLogEntry;
   );
 }
 
-function QuickInput({ label, value, onChangeText, placeholder, theme }: any) {
+function QuickInput({ label, value, onChangeText, placeholder }: { label: string; value: string; onChangeText: (v: string) => void; placeholder?: string }) {
+  const { theme } = useTheme();
   return (
     <View style={{ gap: 5, marginBottom: 10 }}>
       <Text style={{ color: theme.textSecondary, fontSize: 12, fontFamily: "Inter_500Medium" }}>{label}</Text>
@@ -763,7 +764,8 @@ function QuickInput({ label, value, onChangeText, placeholder, theme }: any) {
   );
 }
 
-function QuickInputSmall({ label, value, onChangeText, theme }: any) {
+function QuickInputSmall({ label, value, onChangeText }: { label: string; value: string; onChangeText: (v: string) => void }) {
+  const { theme } = useTheme();
   return (
     <View style={{ gap: 5, flex: 1 }}>
       <Text style={{ color: theme.textSecondary, fontSize: 12, fontFamily: "Inter_500Medium" }}>{label}</Text>

@@ -264,8 +264,6 @@ export default function WorkoutsScreen() {
           setPlanType={setAiPlanType}
           onGenerate={handleAIGenerate}
           loading={aiLoading}
-          theme={theme}
-          isDark={isDark}
           preferences={aiPreferences}
           setPreferences={setAiPreferences}
         />
@@ -513,7 +511,6 @@ export default function WorkoutsScreen() {
                       <ExerciseCard
                         key={ex.id}
                         exercise={ex}
-                        isDark={isDark}
                         onLogSet={(set) => logSet(ex.id, ex.name, set)}
                         personalRecord={getPersonalRecord(ex.id)}
                         lastPerformance={getLastPerformance(ex.id)}
@@ -784,8 +781,6 @@ export default function WorkoutsScreen() {
         setPlanType={setAiPlanType}
         onGenerate={handleAIGenerate}
         loading={aiLoading}
-        theme={theme}
-        isDark={isDark}
         preferences={aiPreferences}
         setPreferences={setAiPreferences}
       />
@@ -813,7 +808,17 @@ export default function WorkoutsScreen() {
   );
 }
 
-function AIGenerateModal({ visible, onClose, planType, setPlanType, onGenerate, loading, theme, isDark, preferences, setPreferences }: any) {
+function AIGenerateModal({ visible, onClose, planType, setPlanType, onGenerate, loading, preferences, setPreferences }: {
+  visible: boolean;
+  onClose: () => void;
+  planType: "daily" | "scheduled";
+  setPlanType: (t: "daily" | "scheduled") => void;
+  onGenerate: () => void;
+  loading: boolean;
+  preferences: { bodyParts: string[]; message: string };
+  setPreferences: React.Dispatch<React.SetStateAction<{ bodyParts: string[]; message: string }>>;
+}) {
+  const { isDark, theme } = useTheme();
   const BODY_PARTS = ["Chest", "Back", "Shoulders", "Biceps", "Triceps", "Legs", "Glutes", "Core", "Full Body"];
 
   const toggleBodyPart = (part: string) => {

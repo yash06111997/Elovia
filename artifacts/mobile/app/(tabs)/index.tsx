@@ -153,9 +153,9 @@ export default function DashboardScreen() {
       <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
         <Text style={[styles.cardTitle, { color: theme.text }]}>Macros</Text>
         <View style={styles.macros}>
-          <MacroBar label="Protein" current={consumed.protein} target={macros.protein} color={Colors.primary} isDark={isDark} />
-          <MacroBar label="Carbs" current={consumed.carbs} target={macros.carbs} color={Colors.accent} isDark={isDark} />
-          <MacroBar label="Fats" current={consumed.fats} target={macros.fats} color={Colors.accentGreen} isDark={isDark} />
+          <MacroBar label="Protein" current={consumed.protein} target={macros.protein} color={Colors.primary} />
+          <MacroBar label="Carbs" current={consumed.carbs} target={macros.carbs} color={Colors.accent} />
+          <MacroBar label="Fats" current={consumed.fats} target={macros.fats} color={Colors.accentGreen} />
         </View>
       </View>
 
@@ -166,7 +166,6 @@ export default function DashboardScreen() {
           value={steps >= 1000 ? `${(steps / 1000).toFixed(1)}k` : `${steps}`}
           icon="footsteps-outline"
           iconColor={Colors.accent}
-          isDark={isDark}
         />
         <StatCard
           title="Water"
@@ -174,7 +173,6 @@ export default function DashboardScreen() {
           unit="L"
           icon="water-outline"
           iconColor={Colors.primary}
-          isDark={isDark}
           onPress={addWater}
           subtitle="Tap to add 250ml"
         />
@@ -186,7 +184,6 @@ export default function DashboardScreen() {
           value={`${weeklyPct}%`}
           icon="barbell-outline"
           iconColor={Colors.accentGreen}
-          isDark={isDark}
           subtitle={`${plan?.days.length ?? 3} day plan`}
         />
         <StatCard
@@ -194,7 +191,6 @@ export default function DashboardScreen() {
           value={`${personalRecords.length}`}
           icon="trophy-outline"
           iconColor={Colors.accentYellow}
-          isDark={isDark}
           subtitle="Personal records"
         />
       </View>
@@ -312,7 +308,7 @@ export default function DashboardScreen() {
   );
 }
 
-function TargetPill({ label, value, unit, color, bg, textColor }: any) {
+function TargetPill({ label, value, unit, color, bg, textColor }: { label: string; value: string | number; unit: string; color: string; bg: string; textColor: string }) {
   return (
     <View style={[styles.targetPill, { backgroundColor: bg }]}>
       <View style={[styles.targetDot, { backgroundColor: color }]} />

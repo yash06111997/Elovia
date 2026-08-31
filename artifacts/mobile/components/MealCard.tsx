@@ -1,4 +1,5 @@
 import React from "react";
+import { useTheme } from "@/hooks/useTheme";
 import { Colors } from "@/constants/colors";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -6,7 +7,6 @@ import { Meal } from "@/context/NutritionContext";
 
 interface Props {
   meal: Meal;
-  isDark: boolean;
   onLog?: (meal: Meal) => void;
   logged?: boolean;
 }
@@ -18,7 +18,8 @@ const mealTypeConfig = {
   snack: { icon: "cafe-outline" as const, color: Colors.accentGreen, label: "Snack" },
 };
 
-export function MealCard({ meal, isDark, onLog, logged }: Props) {
+export function MealCard({ meal, onLog, logged }: Props) {
+  const { isDark } = useTheme();
   const config = mealTypeConfig[meal.mealType];
   const cardBg = Colors.dark.card;
   const textColor = Colors.dark.text;
@@ -47,10 +48,10 @@ export function MealCard({ meal, isDark, onLog, logged }: Props) {
       </Text>
 
       <View style={styles.macros}>
-        <MacroPill value={meal.calories} unit="kcal" color={Colors.accentYellow} bg={tagBg} isDark={isDark} />
-        <MacroPill value={meal.protein} unit="P" color={Colors.primary} bg={tagBg} isDark={isDark} />
-        <MacroPill value={meal.carbs} unit="C" color={Colors.accent} bg={tagBg} isDark={isDark} />
-        <MacroPill value={meal.fats} unit="F" color={Colors.accentGreen} bg={tagBg} isDark={isDark} />
+        <MacroPill value={meal.calories} unit="kcal" color={Colors.accentYellow} bg={tagBg} />
+        <MacroPill value={meal.protein} unit="P" color={Colors.primary} bg={tagBg} />
+        <MacroPill value={meal.carbs} unit="C" color={Colors.accent} bg={tagBg} />
+        <MacroPill value={meal.fats} unit="F" color={Colors.accentGreen} bg={tagBg} />
       </View>
 
       {onLog && !logged && (
@@ -72,13 +73,11 @@ function MacroPill({
   unit,
   color,
   bg,
-  isDark,
 }: {
   value: number;
   unit: string;
   color: string;
   bg: string;
-  isDark: boolean;
 }) {
   const textColor = Colors.dark.text;
   return (

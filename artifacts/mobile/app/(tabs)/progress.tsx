@@ -18,6 +18,17 @@ import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
 import { PremiumLock } from "@/components/PremiumLock";
 
+/**
+ * Prop types derived from the context hooks rather than restated by hand.
+ *
+ * These five components were `: any`. Writing the shapes out again would create
+ * a second definition free to drift from the real one; deriving them means a
+ * change to a context is a compile error here, which is the point.
+ */
+type WorkoutCtx = ReturnType<typeof useWorkout>;
+type NutritionCtx = ReturnType<typeof useNutrition>;
+type AppCtx = ReturnType<typeof useApp>;
+
 type Tab = "strength" | "nutrition" | "body";
 
 export default function ProgressScreen() {
@@ -52,10 +63,10 @@ export default function ProgressScreen() {
 
       {/* Summary Row */}
       <View style={styles.summaryRow}>
-        <SummaryCard value={completedSessions.toString()} label="Sessions" color={Colors.primary} theme={theme} />
-        <SummaryCard value={`${weeklyCompletion}%`} label="Weekly" color={Colors.accentGreen} theme={theme} />
-        <SummaryCard value={personalRecords.length.toString()} label="PRs" color={Colors.accentYellow} theme={theme} />
-        <SummaryCard value={totalVolume > 1000 ? `${(totalVolume / 1000).toFixed(1)}k` : totalVolume.toString()} label="Volume" color={Colors.accent} theme={theme} />
+        <SummaryCard value={completedSessions.toString()} label="Sessions" color={Colors.primary} />
+        <SummaryCard value={`${weeklyCompletion}%`} label="Weekly" color={Colors.accentGreen} />
+        <SummaryCard value={personalRecords.length.toString()} label="PRs" color={Colors.accentYellow} />
+        <SummaryCard value={totalVolume > 1000 ? `${(totalVolume / 1000).toFixed(1)}k` : totalVolume.toString()} label="Volume" color={Colors.accent} />
       </View>
 
       {/* Tabs */}
@@ -75,23 +86,27 @@ export default function ProgressScreen() {
       </View>
 
       {activeTab === "strength" && (
-        <StrengthTab personalRecords={personalRecords} sessions={sessions} isDark={isDark} theme={theme} />
+        <StrengthTab personalRecords={personalRecords} sessions={sessions} />
       )}
       {activeTab === "nutrition" && (
         <PremiumLock feature="advanced_analytics">
-          <NutritionTab weeklyCalories={weeklyCalories} macros={macros} isDark={isDark} theme={theme} />
+          <NutritionTab weeklyCalories={weeklyCalories} macros={macros} />
         </PremiumLock>
       )}
       {activeTab === "body" && (
         <PremiumLock feature="health_insights">
-          <BodyTab healthMetrics={appState.healthMetrics} profile={appState.profile} isDark={isDark} theme={theme} />
+          <BodyTab healthMetrics={appState.healthMetrics} profile={appState.profile} />
         </PremiumLock>
       )}
     </ScrollView>
   );
 }
 
-function StrengthTab({ personalRecords, sessions, isDark, theme }: any) {
+function StrengthTab({ personalRecords, sessions }: {
+  personalRecords: WorkoutCtx["personalRecords"];
+  sessions: WorkoutCtx["sessions"];
+}) {
+  const { isDark, theme } = useTheme();
   if (personalRecords.length === 0) {
     return (
       <View style={styles.emptyState}>
@@ -141,7 +156,11 @@ function StrengthTab({ personalRecords, sessions, isDark, theme }: any) {
   );
 }
 
-function NutritionTab({ weeklyCalories, macros, isDark, theme }: any) {
+function NutritionTab({ weeklyCalories, macros }: {
+  weeklyCalories: ReturnType<NutritionCtx["getWeeklyCalories"]>;
+  macros: ReturnType<AppCtx["calculateMacros"]>;
+}) {
+  const { isDark, theme } = useTheme();
   const maxCal = Math.max(...weeklyCalories.map((d: any) => d.calories), macros.calories);
 
   return (
@@ -185,16 +204,27 @@ function NutritionTab({ weeklyCalories, macros, isDark, theme }: any) {
 
       <Text style={[styles.sectionTitle, { color: theme.text }]}>Daily Macro Targets</Text>
       <View style={[styles.macroTargetCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-        <MacroBar label="Protein" current={macros.protein} target={macros.protein} color={Colors.primary} isDark={isDark} />
-        <MacroBar label="Carbs" current={macros.carbs} target={macros.carbs} color={Colors.accent} isDark={isDark} />
-        <MacroBar label="Fats" current={macros.fats} target={macros.fats} color={Colors.accentGreen} isDark={isDark} />
+        <MacroBar label="Protein" current={macros.protein} target={macros.protein} color={Colors.primary} />
+        <MacroBar label="Carbs" current={macros.carbs} target={macros.carbs} color={Colors.accent} />
+        <MacroBar label="Fats" current={macros.fats} target={macros.fats} color={Colors.accentGreen} />
       </View>
     </View>
   );
 }
 
-function BodyTab({ healthMetrics, profile, isDark, theme }: any) {
-  const weights = healthMetrics.filter((m: any) => m.weightKg).slice(-7);
+function BodyTab({ healthMetrics, profile }: {
+  healthMetrics: AppCtx["state"]["healthMetrics"];
+  profile: AppCtx["state"]["profile"];
+}) {
+  const { isDark, theme } = useTheme();
+  // A type predicate rather than a truthiness filter, for two reasons: it lets
+  // the compiler know weightKg is defined below, and truthiness would also
+  // discard a reading of exactly 0 - meaningless for body weight, but the kind
+  // of assumption that quietly breaks when the same pattern is copied onto a
+  // field where zero is real.
+  const weights = healthMetrics
+    .filter((m): m is typeof m & { weightKg: number } => typeof m.weightKg === "number")
+    .slice(-7);
   const latest = weights[weights.length - 1];
   const first = weights[0];
   const change = latest && first ? (latest.weightKg - first.weightKg).toFixed(1) : null;
@@ -204,12 +234,12 @@ function BodyTab({ healthMetrics, profile, isDark, theme }: any) {
       {profile && (
         <View style={[styles.profileCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
           <View style={styles.profileCardRow}>
-            <ProfileStat label="Current Weight" value={`${profile.weightKg} kg`} color={Colors.primary} theme={theme} />
-            <ProfileStat label="Height" value={`${profile.heightCm} cm`} color={Colors.accent} theme={theme} />
+            <ProfileStat label="Current Weight" value={`${profile.weightKg} kg`} color={Colors.primary} />
+            <ProfileStat label="Height" value={`${profile.heightCm} cm`} color={Colors.accent} />
           </View>
           <View style={styles.profileCardRow}>
-            <ProfileStat label="BMI" value={`${(profile.weightKg / ((profile.heightCm / 100) ** 2)).toFixed(1)}`} color={Colors.accentYellow} theme={theme} />
-            <ProfileStat label="Goal" value={profile.goal.replace("_", " ")} color={Colors.accentGreen} theme={theme} />
+            <ProfileStat label="BMI" value={`${(profile.weightKg / ((profile.heightCm / 100) ** 2)).toFixed(1)}`} color={Colors.accentYellow} />
+            <ProfileStat label="Goal" value={profile.goal.replace("_", " ")} color={Colors.accentGreen} />
           </View>
           {change && (
             <View style={[styles.changeRow, { borderTopColor: theme.border }]}>
@@ -237,7 +267,8 @@ function BodyTab({ healthMetrics, profile, isDark, theme }: any) {
   );
 }
 
-function SummaryCard({ value, label, color, theme }: any) {
+function SummaryCard({ value, label, color }: { value: string; label: string; color: string }) {
+  const { theme } = useTheme();
   return (
     <View style={[styles.summaryCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
       <Text style={[styles.summaryValue, { color }]}>{value}</Text>
@@ -246,7 +277,8 @@ function SummaryCard({ value, label, color, theme }: any) {
   );
 }
 
-function ProfileStat({ label, value, color, theme }: any) {
+function ProfileStat({ label, value, color }: { label: string; value: string; color: string }) {
+  const { theme } = useTheme();
   return (
     <View style={{ flex: 1 }}>
       <Text style={{ color: theme.textSecondary, fontSize: 11, fontFamily: "Inter_500Medium" }}>{label}</Text>

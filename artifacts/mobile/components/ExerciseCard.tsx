@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { useTheme } from "@/hooks/useTheme";
 import { Colors } from "@/constants/colors";
 import {
   View,
@@ -19,7 +20,6 @@ interface ExerciseHistory {
 
 interface Props {
   exercise: Exercise;
-  isDark: boolean;
   onLogSet?: (set: SetLog) => void;
   personalRecord?: PersonalRecord | null;
   isActive?: boolean;
@@ -29,13 +29,13 @@ interface Props {
 
 export function ExerciseCard({
   exercise,
-  isDark,
   onLogSet,
   personalRecord,
   isActive = false,
   lastPerformance,
   onNewPR,
 }: Props) {
+  const { isDark } = useTheme();
   const [expanded, setExpanded] = useState(false);
   const [activeTab, setActiveTab] = useState<"log" | "history">("log");
   const [showPRFlash, setShowPRFlash] = useState(false);
