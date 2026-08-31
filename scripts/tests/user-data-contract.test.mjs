@@ -62,6 +62,16 @@ test("sync writes do not accept prototype-inherited contract fields", () => {
   );
 });
 
+test("sync writes discard inherited fields when own snapshot fields are valid", () => {
+  const payload = Object.create({ healthData: { steps: 1_000 } });
+  payload.baseRevision = 7;
+  payload.sessions = [];
+
+  const parsed = parseUserDataWrite(payload);
+  assert.equal(Object.hasOwn(parsed, "healthData"), false);
+  assert.deepEqual(buildUserDataPatch(parsed), { sessions: [] });
+});
+
 test("sync writes require at least one own-present synchronized field", () => {
   assert.throws(() => parseUserDataWrite({ baseRevision: null }));
 });
@@ -92,6 +102,17 @@ test("sync patches preserve omission and permit explicit clearing", () => {
   );
 });
 
+test("parsed sync writes preserve explicit null and omit absent fields", () => {
+  const parsed = parseUserDataWrite({
+    baseRevision: null,
+    appState: null,
+  });
+
+  assert.equal(parsed.baseRevision, null);
+  assert.equal(Object.hasOwn(parsed, "sessions"), false);
+  assert.deepEqual(buildUserDataPatch(parsed), { appState: null });
+});
+
 test("sync patches omit synchronized fields that are not own-present", () => {
   const inherited = Object.create({ healthData: { steps: 1_000 } });
   inherited.baseRevision = 7;
@@ -107,4 +128,5 @@ test("revision comparison distinguishes create, update, and conflict", () => {
   assert.equal(revisionMatches(4, 4), true);
   assert.equal(revisionMatches(4, 3), false);
   assert.equal(revisionMatches(4, null), false);
+  assert.equal(revisionMatches(4, "4"), false);
 });
