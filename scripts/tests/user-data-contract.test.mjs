@@ -253,9 +253,11 @@ test("production startup runs ordered migrations and CI exercises PostgreSQL int
     JSON.parse(dbPackage).scripts.migrate,
     "node ./scripts/migrate.mjs",
   );
+  const apiScripts = JSON.parse(apiPackage).scripts;
+  assert.equal(apiScripts.prestart, undefined);
   assert.match(
-    JSON.parse(apiPackage).scripts.prestart,
-    /@workspace\/db migrate/,
+    apiScripts.start,
+    /pnpm --filter @workspace\/db migrate\s*&&\s*node .*dist\/index\.mjs/,
   );
   assert.equal(
     JSON.parse(railwayConfig).deploy.startCommand,
