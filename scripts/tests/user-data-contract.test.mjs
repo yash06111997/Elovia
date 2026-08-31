@@ -209,6 +209,40 @@ test("user-data routes enforce optimistic concurrency without destructive fallba
   );
 });
 
+test("snapshot persistence logging cannot serialize health data from errors", async () => {
+  const routeSource = await readFile(
+    new URL(
+      "../../artifacts/api-server/src/routes/userData.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.doesNotMatch(routeSource, /log\.error\(\s*\{\s*err\b/);
+  assert.match(routeSource, /safeSnapshotErrorMetadata\(err\)/);
+  assert.match(routeSource, /"Cloud snapshot read failed"/);
+  assert.match(routeSource, /"Cloud snapshot write failed"/);
+
+  const { safeSnapshotErrorMetadata } =
+    await import("../../artifacts/api-server/src/lib/safeSnapshotErrorMetadata.ts");
+  const sentinel = "PHI_SENTINEL_DO_NOT_LOG_7fc995bf";
+  const error = Object.assign(new Error(`message:${sentinel}`), {
+    code: sentinel,
+    params: [{ wellness: sentinel, location: sentinel }],
+    cause: { code: "23505", detail: sentinel },
+  });
+  error.stack = `stack:${sentinel}`;
+
+  const metadata = safeSnapshotErrorMetadata(error);
+  assert.deepEqual(metadata, {
+    errorType: "USER_DATA_PERSISTENCE_ERROR",
+    dbCode: "23505",
+  });
+  assert.doesNotMatch(JSON.stringify(metadata), new RegExp(sentinel));
+  assert.deepEqual(safeSnapshotErrorMetadata({ code: sentinel }), {
+    errorType: "USER_DATA_PERSISTENCE_ERROR",
+  });
+});
+
 test("production startup runs ordered migrations and CI exercises PostgreSQL integration", async () => {
   const [
     dbPackage,
@@ -277,11 +311,15 @@ test("production startup runs ordered migrations and CI exercises PostgreSQL int
   assert.match(migrationRunner, /pg_advisory_xact_lock/);
   assert.match(migrationRunner, /replace\(\/\\r\\n\?\/g,\s*["']\\n["']\)/);
   assert.match(migrationRunner, /verifyBaselineAdoption/);
+  assert.doesNotMatch(migrationRunner, /indnullsnotdistinct/);
+  assert.match(migrationRunner, /MINIMUM_POSTGRES_MAJOR\s*=\s*14/);
   assert.equal((baselineSql.match(/CREATE TABLE /g) ?? []).length, 17);
   assert.match(baselineSql, /CREATE TABLE "coaching_sessions"/);
   assert.match(syncMigrationSql, /"revision" bigint/);
   assert.match(errorHandler, /VALIDATION_ERROR/);
   assert.match(errorHandler, /PAYLOAD_TOO_LARGE/);
+  assert.match(ci, /postgres:\s*\[14,\s*16\]/);
+  assert.match(ci, /image:\s*postgres:\$\{\{\s*matrix\.postgres\s*\}\}-alpine/);
   assert.match(ci, /services:\s*[\s\S]*postgres:/);
   assert.match(ci, /TEST_DATABASE_URL/);
 });

@@ -443,6 +443,62 @@ integrationTest(
 );
 
 integrationTest(
+  "verifier cleanup preserves the primary PostgreSQL diagnostic",
+  async () => {
+    const migrationsDirectory = await mkdtemp(
+      join(tmpdir(), "elovia-diagnostic-migrations-"),
+    );
+    const missingRelation = "verifier_primary_diagnostic_sentinel";
+
+    try {
+      const baseline = await readFile(baselineMigrationUrl, "utf8");
+      const syncMigration = await readFile(
+        new URL("0001_user_data_sync_integrity.sql", baselineMigrationUrl),
+        "utf8",
+      );
+      await writeFile(
+        join(migrationsDirectory, "0000_baseline.sql"),
+        `${baseline}\nSELECT * FROM ${missingRelation};\n`,
+        "utf8",
+      );
+      await writeFile(
+        join(migrationsDirectory, "0001_user_data_sync_integrity.sql"),
+        syncMigration,
+        "utf8",
+      );
+
+      await withTemporaryDatabase(async (databaseUrl) => {
+        const setupPool = new Pool({ connectionString: databaseUrl });
+        try {
+          await provisionLegacySchema(setupPool);
+        } finally {
+          await setupPool.end();
+        }
+
+        await assert.rejects(
+          runMigrations(databaseUrl, { migrationsDirectory }),
+          (error) => {
+            assert.equal(error.code, "42P01");
+            assert.match(error.message, new RegExp(missingRelation));
+            assert.doesNotMatch(error.message, /transaction is aborted/i);
+            return true;
+          },
+        );
+
+        const verificationPool = new Pool({ connectionString: databaseUrl });
+        try {
+          await assertNoMigrationRecords(verificationPool);
+        } finally {
+          await verificationPool.end();
+        }
+      });
+    } finally {
+      await rm(migrationsDirectory, { recursive: true, force: true });
+    }
+  },
+);
+
+integrationTest(
   "baseline adoption rejects a sync column with wrong type, nullability, and default",
   async () => {
     await assertAdoptionRefused({

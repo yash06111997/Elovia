@@ -7,6 +7,7 @@ import {
   saveUserData,
   SyncRevisionLimitError,
 } from "../services/userDataStore";
+import { safeSnapshotErrorMetadata } from "../lib/safeSnapshotErrorMetadata";
 
 const router: IRouter = Router();
 
@@ -33,7 +34,7 @@ router.get("/user-data", async (req: Request, res: Response) => {
   try {
     res.json(await loadUserData(db, req.user.id));
   } catch (err) {
-    req.log.error({ err }, "Failed to fetch user data");
+    req.log.error(safeSnapshotErrorMetadata(err), "Cloud snapshot read failed");
     res.status(500).json({
       error: {
         code: "INTERNAL_ERROR",
@@ -85,7 +86,10 @@ router.post("/user-data", async (req: Request, res: Response) => {
       return;
     }
 
-    req.log.error({ err }, "Failed to save user data");
+    req.log.error(
+      safeSnapshotErrorMetadata(err),
+      "Cloud snapshot write failed",
+    );
     res.status(500).json({
       error: {
         code: "INTERNAL_ERROR",
