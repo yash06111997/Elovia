@@ -411,8 +411,10 @@ test("manual sync presents conflict and restore failures honestly", async () => 
     new URL("../../artifacts/mobile/app/(tabs)/profile.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(source, /Newer cloud data found/);
-  assert.match(source, /Restore the latest cloud data before backing up/);
+  assert.match(source, /Use cloud copy/);
+  assert.match(source, /permanently replace unsynced changes/);
+  assert.match(source, /text: "Cancel", style: "cancel"/);
+  assert.match(source, /style: "destructive"/);
   assert.match(source, /You're offline/);
   assert.match(source, /Sign-in required/);
   assert.match(source, /Restore unavailable/);

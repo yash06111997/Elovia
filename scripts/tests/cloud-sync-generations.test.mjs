@@ -5,6 +5,7 @@ import {
   LOCAL_SYNC_JOURNAL_KEY,
   LOCAL_SYNC_OWNER_KEY,
   scopedSyncGenerationKey,
+  STALE_CURRENT_USER,
   storedSyncUserOwner,
   SyncStorageCoordinator,
 } from "../../artifacts/mobile/lib/cloudSyncStorage.ts";
@@ -77,6 +78,14 @@ function storageForA(entries = []) {
   return new MemoryStorage([[LOCAL_SYNC_OWNER_KEY, ownerA], ...entries]);
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 test("cold dirty local state chooses backup and never starts a cloud GET", async () => {
   const storage = storageForA([
     ["state", '{"workout":"offline"}'],
@@ -140,6 +149,159 @@ test("a local edit during a deferred GET prevents snapshot and revision overwrit
   assert.equal(await storage.getItem("revision"), "9");
   assert.equal(await storage.getItem(changeA), "3");
   assert.equal(await storage.getItem(cleanA), "2");
+});
+
+test("only an explicit manual conflict resolution may replace dirty local data", async () => {
+  const storage = storageForA([
+    ["state", "unsynced-local"],
+    ["revision", "9"],
+    [changeA, "3"],
+    [cleanA, "2"],
+  ]);
+  const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
+  const captured = await coordinator.readSyncSnapshotOwned("A", currentA, [
+    "state",
+    "revision",
+  ]);
+  assert.equal(captured.status, "ready");
+  assert.equal(captured.value.dirty, true);
+
+  const defaultRestore = await coordinator.commitRestoreOwned(
+    "A",
+    currentA,
+    captured.value.changeGeneration,
+    [["state", "cloud-copy"]],
+    [],
+    [["revision", "10"]],
+    "manual-default",
+  );
+  assert.deepEqual(defaultRestore, {
+    status: "ready",
+    value: { committed: false },
+  });
+  assert.equal(await storage.getItem("state"), "unsynced-local");
+  assert.equal(await storage.getItem("revision"), "9");
+
+  const forcedRestore = await coordinator.commitRestoreOwned(
+    "A",
+    currentA,
+    captured.value.changeGeneration,
+    [["state", "cloud-copy"]],
+    [],
+    [["revision", "10"]],
+    "manual-confirmed",
+    { allowOverwriteDirty: true },
+  );
+  assert.deepEqual(forcedRestore, {
+    status: "ready",
+    value: { committed: true },
+  });
+  assert.equal(await storage.getItem("state"), "cloud-copy");
+  assert.equal(await storage.getItem("revision"), "10");
+  assert.equal(await storage.getItem(changeA), "3");
+  assert.equal(await storage.getItem(cleanA), "3");
+
+  await coordinator.commitLocalChangeOwned(
+    "A",
+    currentA,
+    [["state", "later-edit"]],
+    [],
+    "later-edit",
+  );
+  const later = await coordinator.readSyncSnapshotOwned("A", currentA, [
+    "state",
+    "revision",
+  ]);
+  assert.equal(later.status, "ready");
+  assert.equal(later.value.dirty, true);
+  assert.deepEqual(
+    await coordinator.commitBackupSavedOwned(
+      "A",
+      currentA,
+      later.value.changeGeneration,
+      [["revision", "11"]],
+      "later-backup",
+    ),
+    { status: "ready", value: { markedClean: true } },
+  );
+
+  const afterBackup = await coordinator.readSyncSnapshotOwned("A", currentA, [
+    "state",
+    "revision",
+  ]);
+  assert.equal(afterBackup.status, "ready");
+  assert.equal(afterBackup.value.dirty, false);
+  assert.deepEqual(
+    await coordinator.commitRestoreOwned(
+      "A",
+      currentA,
+      afterBackup.value.changeGeneration,
+      [["state", "later-cloud"]],
+      [],
+      [["revision", "12"]],
+      "later-restore",
+    ),
+    { status: "ready", value: { committed: true } },
+  );
+
+  let authChecks = 0;
+  const invalidatedSession = async () =>
+    authChecks++ === 0 ? "A" : STALE_CURRENT_USER;
+  const staleForcedRestore = await coordinator.commitRestoreOwned(
+    "A",
+    invalidatedSession,
+    afterBackup.value.changeGeneration,
+    [["state", "stale-cloud"]],
+    [],
+    [["revision", "13"]],
+    "stale-manual-confirmation",
+    { allowOverwriteDirty: true },
+  );
+  assert.deepEqual(staleForcedRestore, { status: "stale" });
+  assert.equal(await storage.getItem("state"), "later-cloud");
+  assert.equal(await storage.getItem("revision"), "12");
+});
+
+test("health capability refresh does not dirty a clean deferred restore", async () => {
+  const healthKey = "@elovia_health_data";
+  const storage = storageForA([
+    [healthKey, '{"todaySteps":1}'],
+    ["revision", "5"],
+    [changeA, "4"],
+    [cleanA, "4"],
+  ]);
+  const coordinator = new SyncStorageCoordinator(storage, [healthKey]);
+  const beforeGet = await coordinator.readSyncSnapshotOwned("A", currentA, [
+    healthKey,
+    "revision",
+  ]);
+  assert.equal(beforeGet.status, "ready");
+  assert.equal(beforeGet.value.dirty, false);
+
+  const response = deferred();
+  const restore = response.promise.then((cloudHealth) =>
+    coordinator.commitRestoreOwned(
+      "A",
+      currentA,
+      beforeGet.value.changeGeneration,
+      [[healthKey, cloudHealth]],
+      [],
+      [["revision", "6"]],
+      "deferred-health-restore",
+    ),
+  );
+
+  // Mount capability refresh is in-memory only, so synchronized storage and
+  // its generation remain untouched while the GET is in flight.
+  assert.equal(await storage.getItem(changeA), "4");
+  assert.equal(await storage.getItem(cleanA), "4");
+  response.resolve('{"todaySteps":2}');
+  assert.deepEqual(await restore, {
+    status: "ready",
+    value: { committed: true },
+  });
+  assert.equal(await storage.getItem(healthKey), '{"todaySteps":2}');
+  assert.equal(await storage.getItem("revision"), "6");
 });
 
 test("backup response advances revision but does not clean an edit made during fetch", async () => {
@@ -357,13 +519,29 @@ test("production sync exposes local_changes honestly and routes AutoSync to back
     ]);
 
   assert.match(syncSource, /readSyncSnapshotOwned/);
-  assert.match(syncSource, /if \(.*\.dirty\)[\s\S]*status: "local_changes"/);
+  assert.match(
+    syncSource,
+    /if \(capturedWasDirty && !options\.allowOverwriteDirty\)[\s\S]*status: "local_changes"/,
+  );
   assert.match(syncSource, /commitBackupSavedOwned/);
   assert.match(syncSource, /commitRestoreOwned/);
+  assert.match(syncSource, /allowOverwriteDirty/);
+  assert.match(syncSource, /conflictBlockedUsers\.delete\(identity\.uid\)/);
   assert.match(accountSource, /commitLocalChangeOwned/);
   assert.match(
     autoSource,
     /outcome\.status === "local_changes"[\s\S]*restoreSettledRef\.current = true[\s\S]*attemptAutomaticBackup/,
   );
-  assert.match(profileSource, /Back up your local changes before restoring/);
+  assert.doesNotMatch(autoSource, /allowOverwriteDirty/);
+  assert.match(profileSource, /permanently replace unsynced changes/);
+  assert.match(profileSource, /Use cloud copy/);
+  assert.match(profileSource, /style: "destructive"/);
+  assert.match(
+    profileSource,
+    /restoreFromCloud\(sessionToken, \{ allowOverwriteDirty: true \}\)/,
+  );
+  assert.equal(
+    (profileSource.match(/allowOverwriteDirty: true/g) ?? []).length,
+    1,
+  );
 });

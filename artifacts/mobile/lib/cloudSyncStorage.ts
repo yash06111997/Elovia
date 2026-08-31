@@ -128,6 +128,11 @@ export interface OwnedSyncSnapshot extends SyncGenerationState {
   entries: readonly (readonly [string, string | null])[];
 }
 
+export interface RestoreCommitOptions {
+  /** Manual-only conflict resolution after an explicit destructive confirmation. */
+  allowOverwriteDirty?: boolean;
+}
+
 function storedOwnerForUserId(userId: string | null): string {
   return userId === null ? LOCAL_SYNC_GUEST_OWNER : storedSyncUserOwner(userId);
 }
@@ -841,6 +846,7 @@ export class SyncStorageCoordinator {
     removals: readonly string[],
     finalSets: readonly (readonly [string, string])[],
     sessionGeneration = "unspecified",
+    options: RestoreCommitOptions = {},
   ): Promise<OwnedStorageOutcome<{ committed: boolean }>> {
     return this.exclusive(async () => {
       await this.recoverIfNeeded();
@@ -861,7 +867,7 @@ export class SyncStorageCoordinator {
         generationValues.get(cleanKey) ?? null,
       );
       if (
-        generations.dirty ||
+        (!options.allowOverwriteDirty && generations.dirty) ||
         generations.changeGeneration !== capturedChangeGeneration
       ) {
         return { status: "ready", value: { committed: false } };

@@ -110,6 +110,23 @@ test("subscription entitlement refresh is outside the storage restore barrier", 
   assert.doesNotMatch(subscription, /onDataRestored/);
 });
 
+test("health capability refresh updates memory without persisting synchronized data", async () => {
+  const health = await source("context/HealthContext.tsx");
+  const start = health.indexOf("const refreshStatus = useCallback");
+  const end = health.indexOf(
+    "Read everything the platform will give us",
+    start,
+  );
+  assert.ok(
+    start >= 0 && end > start,
+    "refreshStatus block should remain inspectable",
+  );
+  const refreshBlock = health.slice(start, end);
+  assert.doesNotMatch(refreshBlock, /persist\(/);
+  assert.match(refreshBlock, /setStatus\(next\)/);
+  assert.match(refreshBlock, /setHealthData/);
+});
+
 test("auth remounts the account provider subtree and invalidates storage generations", async () => {
   const auth = await source("lib/auth.tsx");
   const facade = await source("lib/accountSyncStorage.ts");

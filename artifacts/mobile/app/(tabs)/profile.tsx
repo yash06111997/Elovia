@@ -9,7 +9,7 @@ import { useWorkout } from "@/context/WorkoutContext";
 import { useHealth } from "@/context/HealthContext";
 import { useAuth } from "@/lib/auth";
 import { useSubscription } from "@/context/SubscriptionContext";
-import { backupToCloud, restoreFromCloud, migrateLegacyFirebaseData, getCurrentCloudSyncUserId, getCurrentCloudSyncSession, isCloudSyncSessionCurrent, prepareLocalSyncOwner, resetCurrentAccountData } from "@/lib/cloudSync";
+import { backupToCloud, restoreFromCloud, migrateLegacyFirebaseData, getCurrentCloudSyncUserId, getCurrentCloudSyncSession, isCloudSyncSessionCurrent, prepareLocalSyncOwner, resetCurrentAccountData, type CloudSyncSessionToken } from "@/lib/cloudSync";
 import { resetCurrentAccountStorage } from "@/lib/accountSyncStorage";
 import { emitDataRestored } from "@/lib/syncEvents";
 import { NumberEditModal } from "@/components/NumberEditModal";
@@ -78,6 +78,10 @@ const allEquipment: { label: string; value: Equipment }[] = [
 
 type EditField = "heightCm" | "weightKg" | "targetWeightKg" | "targetWeeks" | "age" | "sleepHours" | "waterIntakeLiters" | "workoutDaysPerWeek" | "workoutDurationMins" | null;
 type EditSection = "fitness" | "diet" | "equipment" | "health" | "name" | null;
+type ManualRestoreOperation = {
+  expectedUserId: string;
+  sessionToken: CloudSyncSessionToken;
+};
 
 export default function ProfileScreen() {
   const { isDark, theme } = useTheme();
@@ -101,6 +105,21 @@ export default function ProfileScreen() {
   const { state: subState, isPremium, isTrialActive, isFree, daysRemaining, trialEndDate, restorePurchases, canAccess } = useSubscription();
   const [syncing, setSyncing] = useState(false);
   const profile = appState.profile;
+
+  function confirmCloudOverwrite(operation: ManualRestoreOperation) {
+    Alert.alert(
+      "Use cloud copy?",
+      "This will permanently replace unsynced changes on this device with the cloud copy. This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Use cloud copy",
+          style: "destructive",
+          onPress: () => void downloadData(operation, true),
+        },
+      ],
+    );
+  }
 
   const uploadData = async () => {
     if (!isAuthenticated || !user) return;
@@ -153,10 +172,7 @@ export default function ProfileScreen() {
           Alert.alert("Sign-in required", "Sign in again before backing up your data.");
           break;
         case "conflict":
-          Alert.alert(
-            "Newer cloud data found",
-            "Restore the latest cloud data before backing up. Elovia did not overwrite either copy.",
-          );
+          confirmCloudOverwrite({ expectedUserId, sessionToken });
           break;
         case "server":
           Alert.alert("Backup unavailable", "Elovia could not save your data right now. Please try again later.");
@@ -169,10 +185,13 @@ export default function ProfileScreen() {
     }
   };
 
-  const downloadData = async () => {
+  async function downloadData(
+    operation?: ManualRestoreOperation,
+    allowOverwriteDirty = false,
+  ) {
     if (!isAuthenticated || !user) return;
-    const expectedUserId = user.id;
-    const sessionToken = getCurrentCloudSyncSession(expectedUserId);
+    const expectedUserId = operation?.expectedUserId ?? user.id;
+    const sessionToken = operation?.sessionToken ?? getCurrentCloudSyncSession(expectedUserId);
     if (!sessionToken) {
       Alert.alert("Restore unavailable", "Cloud sync is not ready for this account yet. Please try again in a moment.");
       return;
@@ -200,17 +219,16 @@ export default function ProfileScreen() {
         }
       }
 
-      const outcome = await restoreFromCloud(sessionToken);
+      const outcome = allowOverwriteDirty
+        ? await restoreFromCloud(sessionToken, { allowOverwriteDirty: true })
+        : await restoreFromCloud(sessionToken);
       if (!(await operationIsCurrent())) {
         Alert.alert("Sign-in changed", "Your account changed before restore completed. Open the current account and try again.");
         return;
       }
 
       if (outcome.status === "local_changes") {
-        Alert.alert(
-          "Local changes waiting",
-          "Back up your local changes before restoring cloud data. Elovia did not overwrite this device.",
-        );
+        confirmCloudOverwrite({ expectedUserId, sessionToken });
         return;
       }
 
@@ -227,6 +245,16 @@ export default function ProfileScreen() {
       }
 
       if (outcome.status === "empty") {
+        if (allowOverwriteDirty) {
+          const reload = await emitDataRestored();
+          if (!(await operationIsCurrent()) || reload.status === "failed") {
+            Alert.alert("Restore incomplete", "The empty cloud copy was applied, but Elovia could not reload every screen. Please reopen the app.");
+            return;
+          }
+          Alert.alert("Cloud copy applied", "No saved cloud data existed, so the confirmed local changes were cleared.");
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          return;
+        }
         const migration = await migrateLegacyFirebaseData(sessionToken);
         if (!(await operationIsCurrent())) {
           Alert.alert("Sign-in changed", "Your account changed before restore completed. Open the current account and try again.");
@@ -299,7 +327,7 @@ export default function ProfileScreen() {
     } finally {
       setSyncing(false);
     }
-  };
+  }
 
   const topPadding = Platform.OS === "web" ? 67 : insets.top + 12;
   const tdee = calculateTDEE();
@@ -989,7 +1017,7 @@ export default function ProfileScreen() {
                     borderColor: Colors.primary + "40",
                   },
                 ]}
-                onPress={downloadData}
+                onPress={() => void downloadData()}
                 disabled={syncing}
                 activeOpacity={0.8}
               >

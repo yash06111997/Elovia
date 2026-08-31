@@ -187,7 +187,6 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
             stepsEnabled: next.hasAnySource,
           },
         };
-        persist(updated);
         return updated;
       });
 
@@ -195,7 +194,7 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       return null;
     }
-  }, [persist]);
+  }, []);
 
   useEffect(() => {
     void refreshStatus();

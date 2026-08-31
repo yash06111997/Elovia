@@ -106,6 +106,11 @@ export type LegacyMigrationOutcome =
 
 export type LocalResetOutcome = CloudResetOutcome;
 
+export interface RestoreFromCloudOptions {
+  /** Manual-only: replace dirty local data after explicit user confirmation. */
+  allowOverwriteDirty?: boolean;
+}
+
 const conflictBlockedUsers = new Set<string>();
 function getBaseUrl(): string {
   const domain = process.env.EXPO_PUBLIC_DOMAIN;
@@ -394,6 +399,7 @@ export async function backupToCloud(
 /** Pull a validated server snapshot into the expected account's local keys. */
 async function restoreFromCloudUnlocked(
   sessionToken: CloudSyncSessionToken,
+  options: RestoreFromCloudOptions = {},
 ): Promise<RestoreOutcome> {
   const auth = await getAuthIdentity(sessionToken);
   if (auth.status !== "ready") return { status: auth.status };
@@ -404,6 +410,7 @@ async function restoreFromCloudUnlocked(
   if (owner.status === "server") return { status: "server" };
 
   let capturedChangeGeneration: number;
+  let capturedWasDirty: boolean;
   try {
     const localSnapshot = await syncStorage.readSyncSnapshotOwned(
       identity.uid,
@@ -413,7 +420,10 @@ async function restoreFromCloudUnlocked(
     if (localSnapshot.status === "stale") {
       return { status: "unauthorized" };
     }
-    if (localSnapshot.value.dirty) return { status: "local_changes" };
+    capturedWasDirty = localSnapshot.value.dirty;
+    if (capturedWasDirty && !options.allowOverwriteDirty) {
+      return { status: "local_changes" };
+    }
     capturedChangeGeneration = localSnapshot.value.changeGeneration;
   } catch {
     return { status: "server" };
@@ -471,9 +481,12 @@ async function restoreFromCloudUnlocked(
         currentUserForSession(sessionToken),
         capturedChangeGeneration,
         [],
-        [revisionKey],
+        options.allowOverwriteDirty && capturedWasDirty
+          ? [...SYNC_KEYS, revisionKey]
+          : [revisionKey],
         [],
         sessionStorageGeneration(sessionToken),
+        options,
       );
       if (committed.status === "stale") return { status: "unauthorized" };
       if (!committed.value.committed) return { status: "local_changes" };
@@ -517,6 +530,7 @@ async function restoreFromCloudUnlocked(
       removals,
       [[revisionKey, String(outcome.revision)]],
       sessionStorageGeneration(sessionToken),
+      options,
     );
     if (committed.status === "stale") return { status: "unauthorized" };
     if (!committed.value.committed) return { status: "local_changes" };
@@ -532,9 +546,10 @@ async function restoreFromCloudUnlocked(
 
 export async function restoreFromCloud(
   sessionToken: CloudSyncSessionToken,
+  options: RestoreFromCloudOptions = {},
 ): Promise<RestoreOutcome> {
   const guarded = await networkOrchestrator.runExclusive(sessionToken, () =>
-    restoreFromCloudUnlocked(sessionToken),
+    restoreFromCloudUnlocked(sessionToken, options),
   );
   return guarded.status === "stale"
     ? { status: "unauthorized" }
