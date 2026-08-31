@@ -407,6 +407,8 @@ export function WellnessProvider({ children }: { children: React.ReactNode }) {
     isLoaded,
   };
 
+  if (!isLoaded) return null;
+
   return <WellnessContext.Provider value={value}>{children}</WellnessContext.Provider>;
 }
 

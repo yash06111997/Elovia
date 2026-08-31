@@ -90,34 +90,39 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
   const [customMealPlans, setCustomMealPlans] = useState<CustomMealPlan[]>([]);
   const [activeMealPlanType, setActiveMealPlanType] = useState<ActiveMealPlanType>("ai");
   const [activeCustomMealPlanId, setActiveCustomMealPlanId] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(false);
   const [accountStorage] = useState(captureAccountStorageSession);
 
   const load = async () => {
-    await runProviderReload(() => {
-      setMealPlanState(null);
-      setFoodLog([]);
-      setCustomMealPlans([]);
-      setActiveMealPlanType("ai");
-      setActiveCustomMealPlanId(null);
-    }, async () => {
-      const values = new Map(await accountStorage.multiGet([
-        "@elovia_meal_plan",
-        "@elovia_food_log",
-        "@elovia_custom_meal_plans",
-        "@elovia_active_meal_plan_type",
-        "@elovia_active_custom_meal_plan_id",
-      ]));
-      const mp = values.get("@elovia_meal_plan") ?? null;
-      const fl = values.get("@elovia_food_log") ?? null;
-      const cmp = values.get("@elovia_custom_meal_plans") ?? null;
-      const ampt = values.get("@elovia_active_meal_plan_type") ?? null;
-      const acmpid = values.get("@elovia_active_custom_meal_plan_id") ?? null;
-      setMealPlanState(mp ? parseStoredJson(mp, isNullablePlainRecord) as MealPlan | null : null);
-      setFoodLog(fl ? parseStoredJson(fl, isUnknownArray) as FoodLogEntry[] : []);
-      setCustomMealPlans(cmp ? parseStoredJson(cmp, isUnknownArray) as CustomMealPlan[] : []);
-      setActiveMealPlanType(ampt ? parseStoredJson(ampt, (value): value is ActiveMealPlanType => value === "ai" || value === "custom") : "ai");
-      setActiveCustomMealPlanId(acmpid ? parseStoredJson(acmpid, (value): value is string | null => value === null || typeof value === "string") : null);
-    });
+    try {
+      await runProviderReload(() => {
+        setMealPlanState(null);
+        setFoodLog([]);
+        setCustomMealPlans([]);
+        setActiveMealPlanType("ai");
+        setActiveCustomMealPlanId(null);
+      }, async () => {
+        const values = new Map(await accountStorage.multiGet([
+          "@elovia_meal_plan",
+          "@elovia_food_log",
+          "@elovia_custom_meal_plans",
+          "@elovia_active_meal_plan_type",
+          "@elovia_active_custom_meal_plan_id",
+        ]));
+        const mp = values.get("@elovia_meal_plan") ?? null;
+        const fl = values.get("@elovia_food_log") ?? null;
+        const cmp = values.get("@elovia_custom_meal_plans") ?? null;
+        const ampt = values.get("@elovia_active_meal_plan_type") ?? null;
+        const acmpid = values.get("@elovia_active_custom_meal_plan_id") ?? null;
+        setMealPlanState(mp ? parseStoredJson(mp, isNullablePlainRecord) as MealPlan | null : null);
+        setFoodLog(fl ? parseStoredJson(fl, isUnknownArray) as FoodLogEntry[] : []);
+        setCustomMealPlans(cmp ? parseStoredJson(cmp, isUnknownArray) as CustomMealPlan[] : []);
+        setActiveMealPlanType(ampt ? parseStoredJson(ampt, (value): value is ActiveMealPlanType => value === "ai" || value === "custom") : "ai");
+        setActiveCustomMealPlanId(acmpid ? parseStoredJson(acmpid, (value): value is string | null => value === null || typeof value === "string") : null);
+      });
+    } finally {
+      setHydrated(true);
+    }
   };
 
   useEffect(() => {
@@ -248,6 +253,8 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
     }
     return mealPlan ? mealPlan.meals : [];
   }, [activeMealPlanType, activeCustomMealPlanId, customMealPlans, mealPlan]);
+
+  if (!hydrated) return null;
 
   return (
     <NutritionContext.Provider

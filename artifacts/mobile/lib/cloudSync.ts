@@ -38,6 +38,7 @@ import {
   getCurrentCloudSyncSession,
   isCloudSyncDeadlineError,
   isCloudSyncSessionCurrent,
+  runCloudSyncBoundedOperation,
   type CloudSyncSessionToken,
 } from "./cloudSyncSession";
 
@@ -232,7 +233,9 @@ async function getAuthIdentity(
   }
 
   try {
-    const token = await user.getIdToken();
+    const token = await runCloudSyncBoundedOperation(sessionToken, () =>
+      user.getIdToken(),
+    );
     if (
       !token ||
       !isCloudSyncSessionCurrent(sessionToken) ||
@@ -242,10 +245,19 @@ async function getAuthIdentity(
     }
     return { status: "ready", identity: { uid: user.uid, token } };
   } catch (error) {
-    return !isCloudSyncSessionCurrent(sessionToken) ||
+    if (
+      !isCloudSyncSessionCurrent(sessionToken) ||
       auth.currentUser?.uid !== cloudSyncSessionUid(sessionToken)
-      ? { status: "unauthorized" }
-      : { status: classifyAuthTokenFailure(error) };
+    ) {
+      return { status: "unauthorized" };
+    }
+    return {
+      status: isCloudSyncDeadlineError(error, "timeout")
+        ? "offline"
+        : isCloudSyncDeadlineError(error, "session")
+          ? "unauthorized"
+          : classifyAuthTokenFailure(error),
+    };
   }
 }
 

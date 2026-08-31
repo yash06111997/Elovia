@@ -121,6 +121,7 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
   const [isTracking, setIsTracking] = useState(false);
   const [status, setStatus] = useState<HealthStatus | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const [currentRun, setCurrentRun] = useState<{
     startTime: string;
     route: { latitude: number; longitude: number }[];
@@ -137,32 +138,36 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const loadData = useCallback(async () => {
-    await runProviderReload(() => setHealthData(defaultHealthData), async () => {
-      const stored = await accountStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed: unknown = JSON.parse(stored);
-        if (!isPlainRecord(parsed)) {
-          throw new TypeError("Stored health data is malformed.");
-        }
-        for (const key of [
-          "weeklySteps",
-          "runSessions",
-          "importedWorkouts",
-          "sleep",
-          "restingHeartRate",
-          "heartRateVariability",
-          "activeEnergyKcal",
-          "bodyMassKg",
-        ]) {
-          if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
+    try {
+      await runProviderReload(() => setHealthData(defaultHealthData), async () => {
+        const stored = await accountStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          const parsed: unknown = JSON.parse(stored);
+          if (!isPlainRecord(parsed)) {
             throw new TypeError("Stored health data is malformed.");
           }
-        }
-        // Merge onto defaults so data persisted by older builds, which lacked
-        // the sleep/vitals fields, does not yield undefined arrays.
-        setHealthData({ ...defaultHealthData, ...(parsed as Partial<HealthData>) });
-      } else setHealthData(defaultHealthData);
-    });
+          for (const key of [
+            "weeklySteps",
+            "runSessions",
+            "importedWorkouts",
+            "sleep",
+            "restingHeartRate",
+            "heartRateVariability",
+            "activeEnergyKcal",
+            "bodyMassKg",
+          ]) {
+            if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
+              throw new TypeError("Stored health data is malformed.");
+            }
+          }
+          // Merge onto defaults so data persisted by older builds, which lacked
+          // the sleep/vitals fields, does not yield undefined arrays.
+          setHealthData({ ...defaultHealthData, ...(parsed as Partial<HealthData>) });
+        } else setHealthData(defaultHealthData);
+      });
+    } finally {
+      setHydrated(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -482,6 +487,8 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
     },
     [persist],
   );
+
+  if (!hydrated) return null;
 
   return (
     <HealthContext.Provider

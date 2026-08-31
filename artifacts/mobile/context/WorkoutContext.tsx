@@ -127,42 +127,47 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   const [customPlans, setCustomPlans] = useState<CustomWorkoutPlan[]>([]);
   const [activePlanType, setActivePlanType] = useState<ActivePlanType>("ai");
   const [activeCustomPlanId, setActiveCustomPlanId] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(false);
   const [accountStorage] = useState(captureAccountStorageSession);
 
   const load = async () => {
-    await runProviderReload(() => {
-      setPlanState(null);
-      setSessions([]);
-      setPersonalRecords([]);
-      setActiveSession(null);
-      setCustomPlans([]);
-      setActivePlanType("ai");
-      setActiveCustomPlanId(null);
-    }, async () => {
-      const values = new Map(await accountStorage.multiGet([
-        "@elovia_plan",
-        "@elovia_sessions",
-        "@elovia_prs",
-        "@elovia_active_session",
-        "@elovia_custom_plans",
-        "@elovia_active_plan_type",
-        "@elovia_active_custom_plan_id",
-      ]));
-      const p = values.get("@elovia_plan") ?? null;
-      const s = values.get("@elovia_sessions") ?? null;
-      const pr = values.get("@elovia_prs") ?? null;
-      const active = values.get("@elovia_active_session") ?? null;
-      const cp = values.get("@elovia_custom_plans") ?? null;
-      const apt = values.get("@elovia_active_plan_type") ?? null;
-      const acpid = values.get("@elovia_active_custom_plan_id") ?? null;
-      setPlanState(p ? parseStoredJson(p, isNullablePlainRecord) as WorkoutPlan | null : null);
-      setSessions(s ? parseStoredJson(s, isUnknownArray) as WorkoutSession[] : []);
-      setPersonalRecords(pr ? parseStoredJson(pr, isUnknownArray) as PersonalRecord[] : []);
-      setActiveSession(active ? parseStoredJson(active, isNullablePlainRecord) as WorkoutSession | null : null);
-      setCustomPlans(cp ? parseStoredJson(cp, isUnknownArray) as CustomWorkoutPlan[] : []);
-      setActivePlanType(apt ? parseStoredJson(apt, (value): value is ActivePlanType => value === "ai" || value === "custom") : "ai");
-      setActiveCustomPlanId(acpid ? parseStoredJson(acpid, (value): value is string | null => value === null || typeof value === "string") : null);
-    });
+    try {
+      await runProviderReload(() => {
+        setPlanState(null);
+        setSessions([]);
+        setPersonalRecords([]);
+        setActiveSession(null);
+        setCustomPlans([]);
+        setActivePlanType("ai");
+        setActiveCustomPlanId(null);
+      }, async () => {
+        const values = new Map(await accountStorage.multiGet([
+          "@elovia_plan",
+          "@elovia_sessions",
+          "@elovia_prs",
+          "@elovia_active_session",
+          "@elovia_custom_plans",
+          "@elovia_active_plan_type",
+          "@elovia_active_custom_plan_id",
+        ]));
+        const p = values.get("@elovia_plan") ?? null;
+        const s = values.get("@elovia_sessions") ?? null;
+        const pr = values.get("@elovia_prs") ?? null;
+        const active = values.get("@elovia_active_session") ?? null;
+        const cp = values.get("@elovia_custom_plans") ?? null;
+        const apt = values.get("@elovia_active_plan_type") ?? null;
+        const acpid = values.get("@elovia_active_custom_plan_id") ?? null;
+        setPlanState(p ? parseStoredJson(p, isNullablePlainRecord) as WorkoutPlan | null : null);
+        setSessions(s ? parseStoredJson(s, isUnknownArray) as WorkoutSession[] : []);
+        setPersonalRecords(pr ? parseStoredJson(pr, isUnknownArray) as PersonalRecord[] : []);
+        setActiveSession(active ? parseStoredJson(active, isNullablePlainRecord) as WorkoutSession | null : null);
+        setCustomPlans(cp ? parseStoredJson(cp, isUnknownArray) as CustomWorkoutPlan[] : []);
+        setActivePlanType(apt ? parseStoredJson(apt, (value): value is ActivePlanType => value === "ai" || value === "custom") : "ai");
+        setActiveCustomPlanId(acpid ? parseStoredJson(acpid, (value): value is string | null => value === null || typeof value === "string") : null);
+      });
+    } finally {
+      setHydrated(true);
+    }
   };
 
   useEffect(() => {
@@ -479,6 +484,8 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
     }
     return plan ? plan.days : [];
   }, [activePlanType, activeCustomPlanId, customPlans, plan]);
+
+  if (!hydrated) return null;
 
   return (
     <WorkoutContext.Provider

@@ -7,6 +7,7 @@ import {
   cloudSyncSessionAbortControllerCount,
   endCloudSyncSession,
   cloudSyncFetch,
+  isCloudSyncSessionCurrent,
   runCloudSyncBoundedOperation,
 } from "../../artifacts/mobile/lib/cloudSyncSession.ts";
 import { createCloudSyncNetworkOrchestrator } from "../../artifacts/mobile/lib/cloudSyncOrchestrator.ts";
@@ -114,6 +115,70 @@ test("a never-resolving response body is bounded and releases its controller", a
   assert.equal(cloudSyncSessionAbortControllerCount(token), 0);
   body.resolve({ revision: 1 });
   await Promise.resolve();
+  assert.equal(cloudSyncSessionAbortControllerCount(token), 0);
+  endCloudSyncSession(token);
+});
+
+test("a bounded token refresh releases queued A work and cannot block B", async () => {
+  const runner = createCloudSyncNetworkOrchestrator(isCloudSyncSessionCurrent);
+  const lateToken = deferred();
+  const usedTokens = [];
+  const a = beginCloudSyncSession("A-token");
+  const aRefresh = runner.runExclusive(a, () =>
+    runCloudSyncBoundedOperation(a, async () => lateToken.promise, 1_000),
+  );
+  const aRejected = assert.rejects(
+    aRefresh,
+    (error) =>
+      error instanceof CloudSyncDeadlineError && error.reason === "session",
+  );
+  const queuedA = runner.runExclusive(a, async () => "queued-A");
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    if (cloudSyncSessionAbortControllerCount(a) === 1) break;
+    await Promise.resolve();
+  }
+  assert.equal(cloudSyncSessionAbortControllerCount(a), 1);
+
+  endCloudSyncSession(a);
+  const b = beginCloudSyncSession("B-token");
+  const bRefresh = await runner.runExclusive(b, async () => "B-token-value");
+  assert.deepEqual(bRefresh, { status: "applied", value: "B-token-value" });
+  await aRejected;
+  assert.deepEqual(await queuedA, { status: "stale" });
+
+  lateToken.resolve("late-A-token");
+  const staleA = await Promise.resolve(lateToken.promise).then((token) => {
+    if (isCloudSyncSessionCurrent(a)) usedTokens.push(token);
+    return isCloudSyncSessionCurrent(a);
+  });
+  assert.equal(staleA, false);
+  assert.deepEqual(usedTokens, []);
+  assert.equal(cloudSyncSessionAbortControllerCount(a), 0);
+  assert.equal(cloudSyncSessionAbortControllerCount(b), 0);
+  endCloudSyncSession(b);
+});
+
+test("a never-resolving token refresh times out without a controller leak", async () => {
+  const token = beginCloudSyncSession("token-timeout");
+  const lateToken = deferred();
+  let used = false;
+  const refresh = runCloudSyncBoundedOperation(
+    token,
+    async () => lateToken.promise,
+    5,
+  ).then(() => {
+    used = true;
+  });
+
+  await assert.rejects(
+    refresh,
+    (error) =>
+      error instanceof CloudSyncDeadlineError && error.reason === "timeout",
+  );
+  assert.equal(cloudSyncSessionAbortControllerCount(token), 0);
+  lateToken.resolve("late-token");
+  await Promise.resolve();
+  assert.equal(used, false);
   assert.equal(cloudSyncSessionAbortControllerCount(token), 0);
   endCloudSyncSession(token);
 });
@@ -230,6 +295,18 @@ test("production sync routes every network path through bounded token-scoped gua
   assert.equal(syncSource.match(/cloudSyncFetch\(\s*sessionToken/g)?.length, 3);
   assert.match(syncSource, /body: await response\.json\(\)/);
   assert.match(firebaseSource, /runBounded: runCloudSyncBoundedOperation/);
+  assert.match(
+    syncSource,
+    /runCloudSyncBoundedOperation\([\s\S]*sessionToken[\s\S]*user\.getIdToken\(\)/,
+  );
+  assert.match(
+    syncSource,
+    /isCloudSyncDeadlineError\(error, "timeout"\)[\s\S]*\? "offline"/,
+  );
+  assert.match(
+    syncSource,
+    /isCloudSyncDeadlineError\(error, "session"\)[\s\S]*\? "unauthorized"/,
+  );
   assert.match(
     autoSource,
     /backupInFlightRef = useRef\(new WeakSet<CloudSyncSessionToken>\(\)\)/,

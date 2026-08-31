@@ -127,6 +127,63 @@ test("health capability refresh updates memory without persisting synchronized d
   assert.match(refreshBlock, /setHealthData/);
 });
 
+test("account providers withhold descendants until initial storage hydration settles", async () => {
+  const providers = [
+    ["Workout", await source("context/WorkoutContext.tsx"), "hydrated"],
+    ["Nutrition", await source("context/NutritionContext.tsx"), "hydrated"],
+    ["Health", await source("context/HealthContext.tsx"), "hydrated"],
+    ["Wellness", await source("context/WellnessContext.tsx"), "isLoaded"],
+  ];
+
+  for (const [name, text, flag] of providers) {
+    if (flag === "hydrated") {
+      assert.match(text, /const \[hydrated, setHydrated\] = useState\(false\)/);
+      assert.match(text, /finally \{[\s\S]*setHydrated\(true\)/);
+    } else {
+      assert.match(text, /finally \{[\s\S]*setIsLoaded\(true\)/);
+    }
+    const gate = text.indexOf(`if (!${flag}) return null`);
+    const provider = text.indexOf(`<${name}Context.Provider`);
+    assert.ok(gate >= 0, `${name} must expose a hydration gate`);
+    assert.ok(
+      gate < provider,
+      `${name} must gate before rendering descendants`,
+    );
+  }
+});
+
+test("a delayed provider load cannot persist a list computed from defaults", async () => {
+  let releaseStorage;
+  const delayedStorage = new Promise((resolve) => {
+    releaseStorage = resolve;
+  });
+  let hydrated = false;
+  let sessions = [];
+  let persisted = null;
+
+  const load = (async () => {
+    try {
+      sessions = await delayedStorage;
+    } finally {
+      hydrated = true;
+    }
+  })();
+  const renderDescendant = () =>
+    hydrated
+      ? () => {
+          sessions = [...sessions, { id: "new" }];
+          persisted = sessions;
+        }
+      : null;
+
+  assert.equal(renderDescendant(), null);
+  assert.equal(persisted, null);
+  releaseStorage([{ id: "existing" }]);
+  await load;
+  renderDescendant()();
+  assert.deepEqual(persisted, [{ id: "existing" }, { id: "new" }]);
+});
+
 test("auth remounts the account provider subtree and invalidates storage generations", async () => {
   const auth = await source("lib/auth.tsx");
   const facade = await source("lib/accountSyncStorage.ts");
