@@ -20,6 +20,8 @@ export type SerializedRestoreFields =
   | { status: "valid"; changes: SerializedRestoreChange[] }
   | { status: "invalid" };
 
+export type AuthTokenFailureStatus = "offline" | "unauthorized";
+
 function isRevision(value: unknown): value is number {
   return Number.isSafeInteger(value) && typeof value === "number" && value >= 1;
 }
@@ -60,6 +62,30 @@ export function canUploadAfterRestore(outcome: RestoreOutcome): boolean {
 
 export function revisionStorageKey(firebaseUserId: string): string {
   return `@elovia_sync_revision:${encodeURIComponent(firebaseUserId)}`;
+}
+
+/** Classify Firebase token refresh failures without retaining error details. */
+export function classifyAuthTokenFailure(
+  error: unknown,
+): AuthTokenFailureStatus {
+  if (!error || typeof error !== "object") return "unauthorized";
+
+  const record = error as { code?: unknown; name?: unknown; message?: unknown };
+  const code = typeof record.code === "string" ? record.code.toLowerCase() : "";
+  const name = typeof record.name === "string" ? record.name.toLowerCase() : "";
+  const message =
+    typeof record.message === "string" ? record.message.toLowerCase() : "";
+
+  if (
+    code === "auth/network-request-failed" ||
+    code === "auth/timeout" ||
+    name === "aborterror" ||
+    name === "timeouterror" ||
+    (name === "typeerror" && /network|fetch|offline/.test(message))
+  ) {
+    return "offline";
+  }
+  return "unauthorized";
 }
 
 function isJsonCompatible(value: unknown, ancestors: Set<object>): boolean {

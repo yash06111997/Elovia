@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   canUploadAfterRestore,
+  classifyAuthTokenFailure,
   classifyBackupResponse,
   classifyRestoreResponse,
   revisionStorageKey,
@@ -92,6 +93,26 @@ test("revision storage is scoped to the Firebase user", () => {
     revisionStorageKey("second-user"),
   );
   assert.match(revisionStorageKey("first-user"), /first-user/);
+});
+
+test("token refresh failures distinguish offline from unauthorized", () => {
+  for (const error of [
+    { code: "auth/network-request-failed" },
+    { code: "auth/timeout" },
+    { name: "AbortError" },
+    { name: "TypeError", message: "Network request failed" },
+  ]) {
+    assert.equal(classifyAuthTokenFailure(error), "offline");
+  }
+
+  for (const error of [
+    { code: "auth/user-disabled" },
+    { code: "auth/invalid-user-token" },
+    new Error("Token rejected"),
+    null,
+  ]) {
+    assert.equal(classifyAuthTokenFailure(error), "unauthorized");
+  }
 });
 
 const RESTORE_FIELD_KINDS = {

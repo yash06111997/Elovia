@@ -3,6 +3,7 @@ import { Platform } from "react-native";
 import { getFirebaseAuth } from "./firebase";
 import {
   classifyBackupResponse,
+  classifyAuthTokenFailure,
   classifyRestoreResponse,
   revisionStorageKey,
   serializeRestoreFields,
@@ -76,6 +77,9 @@ const RESTORE_FIELD_KINDS: Record<string, RestoreFieldKind> = Object.fromEntries
 );
 
 type AuthIdentity = { uid: string; token: string };
+type AuthIdentityOutcome =
+  | { status: "ready"; identity: AuthIdentity }
+  | { status: "offline" | "unauthorized" };
 
 export type LocalSyncOwnerOutcome =
   | OwnerPreparationOutcome
@@ -106,16 +110,18 @@ export async function getCurrentCloudSyncUserId(): Promise<string | null> {
   }
 }
 
-async function getAuthIdentity(expectedUserId?: string): Promise<AuthIdentity | null> {
+async function getAuthIdentity(expectedUserId?: string): Promise<AuthIdentityOutcome> {
   try {
     const auth = await getFirebaseAuth();
     const user = auth?.currentUser;
-    if (!user || (expectedUserId !== undefined && user.uid !== expectedUserId)) return null;
+    if (!user || (expectedUserId !== undefined && user.uid !== expectedUserId)) {
+      return { status: "unauthorized" };
+    }
     const token = await user.getIdToken();
-    if (!token) return null;
-    return { uid: user.uid, token };
-  } catch {
-    return null;
+    if (!token) return { status: "unauthorized" };
+    return { status: "ready", identity: { uid: user.uid, token } };
+  } catch (error) {
+    return { status: classifyAuthTokenFailure(error) };
   }
 }
 
@@ -171,8 +177,9 @@ export function beginCloudSyncSession(uid: string): void {
 
 /** Upload local state without ever reading another account's shared keys. */
 export async function backupToCloud(expectedUserId?: string): Promise<BackupOutcome> {
-  const identity = await getAuthIdentity(expectedUserId);
-  if (!identity) return { status: "unauthorized" };
+  const auth = await getAuthIdentity(expectedUserId);
+  if (auth.status !== "ready") return { status: auth.status };
+  const identity = auth.identity;
 
   const owner = await prepareLocalSyncOwner(identity.uid);
   if (owner.status === "stale") return { status: "unauthorized" };
@@ -278,8 +285,9 @@ export async function backupToCloud(expectedUserId?: string): Promise<BackupOutc
 export async function restoreFromCloud(
   expectedUserId?: string,
 ): Promise<RestoreOutcome> {
-  const identity = await getAuthIdentity(expectedUserId);
-  if (!identity) return { status: "unauthorized" };
+  const auth = await getAuthIdentity(expectedUserId);
+  if (auth.status !== "ready") return { status: auth.status };
+  const identity = auth.identity;
 
   const owner = await prepareLocalSyncOwner(identity.uid);
   if (owner.status === "stale") return { status: "unauthorized" };

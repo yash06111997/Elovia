@@ -19,17 +19,66 @@ export type OwnedStorageOutcome<T> =
   | { status: "ready"; value: T }
   | { status: "stale" };
 
+type StoredEntry = readonly [key: string, value: string | null];
+
+interface OwnerTransitionJournal {
+  version: 1;
+  priorOwner: string;
+  targetOwner: string;
+  originalGlobals: StoredEntry[];
+  originalPriorCache: StoredEntry[];
+  originalTargetCache: StoredEntry[];
+}
+
 export const LOCAL_SYNC_OWNER_KEY = "@elovia_sync_owner";
+export const LOCAL_SYNC_JOURNAL_KEY = "@elovia_sync_owner_transition";
+export const LOCAL_SYNC_QUARANTINE_OWNER = "@elovia_sync_owner:quarantine";
 
 export function scopedSyncCacheKey(userId: string, storageKey: string): string {
   return `@elovia_sync_cache:${encodeURIComponent(userId)}:${encodeURIComponent(storageKey)}`;
 }
 
+function isStoredEntries(input: unknown): input is StoredEntry[] {
+  return (
+    Array.isArray(input) &&
+    input.every(
+      (entry) =>
+        Array.isArray(entry) &&
+        entry.length === 2 &&
+        typeof entry[0] === "string" &&
+        (typeof entry[1] === "string" || entry[1] === null),
+    )
+  );
+}
+
+function parseJournal(raw: string): OwnerTransitionJournal {
+  const input: unknown = JSON.parse(raw);
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    (input as { version?: unknown }).version !== 1 ||
+    typeof (input as { priorOwner?: unknown }).priorOwner !== "string" ||
+    typeof (input as { targetOwner?: unknown }).targetOwner !== "string" ||
+    !isStoredEntries(
+      (input as { originalGlobals?: unknown }).originalGlobals,
+    ) ||
+    !isStoredEntries(
+      (input as { originalPriorCache?: unknown }).originalPriorCache,
+    ) ||
+    !isStoredEntries(
+      (input as { originalTargetCache?: unknown }).originalTargetCache,
+    )
+  ) {
+    throw new Error("Local sync owner transition journal is invalid.");
+  }
+  return input as OwnerTransitionJournal;
+}
+
 /**
- * Serializes account ownership changes and snapshot commits. JavaScript cannot
- * stop Firebase auth from changing while an AsyncStorage call is in flight;
- * this queue guarantees the next owner's transition runs after that write and
- * moves the previous owner's data out of the shared keys before it can upload.
+ * Serializes account ownership changes and snapshot commits. Owner transitions
+ * are journaled and quarantined so a process crash or storage failure cannot
+ * expose partly moved shared data to either account.
  */
 export class SyncStorageCoordinator {
   private tail: Promise<void> = Promise.resolve();
@@ -56,11 +105,135 @@ export class SyncStorageCoordinator {
     }
   }
 
+  private async writeExactEntries(
+    entries: readonly StoredEntry[],
+  ): Promise<void> {
+    const sets: [string, string][] = [];
+    const removals: string[] = [];
+    for (const [key, value] of entries) {
+      if (value === null) removals.push(key);
+      else sets.push([key, value]);
+    }
+    if (sets.length > 0) await this.storage.multiSet(sets);
+    if (removals.length > 0) await this.storage.multiRemove(removals);
+  }
+
+  private async quarantineBestEffort(): Promise<void> {
+    try {
+      await this.storage.setItem(
+        LOCAL_SYNC_OWNER_KEY,
+        LOCAL_SYNC_QUARANTINE_OWNER,
+      );
+    } catch {
+      // The surviving journal still makes every coordinator operation fail
+      // closed and retry recovery on its next entry.
+    }
+  }
+
+  private async recoverIfNeeded(): Promise<void> {
+    const rawJournal = await this.storage.getItem(LOCAL_SYNC_JOURNAL_KEY);
+    const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
+
+    if (rawJournal === null) {
+      if (owner === LOCAL_SYNC_QUARANTINE_OWNER) {
+        throw new Error(
+          "Local sync storage is quarantined without a recovery journal.",
+        );
+      }
+      return;
+    }
+
+    let journal: OwnerTransitionJournal;
+    try {
+      journal = parseJournal(rawJournal);
+    } catch (error) {
+      await this.quarantineBestEffort();
+      throw error;
+    }
+
+    try {
+      await this.storage.setItem(
+        LOCAL_SYNC_OWNER_KEY,
+        LOCAL_SYNC_QUARANTINE_OWNER,
+      );
+      await this.writeExactEntries(journal.originalPriorCache);
+      await this.writeExactEntries(journal.originalTargetCache);
+      await this.writeExactEntries(journal.originalGlobals);
+      await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, journal.priorOwner);
+      await this.storage.removeItem(LOCAL_SYNC_JOURNAL_KEY);
+    } catch (error) {
+      await this.quarantineBestEffort();
+      throw error;
+    }
+  }
+
+  private async transitionOwner(
+    priorOwner: string,
+    targetOwner: string,
+  ): Promise<void> {
+    const priorCacheKeys = this.syncKeys.map((key) =>
+      scopedSyncCacheKey(priorOwner, key),
+    );
+    const targetCacheKeys = this.syncKeys.map((key) =>
+      scopedSyncCacheKey(targetOwner, key),
+    );
+    const [originalGlobals, originalPriorCache, originalTargetCache] =
+      await Promise.all([
+        this.storage.multiGet([...this.syncKeys]),
+        this.storage.multiGet(priorCacheKeys),
+        this.storage.multiGet(targetCacheKeys),
+      ]);
+
+    const journal: OwnerTransitionJournal = {
+      version: 1,
+      priorOwner,
+      targetOwner,
+      originalGlobals: originalGlobals.map(([key, value]) => [key, value]),
+      originalPriorCache: originalPriorCache.map(([key, value]) => [
+        key,
+        value,
+      ]),
+      originalTargetCache: originalTargetCache.map(([key, value]) => [
+        key,
+        value,
+      ]),
+    };
+
+    // Journal and quarantine precede every mutation of shared/cache values.
+    await this.storage.setItem(LOCAL_SYNC_JOURNAL_KEY, JSON.stringify(journal));
+    await this.storage.setItem(
+      LOCAL_SYNC_OWNER_KEY,
+      LOCAL_SYNC_QUARANTINE_OWNER,
+    );
+
+    // Save the source globals into its cache, then install the target cache.
+    await this.writeExactEntries(
+      originalGlobals.map(([key, value], index) => [
+        priorCacheKeys[index],
+        value,
+      ]),
+    );
+    await this.storage.multiRemove([...this.syncKeys]);
+    const targetGlobalSets: [string, string][] = [];
+    for (let index = 0; index < this.syncKeys.length; index++) {
+      const value = originalTargetCache[index]?.[1] ?? null;
+      if (value !== null) targetGlobalSets.push([this.syncKeys[index], value]);
+    }
+    if (targetGlobalSets.length > 0)
+      await this.storage.multiSet(targetGlobalSets);
+
+    // Owner target is committed only after globals are complete; journal is
+    // removed last, making this the sole stable-success state.
+    await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, targetOwner);
+    await this.storage.removeItem(LOCAL_SYNC_JOURNAL_KEY);
+  }
+
   async prepareOwner(
     expectedUserId: string,
     currentUserId: CurrentUserId,
   ): Promise<OwnerPreparationOutcome> {
     return this.exclusive(async () => {
+      await this.recoverIfNeeded();
       if ((await currentUserId()) !== expectedUserId)
         return { status: "stale" };
 
@@ -74,43 +247,13 @@ export class SyncStorageCoordinator {
         return { status: "ready", changed: true };
       }
 
-      const globalEntries = await this.storage.multiGet([...this.syncKeys]);
-      const previousCacheKeys = this.syncKeys.map((key) =>
-        scopedSyncCacheKey(owner, key),
-      );
-      const previousCacheSets: [string, string][] = [];
-      const previousCacheRemovals: string[] = [];
-      for (let index = 0; index < globalEntries.length; index++) {
-        const value = globalEntries[index]?.[1] ?? null;
-        const cacheKey = previousCacheKeys[index];
-        if (value === null) previousCacheRemovals.push(cacheKey);
-        else previousCacheSets.push([cacheKey, value]);
+      if (owner === LOCAL_SYNC_QUARANTINE_OWNER) {
+        throw new Error("Local sync storage remains quarantined.");
       }
-
-      const nextCacheKeys = this.syncKeys.map((key) =>
-        scopedSyncCacheKey(expectedUserId, key),
-      );
-      const nextCacheEntries = await this.storage.multiGet(nextCacheKeys);
-      const nextGlobalSets: [string, string][] = [];
-      for (let index = 0; index < this.syncKeys.length; index++) {
-        const value = nextCacheEntries[index]?.[1] ?? null;
-        if (value !== null) nextGlobalSets.push([this.syncKeys[index], value]);
-      }
-
-      // No write occurs for a stale expected uid. If auth changes after this
-      // check, its owner transition queues behind this critical section.
       if ((await currentUserId()) !== expectedUserId)
         return { status: "stale" };
 
-      if (previousCacheSets.length > 0)
-        await this.storage.multiSet(previousCacheSets);
-      if (previousCacheRemovals.length > 0) {
-        await this.storage.multiRemove(previousCacheRemovals);
-      }
-      await this.storage.multiRemove([...this.syncKeys]);
-      if (nextGlobalSets.length > 0)
-        await this.storage.multiSet(nextGlobalSets);
-      await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, expectedUserId);
+      await this.transitionOwner(owner, expectedUserId);
       return { status: "ready", changed: true };
     });
   }
@@ -123,6 +266,7 @@ export class SyncStorageCoordinator {
     OwnedStorageOutcome<readonly (readonly [string, string | null])[]>
   > {
     return this.exclusive(async () => {
+      await this.recoverIfNeeded();
       if ((await currentUserId()) !== expectedUserId)
         return { status: "stale" };
       if (
@@ -142,6 +286,7 @@ export class SyncStorageCoordinator {
     finalSets: readonly (readonly [string, string])[] = [],
   ): Promise<OwnedStorageOutcome<void>> {
     return this.exclusive(async () => {
+      await this.recoverIfNeeded();
       if ((await currentUserId()) !== expectedUserId)
         return { status: "stale" };
       if (
@@ -154,8 +299,6 @@ export class SyncStorageCoordinator {
       if (removals.length > 0) await this.storage.multiRemove([...removals]);
       if (finalSets.length > 0) await this.storage.multiSet(finalSets);
 
-      // A queued transition will move these writes if auth changed while the
-      // batch was committing. Report stale so callers never emit for B.
       if ((await currentUserId()) !== expectedUserId)
         return { status: "stale" };
       return { status: "ready", value: undefined };
@@ -168,6 +311,7 @@ export class SyncStorageCoordinator {
     operation: () => Promise<T>,
   ): Promise<OwnedStorageOutcome<T>> {
     return this.exclusive(async () => {
+      await this.recoverIfNeeded();
       if ((await currentUserId()) !== expectedUserId)
         return { status: "stale" };
       if (

@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
 
@@ -22,10 +22,59 @@ function findWorkspaceRoot(startDir) {
 const workspaceRoot = findWorkspaceRoot(projectRoot);
 const basePath = (process.env.BASE_PATH || "/").replace(/\/+$/, "");
 
+function resolvePnpmInvocation(
+  env = process.env,
+  platform = process.platform,
+  execPath = process.execPath,
+) {
+  const activeCli = env.npm_execpath;
+  if (
+    typeof activeCli === "string" &&
+    activeCli.length > 0 &&
+    !/\.(?:cmd|bat|exe)$/i.test(activeCli)
+  ) {
+    return { command: execPath, prefixArgs: [activeCli] };
+  }
+
+  if (platform === "win32") {
+    return {
+      command: env.ComSpec || env.COMSPEC || "cmd.exe",
+      prefixArgs: ["/d", "/s", "/c", "pnpm.cmd"],
+    };
+  }
+
+  return { command: "pnpm", prefixArgs: [] };
+}
+
+function stopChildProcessTree(
+  childProcess,
+  platform = process.platform,
+  spawnSyncImpl = spawnSync,
+) {
+  if (!childProcess?.pid) return;
+
+  if (platform === "win32") {
+    spawnSyncImpl(
+      "taskkill.exe",
+      ["/pid", String(childProcess.pid), "/t", "/f"],
+      { stdio: "ignore", windowsHide: true },
+    );
+    return;
+  }
+
+  childProcess.kill("SIGTERM");
+}
+
+function stopMetro() {
+  const processToStop = metroProcess;
+  metroProcess = null;
+  stopChildProcessTree(processToStop);
+}
+
 function exitWithError(message) {
   console.error(message);
   if (metroProcess) {
-    metroProcess.kill();
+    stopMetro();
   }
   process.exit(1);
 }
@@ -34,7 +83,7 @@ function setupSignalHandlers() {
   const cleanup = () => {
     if (metroProcess) {
       console.log("Cleaning up Metro process...");
-      metroProcess.kill();
+      stopMetro();
     }
     process.exit(0);
   };
@@ -146,9 +195,11 @@ async function startMetro(expoPublicDomain, expoPublicReplId) {
     console.log(`Setting EXPO_PUBLIC_REPL_ID=${expoPublicReplId}`);
   }
 
+  const pnpm = resolvePnpmInvocation();
   metroProcess = spawn(
-    "pnpm",
+    pnpm.command,
     [
+      ...pnpm.prefixArgs,
       "exec",
       "expo",
       "start",
@@ -559,15 +610,19 @@ async function main() {
   console.log("Build complete! Deploy to:", baseUrl);
 
   if (metroProcess) {
-    metroProcess.kill();
+    stopMetro();
   }
   process.exit(0);
 }
 
-main().catch((error) => {
-  console.error("Build failed:", error.message);
-  if (metroProcess) {
-    metroProcess.kill();
-  }
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("Build failed:", error.message);
+    if (metroProcess) {
+      stopMetro();
+    }
+    process.exit(1);
+  });
+}
+
+module.exports = { resolvePnpmInvocation, stopChildProcessTree };

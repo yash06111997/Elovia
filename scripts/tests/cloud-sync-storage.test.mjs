@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  LOCAL_SYNC_JOURNAL_KEY,
   LOCAL_SYNC_OWNER_KEY,
+  LOCAL_SYNC_QUARANTINE_OWNER,
   scopedSyncCacheKey,
   SyncStorageCoordinator,
 } from "../../artifacts/mobile/lib/cloudSyncStorage.ts";
@@ -56,6 +58,46 @@ class BlockingMemoryStorage extends MemoryStorage {
       await this.gate;
     }
     await super.multiSet(entries);
+  }
+}
+
+class FailingMemoryStorage extends MemoryStorage {
+  setFailure(failAt) {
+    this.mutationCount = 0;
+    this.failAt = failAt;
+  }
+
+  clearFailure() {
+    this.mutationCount = 0;
+    this.failAt = null;
+  }
+
+  maybeFail() {
+    this.mutationCount = (this.mutationCount ?? 0) + 1;
+    if (this.mutationCount === this.failAt) {
+      this.failAt = null;
+      throw new Error(`Injected storage failure ${this.mutationCount}`);
+    }
+  }
+
+  async setItem(key, value) {
+    this.maybeFail();
+    await super.setItem(key, value);
+  }
+
+  async removeItem(key) {
+    this.maybeFail();
+    await super.removeItem(key);
+  }
+
+  async multiSet(entries) {
+    this.maybeFail();
+    await super.multiSet(entries);
+  }
+
+  async multiRemove(keys) {
+    this.maybeFail();
+    await super.multiRemove(keys);
   }
 }
 
@@ -190,6 +232,107 @@ test("a queued owner transition moves a late previous-owner commit before B can 
   });
 });
 
+function transitionFixture() {
+  return new FailingMemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, "A"],
+    ["state", "a-state"],
+    [scopedSyncCacheKey("A", "state"), "old-a-cache"],
+    [scopedSyncCacheKey("A", "plan"), "old-a-plan-cache"],
+    [scopedSyncCacheKey("B", "state"), "b-state"],
+  ]);
+}
+
+test("every transition write phase fails closed, rolls back, and retries cleanly", async () => {
+  const mutationPhases = 8;
+
+  for (let failAt = 1; failAt <= mutationPhases; failAt++) {
+    const storage = transitionFixture();
+    storage.setFailure(failAt);
+    const firstCoordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
+
+    await assert.rejects(firstCoordinator.prepareOwner("B", async () => "B"));
+
+    storage.clearFailure();
+    const restartedCoordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
+    assert.deepEqual(
+      await restartedCoordinator.readOwned("B", async () => "B", SYNC_KEYS),
+      {
+        status: "stale",
+      },
+    );
+    assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), "A");
+    assert.equal(await storage.getItem("state"), "a-state");
+    assert.equal(
+      await storage.getItem(scopedSyncCacheKey("A", "state")),
+      "old-a-cache",
+    );
+    assert.equal(
+      await storage.getItem(scopedSyncCacheKey("A", "plan")),
+      "old-a-plan-cache",
+    );
+    assert.equal(
+      await storage.getItem(scopedSyncCacheKey("B", "state")),
+      "b-state",
+    );
+
+    assert.deepEqual(
+      await restartedCoordinator.prepareOwner("B", async () => "B"),
+      {
+        status: "ready",
+        changed: true,
+      },
+    );
+    assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), "B");
+    assert.equal(await storage.getItem(LOCAL_SYNC_JOURNAL_KEY), null);
+    assert.equal(await storage.getItem("state"), "b-state");
+    assert.equal(
+      await storage.getItem(scopedSyncCacheKey("A", "state")),
+      "a-state",
+    );
+    assert.equal(await storage.getItem(scopedSyncCacheKey("A", "plan")), null);
+    assert.equal(
+      await storage.getItem(scopedSyncCacheKey("B", "state")),
+      "b-state",
+    );
+  }
+});
+
+test("failed rollback remains quarantined and a later restart can recover", async () => {
+  const storage = transitionFixture();
+  storage.setFailure(3);
+  await assert.rejects(
+    new SyncStorageCoordinator(storage, SYNC_KEYS).prepareOwner(
+      "B",
+      async () => "B",
+    ),
+  );
+  assert.notEqual(await storage.getItem(LOCAL_SYNC_JOURNAL_KEY), null);
+
+  storage.setFailure(2);
+  await assert.rejects(
+    new SyncStorageCoordinator(storage, SYNC_KEYS).readOwned(
+      "B",
+      async () => "B",
+      SYNC_KEYS,
+    ),
+  );
+  assert.equal(
+    await storage.getItem(LOCAL_SYNC_OWNER_KEY),
+    LOCAL_SYNC_QUARANTINE_OWNER,
+  );
+  assert.notEqual(await storage.getItem(LOCAL_SYNC_JOURNAL_KEY), null);
+
+  storage.clearFailure();
+  const recovered = new SyncStorageCoordinator(storage, SYNC_KEYS);
+  assert.deepEqual(await recovered.prepareOwner("B", async () => "B"), {
+    status: "ready",
+    changed: true,
+  });
+  assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), "B");
+  assert.equal(await storage.getItem(LOCAL_SYNC_JOURNAL_KEY), null);
+  assert.equal(await storage.getItem("state"), "b-state");
+});
+
 test("automatic and manual sync bind work to an expected authenticated owner", async () => {
   const [syncSource, autoSource, profileSource] = await Promise.all([
     readFile(
@@ -213,7 +356,10 @@ test("automatic and manual sync bind work to an expected authenticated owner", a
     syncSource,
     /new SyncStorageCoordinator\(AsyncStorage, SYNC_KEYS\)/,
   );
-  assert.match(syncSource, /backupToCloud\(expectedUserId\?: string\)/);
+  assert.match(
+    syncSource,
+    /backupToCloud\([\s\S]*expectedUserId\?: string[\s\S]*\): Promise<BackupOutcome>/,
+  );
   assert.match(syncSource, /restoreFromCloud\([\s\S]*expectedUserId\?: string/);
   assert.match(
     syncSource,
