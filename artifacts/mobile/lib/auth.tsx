@@ -5,6 +5,10 @@ import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
 import * as Crypto from "expo-crypto";
 import { getFirebaseAuth } from "./firebase";
+import {
+  getAccountStorageScopeKey,
+  setAccountStorageAuthScope,
+} from "./accountSyncStorage";
 
 function generateUUID(): string {
   return Crypto.randomUUID();
@@ -130,12 +134,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!mounted) return;
         unsubscribe = onAuthStateChanged(firebaseAuth, (fbUser) => {
           if (!mounted) return;
-          setUser(fbUser ? firebaseUserToUser(fbUser) : null);
+          const nextUser = fbUser ? firebaseUserToUser(fbUser) : null;
+          setAccountStorageAuthScope(nextUser?.id ?? null, false);
+          setUser(nextUser);
           setIsLoading(false);
         });
       })
       .catch(() => {
-        if (mounted) setIsLoading(false);
+        if (mounted) {
+          setAccountStorageAuthScope(null, false);
+          setIsLoading(false);
+        }
       });
     return () => {
       mounted = false;
@@ -205,6 +214,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const firebaseAuth = await getFirebaseAuth();
       await signOut(firebaseAuth);
+      setAccountStorageAuthScope(null, false);
       setUser(null);
       setAuthError(null);
     } catch (err) {
@@ -216,6 +226,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
   }, []);
+
+  const accountScopeKey = getAccountStorageScopeKey();
 
   return (
     <AuthContext.Provider
@@ -229,7 +241,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         getIdToken,
       }}
     >
-      {children}
+      <React.Fragment key={accountScopeKey}>
+        {isLoading ? null : children}
+      </React.Fragment>
     </AuthContext.Provider>
   );
 }

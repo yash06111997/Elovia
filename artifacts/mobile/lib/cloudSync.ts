@@ -1,6 +1,9 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
 import { getFirebaseAuth } from "./firebase";
+import {
+  SYNC_KEYS,
+  syncStorageCoordinator as syncStorage,
+} from "./accountSyncStorage";
 import {
   classifyBackupResponse,
   classifyAuthTokenFailure,
@@ -11,35 +14,17 @@ import {
   type RestoreFieldKind,
   type RestoreOutcome,
 } from "./cloudSyncContract";
-import {
-  SyncStorageCoordinator,
-  type OwnerPreparationOutcome,
-} from "./cloudSyncStorage";
+import { type OwnerPreparationOutcome } from "./cloudSyncStorage";
 
 /**
  * Cloud sync against the Postgres-backed API. Firebase Auth remains the
  * identity provider, but the ID token and uid are never persisted or logged.
  */
 
-const SYNC_KEYS = [
-  "@elovia_state",
-  "@elovia_plan",
-  "@elovia_custom_plans",
-  "@elovia_active_plan_type",
-  "@elovia_active_custom_plan_id",
-  "@elovia_sessions",
-  "@elovia_prs",
-  "@elovia_meal_plan",
-  "@elovia_food_log",
-  "@elovia_custom_meal_plans",
-  "@elovia_active_meal_plan_type",
-  "@elovia_active_custom_meal_plan_id",
-  "@elovia_health_data",
-] as const;
-
 const FIELD_MAP: Record<string, string> = {
   "@elovia_state": "appState",
   "@elovia_plan": "workoutPlan",
+  "@elovia_active_session": "activeSession",
   "@elovia_custom_plans": "customPlans",
   "@elovia_active_plan_type": "activePlanType",
   "@elovia_active_custom_plan_id": "activeCustomPlanId",
@@ -51,6 +36,8 @@ const FIELD_MAP: Record<string, string> = {
   "@elovia_active_meal_plan_type": "activeMealPlanType",
   "@elovia_active_custom_meal_plan_id": "activeCustomMealPlanId",
   "@elovia_health_data": "healthData",
+  "@elovia_wellness": "wellnessData",
+  "@elovia_water_goal": "waterGoal",
 };
 
 const REVERSE_FIELD_MAP: Record<string, string> = Object.fromEntries(
@@ -60,6 +47,7 @@ const REVERSE_FIELD_MAP: Record<string, string> = Object.fromEntries(
 const JSON_KEYS = new Set([
   "@elovia_state",
   "@elovia_plan",
+  "@elovia_active_session",
   "@elovia_custom_plans",
   "@elovia_sessions",
   "@elovia_prs",
@@ -67,6 +55,8 @@ const JSON_KEYS = new Set([
   "@elovia_food_log",
   "@elovia_custom_meal_plans",
   "@elovia_health_data",
+  "@elovia_wellness",
+  "@elovia_water_goal",
 ]);
 
 const RESTORE_FIELD_KINDS: Record<string, RestoreFieldKind> = Object.fromEntries(
@@ -92,8 +82,6 @@ export type LegacyMigrationOutcome =
   | { status: "server" };
 
 const conflictBlockedUsers = new Set<string>();
-const syncStorage = new SyncStorageCoordinator(AsyncStorage, SYNC_KEYS);
-
 function getBaseUrl(): string {
   const domain = process.env.EXPO_PUBLIC_DOMAIN;
   if (domain) return `https://${domain}`;

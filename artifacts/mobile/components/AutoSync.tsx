@@ -55,14 +55,18 @@ export function AutoSync() {
         const owner = await prepareLocalSyncOwner(currentUserId);
         if (!(await sessionIsCurrent())) return;
         if (owner.status !== "ready") return;
-        if (owner.changed) emitDataRestored();
+        if (owner.changed) {
+          const reload = await emitDataRestored();
+          if (!(await sessionIsCurrent()) || reload.status === "failed") return;
+        }
 
         const outcome = await restoreFromCloud(currentUserId);
         if (!(await sessionIsCurrent())) return;
         if (!canUploadAfterRestore(outcome)) return;
 
         if (outcome.status === "restored") {
-          emitDataRestored();
+          const reload = await emitDataRestored();
+          if (!(await sessionIsCurrent()) || reload.status === "failed") return;
           restoreSettledRef.current = true;
           return;
         }
@@ -78,7 +82,8 @@ export function AutoSync() {
         }
 
         if (migration.status === "migrated") {
-          emitDataRestored();
+          const reload = await emitDataRestored();
+          if (!(await sessionIsCurrent()) || reload.status === "failed") return;
           const backupStatus = migration.cloudBackup.status;
           if (backupStatus === "saved") {
             restoreSettledRef.current = true;

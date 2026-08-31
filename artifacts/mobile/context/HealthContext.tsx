@@ -1,8 +1,8 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Platform, Alert, AppState, type AppStateStatus } from "react-native";
 import * as Location from "expo-location";
 import { onDataRestored } from "@/lib/syncEvents";
+import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
 import {
   backendLabel,
   getHealthStatus,
@@ -129,22 +129,24 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const liveStepsUnsubRef = useRef<(() => void) | null>(null);
   const syncInFlightRef = useRef(false);
+  const [accountStorage] = useState(captureAccountStorageSession);
 
   const persist = useCallback((data: HealthData) => {
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch(() => {});
+    accountStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch(() => {});
   }, []);
 
   const loadData = useCallback(async () => {
     try {
-      const stored = await AsyncStorage.getItem(STORAGE_KEY);
+      const stored = await accountStorage.getItem(STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
         // Merge onto defaults so data persisted by older builds, which lacked
         // the sleep/vitals fields, does not yield undefined arrays.
         setHealthData({ ...defaultHealthData, ...parsed });
-      }
+      } else setHealthData(defaultHealthData);
     } catch {
       // Corrupt cache is not worth failing startup over.
+      setHealthData(defaultHealthData);
     }
   }, []);
 
@@ -152,7 +154,7 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
     loadData();
   }, [loadData]);
 
-  useEffect(() => onDataRestored(() => void loadData()), [loadData]);
+  useEffect(() => onDataRestored(() => loadData()), [loadData]);
 
   /** Pull real capability + permission state from the platform. */
   const refreshStatus = useCallback(async () => {

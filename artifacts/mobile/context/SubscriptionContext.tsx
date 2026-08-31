@@ -134,7 +134,7 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     void refreshEntitlement();
   }, [refreshEntitlement, user?.id]);
 
-  useEffect(() => onDataRestored(() => void refreshEntitlement()), [refreshEntitlement]);
+  useEffect(() => onDataRestored(() => refreshEntitlement()), [refreshEntitlement]);
 
   useEffect(() => {
     const onAppStateChange = (nextState: AppStateStatus) => {

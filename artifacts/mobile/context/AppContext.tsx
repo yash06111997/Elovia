@@ -1,5 +1,5 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
 import { onDataRestored } from "@/lib/syncEvents";
 
 export type FitnessGoal = "fat_loss" | "muscle_gain" | "maintenance" | "general_fitness" | "strength" | "endurance";
@@ -113,6 +113,7 @@ export const AppContext = createContext<AppContextType | null>(null);
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AppState>(defaultState);
   const [loaded, setLoaded] = useState(false);
+  const [accountStorage] = useState(captureAccountStorageSession);
 
   useEffect(() => {
     loadState();
@@ -120,13 +121,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     return onDataRestored(() => {
-      loadState();
+      return loadState();
     });
   }, []);
 
   const loadState = async () => {
     try {
-      const saved = await AsyncStorage.getItem("@elovia_state");
+      const saved = await accountStorage.getItem("@elovia_state");
       if (saved) {
         const parsed = JSON.parse(saved) as AppState;
         setState({
@@ -134,8 +135,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ...parsed,
           healthMetrics: parsed.healthMetrics ?? [],
         });
-      }
+      } else setState(defaultState);
     } catch (e) {
+      setState(defaultState);
     } finally {
       setLoaded(true);
     }
@@ -143,7 +145,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const saveState = async (newState: AppState) => {
     try {
-      await AsyncStorage.setItem("@elovia_state", JSON.stringify(newState));
+      await accountStorage.setItem("@elovia_state", JSON.stringify(newState));
     } catch (e) {}
   };
 

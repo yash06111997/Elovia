@@ -33,6 +33,7 @@ interface OwnerTransitionJournal {
 export const LOCAL_SYNC_OWNER_KEY = "@elovia_sync_owner";
 export const LOCAL_SYNC_JOURNAL_KEY = "@elovia_sync_owner_transition";
 export const LOCAL_SYNC_QUARANTINE_OWNER = "@elovia_sync_owner:quarantine";
+export const LOCAL_SYNC_GUEST_OWNER = "@elovia_sync_owner:guest";
 
 export function scopedSyncCacheKey(userId: string, storageKey: string): string {
   return `@elovia_sync_cache:${encodeURIComponent(userId)}:${encodeURIComponent(storageKey)}`;
@@ -229,7 +230,7 @@ export class SyncStorageCoordinator {
   }
 
   async prepareOwner(
-    expectedUserId: string,
+    expectedUserId: string | null,
     currentUserId: CurrentUserId,
   ): Promise<OwnerPreparationOutcome> {
     return this.exclusive(async () => {
@@ -238,11 +239,20 @@ export class SyncStorageCoordinator {
         return { status: "stale" };
 
       const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
-      if (owner === expectedUserId) return { status: "ready", changed: false };
+      if (
+        owner === expectedUserId ||
+        (expectedUserId === null && owner === LOCAL_SYNC_GUEST_OWNER)
+      ) {
+        return { status: "ready", changed: false };
+      }
 
       if (owner === null) {
         if ((await currentUserId()) !== expectedUserId)
           return { status: "stale" };
+        // Unowned guest data stays unowned so the first authenticated account
+        // can claim it in place without an unnecessary cache round trip.
+        if (expectedUserId === null)
+          return { status: "ready", changed: false };
         await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, expectedUserId);
         return { status: "ready", changed: true };
       }
@@ -253,13 +263,16 @@ export class SyncStorageCoordinator {
       if ((await currentUserId()) !== expectedUserId)
         return { status: "stale" };
 
-      await this.transitionOwner(owner, expectedUserId);
+      await this.transitionOwner(
+        owner,
+        expectedUserId ?? LOCAL_SYNC_GUEST_OWNER,
+      );
       return { status: "ready", changed: true };
     });
   }
 
   async readOwned(
-    expectedUserId: string,
+    expectedUserId: string | null,
     currentUserId: CurrentUserId,
     keys: readonly string[],
   ): Promise<
@@ -269,8 +282,10 @@ export class SyncStorageCoordinator {
       await this.recoverIfNeeded();
       if ((await currentUserId()) !== expectedUserId)
         return { status: "stale" };
+      const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
       if (
-        (await this.storage.getItem(LOCAL_SYNC_OWNER_KEY)) !== expectedUserId
+        owner !== expectedUserId &&
+        !(expectedUserId === null && owner === LOCAL_SYNC_GUEST_OWNER)
       ) {
         return { status: "stale" };
       }
@@ -279,7 +294,7 @@ export class SyncStorageCoordinator {
   }
 
   async commitOwned(
-    expectedUserId: string,
+    expectedUserId: string | null,
     currentUserId: CurrentUserId,
     sets: readonly (readonly [string, string])[],
     removals: readonly string[],
@@ -289,8 +304,10 @@ export class SyncStorageCoordinator {
       await this.recoverIfNeeded();
       if ((await currentUserId()) !== expectedUserId)
         return { status: "stale" };
+      const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
       if (
-        (await this.storage.getItem(LOCAL_SYNC_OWNER_KEY)) !== expectedUserId
+        owner !== expectedUserId &&
+        !(expectedUserId === null && owner === LOCAL_SYNC_GUEST_OWNER)
       ) {
         return { status: "stale" };
       }
@@ -306,7 +323,7 @@ export class SyncStorageCoordinator {
   }
 
   async runOwnedMutation<T>(
-    expectedUserId: string,
+    expectedUserId: string | null,
     currentUserId: CurrentUserId,
     operation: () => Promise<T>,
   ): Promise<OwnedStorageOutcome<T>> {
@@ -314,8 +331,10 @@ export class SyncStorageCoordinator {
       await this.recoverIfNeeded();
       if ((await currentUserId()) !== expectedUserId)
         return { status: "stale" };
+      const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
       if (
-        (await this.storage.getItem(LOCAL_SYNC_OWNER_KEY)) !== expectedUserId
+        owner !== expectedUserId &&
+        !(expectedUserId === null && owner === LOCAL_SYNC_GUEST_OWNER)
       ) {
         return { status: "stale" };
       }

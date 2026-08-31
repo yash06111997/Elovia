@@ -149,6 +149,93 @@ test("guest data is claimed, isolated on A to B, and restored on B to A", async 
   assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), "A");
 });
 
+test("authenticated A is isolated from signed-out guest and later B", async () => {
+  const accountKeys = ["@elovia_state"];
+  const storage = new MemoryStorage(
+    Object.entries({
+      [LOCAL_SYNC_OWNER_KEY]: "A",
+      "@elovia_state": "A-state",
+    }),
+  );
+  const coordinator = new SyncStorageCoordinator(storage, accountKeys);
+  let currentUser = null;
+
+  const guest = await coordinator.prepareOwner(null, async () => currentUser);
+  assert.deepEqual(guest, { status: "ready", changed: true });
+  assert.equal(await storage.getItem("@elovia_state"), null);
+  assert.equal(
+    await storage.getItem(scopedSyncCacheKey("A", "@elovia_state")),
+    "A-state",
+  );
+  assert.deepEqual(
+    await coordinator.readOwned(null, async () => currentUser, [
+      "@elovia_state",
+    ]),
+    { status: "ready", value: [["@elovia_state", null]] },
+  );
+
+  currentUser = "B";
+  const b = await coordinator.prepareOwner("B", async () => currentUser);
+  assert.deepEqual(b, { status: "ready", changed: true });
+  assert.equal(await storage.getItem("@elovia_state"), null);
+  assert.deepEqual(
+    await coordinator.readOwned("B", async () => currentUser, [
+      "@elovia_state",
+    ]),
+    { status: "ready", value: [["@elovia_state", null]] },
+  );
+});
+
+test("the first authenticated user claims unowned guest data without losing it", async () => {
+  const storage = new MemoryStorage([["@elovia_state", "guest-state"]]);
+  const coordinator = new SyncStorageCoordinator(storage, ["@elovia_state"]);
+  let currentUser = null;
+
+  assert.deepEqual(
+    await coordinator.readOwned(null, async () => currentUser, [
+      "@elovia_state",
+    ]),
+    { status: "ready", value: [["@elovia_state", "guest-state"]] },
+  );
+
+  currentUser = "A";
+  assert.deepEqual(
+    await coordinator.prepareOwner("A", async () => currentUser),
+    { status: "ready", changed: true },
+  );
+  assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), "A");
+  assert.equal(await storage.getItem("@elovia_state"), "guest-state");
+});
+
+test("an old A generation cannot write after A to B to A remounts", async () => {
+  const storage = new MemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, "A"],
+    ["state", "A-current"],
+  ]);
+  const coordinator = new SyncStorageCoordinator(storage, ["state"]);
+  let currentUid = "A";
+  let generation = 1;
+  const oldGeneration = generation;
+  const oldAResolver = async () =>
+    generation === oldGeneration ? currentUid : "stale-generation";
+
+  currentUid = "B";
+  generation++;
+  await coordinator.prepareOwner("B", async () => currentUid);
+  currentUid = "A";
+  generation++;
+  await coordinator.prepareOwner("A", async () => currentUid);
+
+  const stale = await coordinator.commitOwned(
+    "A",
+    oldAResolver,
+    [["state", "old-A-write"]],
+    [],
+  );
+  assert.deepEqual(stale, { status: "stale" });
+  assert.equal(await storage.getItem("state"), "A-current");
+});
+
 test("a stale expected uid aborts an owner transition without mutation", async () => {
   const storage = new MemoryStorage([
     [LOCAL_SYNC_OWNER_KEY, "A"],
@@ -352,10 +439,7 @@ test("automatic and manual sync bind work to an expected authenticated owner", a
     ),
   ]);
 
-  assert.match(
-    syncSource,
-    /new SyncStorageCoordinator\(AsyncStorage, SYNC_KEYS\)/,
-  );
+  assert.match(syncSource, /syncStorageCoordinator as syncStorage/);
   assert.match(
     syncSource,
     /backupToCloud\([\s\S]*expectedUserId\?: string[\s\S]*\): Promise<BackupOutcome>/,

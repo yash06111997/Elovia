@@ -6,8 +6,8 @@ import React, {
   useMemo,
   useState,
 } from "react";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
+import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
 import { getFirebaseAuth } from "@/lib/firebase";
 import { onDataRestored } from "@/lib/syncEvents";
 import { toLocalDateKey } from "@/lib/health";
@@ -158,14 +158,17 @@ export function WellnessProvider({ children }: { children: React.ReactNode }) {
   const [supplements, setSupplements] = useState<SupplementDefinition[]>([]);
   const [supplementsLoading, setSupplementsLoading] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [accountStorage] = useState(captureAccountStorageSession);
 
   const persist = useCallback((next: WellnessState) => {
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+    accountStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
   }, []);
 
   const load = useCallback(async () => {
+    setState(DEFAULT_STATE);
+    setWaterGoalMlState(2500);
     try {
-      const [raw, goal] = await AsyncStorage.multiGet([STORAGE_KEY, "@elovia_water_goal"]);
+      const [raw, goal] = await accountStorage.multiGet([STORAGE_KEY, "@elovia_water_goal"]);
 
       if (raw[1]) {
         const parsed = JSON.parse(raw[1]);
@@ -196,7 +199,7 @@ export function WellnessProvider({ children }: { children: React.ReactNode }) {
     void load();
   }, [load]);
 
-  useEffect(() => onDataRestored(() => void load()), [load]);
+  useEffect(() => onDataRestored(() => load()), [load]);
 
   const today = toLocalDateKey(new Date());
 
@@ -271,7 +274,7 @@ export function WellnessProvider({ children }: { children: React.ReactNode }) {
   const setWaterGoal = useCallback((litres: number) => {
     const ml = Math.round(Math.min(8, Math.max(0.5, litres)) * 1000);
     setWaterGoalMlState(ml);
-    AsyncStorage.setItem("@elovia_water_goal", String(ml)).catch(() => {});
+    accountStorage.setItem("@elovia_water_goal", String(ml)).catch(() => {});
   }, []);
 
   const refreshSupplements = useCallback(async () => {

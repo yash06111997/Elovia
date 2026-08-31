@@ -1,5 +1,5 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
 import { onDataRestored } from "@/lib/syncEvents";
 
 export interface Meal {
@@ -84,22 +84,29 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
   const [customMealPlans, setCustomMealPlans] = useState<CustomMealPlan[]>([]);
   const [activeMealPlanType, setActiveMealPlanType] = useState<ActiveMealPlanType>("ai");
   const [activeCustomMealPlanId, setActiveCustomMealPlanId] = useState<string | null>(null);
+  const [accountStorage] = useState(captureAccountStorageSession);
 
   const load = async () => {
     try {
       const [mp, fl, cmp, ampt, acmpid] = await Promise.all([
-        AsyncStorage.getItem("@elovia_meal_plan"),
-        AsyncStorage.getItem("@elovia_food_log"),
-        AsyncStorage.getItem("@elovia_custom_meal_plans"),
-        AsyncStorage.getItem("@elovia_active_meal_plan_type"),
-        AsyncStorage.getItem("@elovia_active_custom_meal_plan_id"),
+        accountStorage.getItem("@elovia_meal_plan"),
+        accountStorage.getItem("@elovia_food_log"),
+        accountStorage.getItem("@elovia_custom_meal_plans"),
+        accountStorage.getItem("@elovia_active_meal_plan_type"),
+        accountStorage.getItem("@elovia_active_custom_meal_plan_id"),
       ]);
-      if (mp) setMealPlanState(JSON.parse(mp));
-      if (fl) setFoodLog(JSON.parse(fl));
-      if (cmp) setCustomMealPlans(JSON.parse(cmp));
-      if (ampt) setActiveMealPlanType(JSON.parse(ampt));
-      if (acmpid) setActiveCustomMealPlanId(JSON.parse(acmpid));
-    } catch (e) {}
+      setMealPlanState(mp ? JSON.parse(mp) : null);
+      setFoodLog(fl ? JSON.parse(fl) : []);
+      setCustomMealPlans(cmp ? JSON.parse(cmp) : []);
+      setActiveMealPlanType(ampt ? JSON.parse(ampt) : "ai");
+      setActiveCustomMealPlanId(acmpid ? JSON.parse(acmpid) : null);
+    } catch (e) {
+      setMealPlanState(null);
+      setFoodLog([]);
+      setCustomMealPlans([]);
+      setActiveMealPlanType("ai");
+      setActiveCustomMealPlanId(null);
+    }
   };
 
   useEffect(() => {
@@ -108,15 +115,15 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     return onDataRestored(() => {
-      load();
+      return load();
     });
   }, []);
 
   const setMealPlan = useCallback((plan: MealPlan) => {
     setMealPlanState(plan);
     setActiveMealPlanType("ai");
-    AsyncStorage.setItem("@elovia_meal_plan", JSON.stringify(plan));
-    AsyncStorage.setItem("@elovia_active_meal_plan_type", JSON.stringify("ai"));
+    accountStorage.setItem("@elovia_meal_plan", JSON.stringify(plan)).catch(() => {});
+    accountStorage.setItem("@elovia_active_meal_plan_type", JSON.stringify("ai")).catch(() => {});
   }, []);
 
   const logFood = useCallback((entry: Omit<FoodLogEntry, "id" | "timestamp">) => {
@@ -127,7 +134,7 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
     };
     setFoodLog((prev) => {
       const next = [...prev, newEntry].slice(-500);
-      AsyncStorage.setItem("@elovia_food_log", JSON.stringify(next));
+      accountStorage.setItem("@elovia_food_log", JSON.stringify(next)).catch(() => {});
       return next;
     });
   }, []);
@@ -135,7 +142,7 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
   const removeLogEntry = useCallback((id: string) => {
     setFoodLog((prev) => {
       const next = prev.filter((e) => e.id !== id);
-      AsyncStorage.setItem("@elovia_food_log", JSON.stringify(next));
+      accountStorage.setItem("@elovia_food_log", JSON.stringify(next)).catch(() => {});
       return next;
     });
   }, []);
@@ -182,7 +189,7 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
     };
     setCustomMealPlans((prev) => {
       const updated = [...prev, newPlan];
-      AsyncStorage.setItem("@elovia_custom_meal_plans", JSON.stringify(updated));
+      accountStorage.setItem("@elovia_custom_meal_plans", JSON.stringify(updated)).catch(() => {});
       return updated;
     });
     return newPlan;
@@ -191,7 +198,7 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
   const updateCustomMealPlan = useCallback((updatedPlan: CustomMealPlan) => {
     setCustomMealPlans((prev) => {
       const updated = prev.map((p) => (p.id === updatedPlan.id ? { ...updatedPlan, updatedAt: new Date().toISOString() } : p));
-      AsyncStorage.setItem("@elovia_custom_meal_plans", JSON.stringify(updated));
+      accountStorage.setItem("@elovia_custom_meal_plans", JSON.stringify(updated)).catch(() => {});
       return updated;
     });
   }, []);
@@ -199,13 +206,13 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
   const deleteCustomMealPlan = useCallback((id: string) => {
     setCustomMealPlans((prev) => {
       const updated = prev.filter((p) => p.id !== id);
-      AsyncStorage.setItem("@elovia_custom_meal_plans", JSON.stringify(updated));
+      accountStorage.setItem("@elovia_custom_meal_plans", JSON.stringify(updated)).catch(() => {});
       return updated;
     });
     setActiveCustomMealPlanId((prev) => {
       if (prev === id) {
-        AsyncStorage.setItem("@elovia_active_meal_plan_type", JSON.stringify("ai"));
-        AsyncStorage.removeItem("@elovia_active_custom_meal_plan_id");
+        accountStorage.setItem("@elovia_active_meal_plan_type", JSON.stringify("ai")).catch(() => {});
+        accountStorage.removeItem("@elovia_active_custom_meal_plan_id").catch(() => {});
         setActiveMealPlanType("ai");
         return null;
       }
@@ -215,13 +222,13 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
 
   const setActiveMealPlan = useCallback((type: ActiveMealPlanType, customPlanId?: string) => {
     setActiveMealPlanType(type);
-    AsyncStorage.setItem("@elovia_active_meal_plan_type", JSON.stringify(type));
+    accountStorage.setItem("@elovia_active_meal_plan_type", JSON.stringify(type)).catch(() => {});
     if (type === "custom" && customPlanId) {
       setActiveCustomMealPlanId(customPlanId);
-      AsyncStorage.setItem("@elovia_active_custom_meal_plan_id", JSON.stringify(customPlanId));
+      accountStorage.setItem("@elovia_active_custom_meal_plan_id", JSON.stringify(customPlanId)).catch(() => {});
     } else {
       setActiveCustomMealPlanId(null);
-      AsyncStorage.removeItem("@elovia_active_custom_meal_plan_id");
+      accountStorage.removeItem("@elovia_active_custom_meal_plan_id").catch(() => {});
     }
   }, []);
 

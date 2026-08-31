@@ -117,7 +117,13 @@ export default function ProfileScreen() {
         );
         return;
       }
-      if (owner.changed) emitDataRestored();
+      if (owner.changed) {
+        const reload = await emitDataRestored();
+        if (reload.status === "failed") {
+          Alert.alert("Backup unavailable", "Elovia could not reload the active account's local data safely.");
+          return;
+        }
+      }
 
       const result = await backupToCloud(expectedUserId);
       switch (result.status) {
@@ -166,7 +172,13 @@ export default function ProfileScreen() {
         );
         return;
       }
-      if (owner.changed) emitDataRestored();
+      if (owner.changed) {
+        const reload = await emitDataRestored();
+        if (reload.status === "failed") {
+          Alert.alert("Restore unavailable", "Elovia could not reload the active account's local data safely.");
+          return;
+        }
+      }
 
       const outcome = await restoreFromCloud(expectedUserId);
       if ((await getCurrentCloudSyncUserId()) !== expectedUserId) {
@@ -175,7 +187,11 @@ export default function ProfileScreen() {
       }
 
       if (outcome.status === "restored") {
-        emitDataRestored();
+        const reload = await emitDataRestored();
+        if (reload.status === "failed") {
+          Alert.alert("Restore incomplete", "Your cloud data was saved locally, but Elovia could not reload every screen. Please reopen the app.");
+          return;
+        }
         Alert.alert("Restore complete", "Your latest cloud data is now on this device.");
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         return;
@@ -200,7 +216,11 @@ export default function ProfileScreen() {
           return;
         }
 
-        emitDataRestored();
+        const reload = await emitDataRestored();
+        if (reload.status === "failed") {
+          Alert.alert("Restore incomplete", "Your older data was restored, but Elovia could not reload every screen. Please reopen the app.");
+          return;
+        }
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         switch (migration.cloudBackup.status) {
           case "saved":
