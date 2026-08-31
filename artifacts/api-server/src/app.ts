@@ -4,6 +4,7 @@ import pinoHttp from "pino-http";
 import { authMiddleware } from "./middlewares/authMiddleware";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { apiErrorHandler } from "./middlewares/apiErrorHandler";
 
 const app: Express = express();
 
@@ -32,5 +33,6 @@ app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 app.use(authMiddleware);
 
 app.use("/api", router);
+app.use(apiErrorHandler);
 
 export default app;

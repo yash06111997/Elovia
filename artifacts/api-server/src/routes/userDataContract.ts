@@ -23,14 +23,37 @@ export const USER_DATA_FIELDS = [
 
 export type UserDataField = (typeof USER_DATA_FIELDS)[number];
 
-const synchronizedFields = Object.fromEntries(
-  USER_DATA_FIELDS.map((field) => [field, z.unknown().optional()]),
-) as Record<UserDataField, z.ZodOptional<z.ZodUnknown>>;
+export const MAX_SYNC_REVISION = Number.MAX_SAFE_INTEGER;
+
+const jsonField = z.unknown().optional();
+const varcharField = z.string().nullable().optional();
 
 const userDataWriteSchema = z
   .object({
-    baseRevision: z.number().int().nonnegative().nullable(),
-    ...synchronizedFields,
+    baseRevision: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(MAX_SYNC_REVISION)
+      .nullable(),
+    appState: jsonField,
+    workoutPlan: jsonField,
+    customPlans: jsonField,
+    activePlanType: varcharField,
+    activeCustomPlanId: varcharField,
+    activeSession: jsonField,
+    sessions: jsonField,
+    personalRecords: jsonField,
+    mealPlan: jsonField,
+    foodLog: jsonField,
+    customMealPlans: jsonField,
+    activeMealPlanType: varcharField,
+    activeCustomMealPlanId: varcharField,
+    healthData: jsonField,
+    wellnessData: jsonField,
+    waterGoal: jsonField,
+    reminderPrefs: jsonField,
+    places: jsonField,
   })
   .strict()
   .superRefine((value, context) => {
@@ -60,6 +83,7 @@ const userDataWriteSchema = z
   });
 
 export type UserDataWrite = z.infer<typeof userDataWriteSchema>;
+export type UserDataPatch = Partial<Omit<UserDataWrite, "baseRevision">>;
 
 export function parseUserDataWrite(input: unknown): UserDataWrite {
   const ownInput =
@@ -70,14 +94,51 @@ export function parseUserDataWrite(input: unknown): UserDataWrite {
   return userDataWriteSchema.parse(ownInput);
 }
 
-export function buildUserDataPatch(
-  input: UserDataWrite,
-): Partial<Record<UserDataField, unknown>> {
-  return Object.fromEntries(
-    USER_DATA_FIELDS.filter((field) => Object.hasOwn(input, field)).map(
-      (field) => [field, input[field]],
-    ),
-  ) as Partial<Record<UserDataField, unknown>>;
+export function buildUserDataPatch(input: UserDataWrite): UserDataPatch {
+  return {
+    ...(Object.hasOwn(input, "appState") && { appState: input.appState }),
+    ...(Object.hasOwn(input, "workoutPlan") && {
+      workoutPlan: input.workoutPlan,
+    }),
+    ...(Object.hasOwn(input, "customPlans") && {
+      customPlans: input.customPlans,
+    }),
+    ...(Object.hasOwn(input, "activePlanType") && {
+      activePlanType: input.activePlanType,
+    }),
+    ...(Object.hasOwn(input, "activeCustomPlanId") && {
+      activeCustomPlanId: input.activeCustomPlanId,
+    }),
+    ...(Object.hasOwn(input, "activeSession") && {
+      activeSession: input.activeSession,
+    }),
+    ...(Object.hasOwn(input, "sessions") && { sessions: input.sessions }),
+    ...(Object.hasOwn(input, "personalRecords") && {
+      personalRecords: input.personalRecords,
+    }),
+    ...(Object.hasOwn(input, "mealPlan") && { mealPlan: input.mealPlan }),
+    ...(Object.hasOwn(input, "foodLog") && { foodLog: input.foodLog }),
+    ...(Object.hasOwn(input, "customMealPlans") && {
+      customMealPlans: input.customMealPlans,
+    }),
+    ...(Object.hasOwn(input, "activeMealPlanType") && {
+      activeMealPlanType: input.activeMealPlanType,
+    }),
+    ...(Object.hasOwn(input, "activeCustomMealPlanId") && {
+      activeCustomMealPlanId: input.activeCustomMealPlanId,
+    }),
+    ...(Object.hasOwn(input, "healthData") && {
+      healthData: input.healthData,
+    }),
+    ...(Object.hasOwn(input, "wellnessData") && {
+      wellnessData: input.wellnessData,
+    }),
+    ...(Object.hasOwn(input, "waterGoal") && { waterGoal: input.waterGoal }),
+    ...(Object.hasOwn(input, "reminderPrefs") && {
+      reminderPrefs: input.reminderPrefs,
+    }),
+    ...(Object.hasOwn(input, "places") && { places: input.places }),
+  };
 }
 
 export function revisionMatches(
