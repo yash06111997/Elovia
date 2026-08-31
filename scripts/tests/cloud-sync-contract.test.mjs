@@ -24,6 +24,7 @@ test("only definitive restore states permit upload", () => {
   assert.equal(canUploadAfterRestore({ status: "offline" }), false);
   assert.equal(canUploadAfterRestore({ status: "server" }), false);
   assert.equal(canUploadAfterRestore({ status: "unauthorized" }), false);
+  assert.equal(canUploadAfterRestore({ status: "local_changes" }), false);
 });
 
 test("a committed legacy restore settles despite backup transport or conflict outcomes", () => {

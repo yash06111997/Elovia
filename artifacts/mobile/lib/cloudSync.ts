@@ -254,7 +254,7 @@ async function backupToCloudUnlocked(
   const revisionKey = revisionStorageKey(identity.uid);
   let ownedRead;
   try {
-    ownedRead = await syncStorage.readOwned(
+    ownedRead = await syncStorage.readSyncSnapshotOwned(
       identity.uid,
       currentUserForSession(sessionToken),
       [...SYNC_KEYS, revisionKey],
@@ -266,8 +266,9 @@ async function backupToCloudUnlocked(
 
   let payload: Record<string, unknown>;
   let baseRevision: number | null;
+  const capturedChangeGeneration = ownedRead.value.changeGeneration;
   try {
-    const values = new Map(ownedRead.value);
+    const values = new Map(ownedRead.value.entries);
     const parsedRevision = parseStoredRevision(values.get(revisionKey) ?? null);
     if (parsedRevision === "corrupt") {
       const removed = await syncStorage.commitOwned(
@@ -360,12 +361,11 @@ async function backupToCloudUnlocked(
 
   if (outcome.status === "saved") {
     try {
-      const persisted = await syncStorage.commitOwned(
+      const persisted = await syncStorage.commitBackupSavedOwned(
         identity.uid,
         currentUserForSession(sessionToken),
+        capturedChangeGeneration,
         [[revisionKey, String(outcome.revision)]],
-        [],
-        [],
         sessionStorageGeneration(sessionToken),
       );
       if (persisted.status === "stale") return { status: "unauthorized" };
@@ -402,6 +402,22 @@ async function restoreFromCloudUnlocked(
   const owner = await prepareLocalSyncOwner(sessionToken);
   if (owner.status === "stale") return { status: "unauthorized" };
   if (owner.status === "server") return { status: "server" };
+
+  let capturedChangeGeneration: number;
+  try {
+    const localSnapshot = await syncStorage.readSyncSnapshotOwned(
+      identity.uid,
+      currentUserForSession(sessionToken),
+      [],
+    );
+    if (localSnapshot.status === "stale") {
+      return { status: "unauthorized" };
+    }
+    if (localSnapshot.value.dirty) return { status: "local_changes" };
+    capturedChangeGeneration = localSnapshot.value.changeGeneration;
+  } catch {
+    return { status: "server" };
+  }
 
   let guardedResponse;
   try {
@@ -450,15 +466,17 @@ async function restoreFromCloudUnlocked(
   if (data === null) {
     if (envelope.revision !== null) return { status: "server" };
     try {
-      const committed = await syncStorage.commitOwned(
+      const committed = await syncStorage.commitRestoreOwned(
         identity.uid,
         currentUserForSession(sessionToken),
+        capturedChangeGeneration,
         [],
         [revisionKey],
         [],
         sessionStorageGeneration(sessionToken),
       );
       if (committed.status === "stale") return { status: "unauthorized" };
+      if (!committed.value.committed) return { status: "local_changes" };
       if (!(await sessionMatchesFirebase(sessionToken))) {
         return { status: "unauthorized" };
       }
@@ -491,15 +509,17 @@ async function restoreFromCloudUnlocked(
   }
 
   try {
-    const committed = await syncStorage.commitOwned(
+    const committed = await syncStorage.commitRestoreOwned(
       identity.uid,
       currentUserForSession(sessionToken),
+      capturedChangeGeneration,
       pairs,
       removals,
       [[revisionKey, String(outcome.revision)]],
       sessionStorageGeneration(sessionToken),
     );
     if (committed.status === "stale") return { status: "unauthorized" };
+    if (!committed.value.committed) return { status: "local_changes" };
     if (!(await sessionMatchesFirebase(sessionToken))) {
       return { status: "unauthorized" };
     }
@@ -537,13 +557,15 @@ async function resetCurrentAccountDataUnlocked(
   const migrationKey = `${MIGRATION_FLAG}:${encodeURIComponent(expectedUserId)}`;
   let baseRevision: number | null;
   try {
-    const revisionRead = await syncStorage.readOwned(
+    const revisionRead = await syncStorage.readSyncSnapshotOwned(
       expectedUserId,
       currentUserForSession(sessionToken),
       [revisionKey],
     );
     if (revisionRead.status === "stale") return { status: "unauthorized" };
-    const parsed = parseStoredRevision(revisionRead.value[0]?.[1] ?? null);
+    const parsed = parseStoredRevision(
+      revisionRead.value.entries[0]?.[1] ?? null,
+    );
     baseRevision = parsed === "corrupt" ? null : parsed;
   } catch {
     return { status: "server" };
@@ -712,12 +734,11 @@ async function migrateLegacyFirebaseDataUnlocked(
         : { status: "empty" };
     }
 
-    const committed = await syncStorage.commitOwned(
+    const committed = await syncStorage.commitLocalChangeOwned(
       expectedUserId,
       currentUser,
       pairs,
       removals,
-      [],
       sessionStorageGeneration(sessionToken),
     );
     if (committed.status === "stale") return { status: "unauthorized" };

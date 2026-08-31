@@ -44,6 +44,50 @@ export function AutoSync() {
   const sessionIdRef = useRef(0);
   const restoreSettledRef = useRef(false);
 
+  const attemptAutomaticBackup = async (
+    sessionToken: CloudSyncSessionToken,
+    userId: string,
+    bypassMinimumGap = false,
+  ) => {
+    if (
+      activeSessionRef.current !== sessionToken ||
+      !isCloudSyncSessionCurrent(sessionToken) ||
+      !restoreSettledRef.current ||
+      backupInFlightRef.current ||
+      isCloudSyncConflictBlocked(userId)
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    if (!bypassMinimumGap && now - lastBackupRef.current < MIN_BACKUP_GAP) {
+      return;
+    }
+    lastBackupRef.current = now;
+    backupInFlightRef.current = true;
+    const session = sessionIdRef.current;
+
+    try {
+      const outcome = await backupToCloud(sessionToken);
+      if (
+        session !== sessionIdRef.current ||
+        activeSessionRef.current !== sessionToken ||
+        !isCloudSyncSessionCurrent(sessionToken)
+      ) {
+        return;
+      }
+      if (
+        outcome.status === "conflict" ||
+        outcome.status === "offline" ||
+        outcome.status === "server"
+      ) {
+        reportAutomaticBackupFailure(outcome.status);
+      }
+    } finally {
+      backupInFlightRef.current = false;
+    }
+  };
+
   useEffect(() => {
     const currentUserId = isAuthenticated && user ? user.id : null;
     const localSession = ++sessionIdRef.current;
@@ -72,6 +116,11 @@ export function AutoSync() {
 
         const outcome = await restoreFromCloud(sessionToken);
         if (!(await sessionIsCurrent())) return;
+        if (outcome.status === "local_changes") {
+          restoreSettledRef.current = true;
+          await attemptAutomaticBackup(sessionToken, currentUserId, true);
+          return;
+        }
         if (!canUploadAfterRestore(outcome)) return;
 
         if (outcome.status === "restored") {
@@ -132,41 +181,8 @@ export function AutoSync() {
     const userId = user.id;
     const doBackup = async () => {
       const sessionToken = activeSessionRef.current;
-      if (
-        !sessionToken ||
-        !isCloudSyncSessionCurrent(sessionToken) ||
-        !restoreSettledRef.current ||
-        backupInFlightRef.current ||
-        isCloudSyncConflictBlocked(userId)
-      ) {
-        return;
-      }
-
-      const now = Date.now();
-      if (now - lastBackupRef.current < MIN_BACKUP_GAP) return;
-      lastBackupRef.current = now;
-      backupInFlightRef.current = true;
-      const session = sessionIdRef.current;
-
-      try {
-        const outcome = await backupToCloud(sessionToken);
-        if (
-          session !== sessionIdRef.current ||
-          activeSessionRef.current !== sessionToken ||
-          !isCloudSyncSessionCurrent(sessionToken)
-        ) {
-          return;
-        }
-        if (
-          outcome.status === "conflict" ||
-          outcome.status === "offline" ||
-          outcome.status === "server"
-        ) {
-          reportAutomaticBackupFailure(outcome.status);
-        }
-      } finally {
-        backupInFlightRef.current = false;
-      }
+      if (!sessionToken) return;
+      await attemptAutomaticBackup(sessionToken, userId);
     };
 
     backupTimerRef.current = setInterval(

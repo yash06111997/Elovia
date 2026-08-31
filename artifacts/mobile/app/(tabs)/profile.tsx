@@ -206,6 +206,14 @@ export default function ProfileScreen() {
         return;
       }
 
+      if (outcome.status === "local_changes") {
+        Alert.alert(
+          "Local changes waiting",
+          "Back up your local changes before restoring cloud data. Elovia did not overwrite this device.",
+        );
+        return;
+      }
+
       if (outcome.status === "restored") {
         if (!(await operationIsCurrent())) return;
         const reload = await emitDataRestored();

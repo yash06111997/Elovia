@@ -139,12 +139,11 @@ export function captureAccountStorageSession(): AccountStorageSession {
     removals: readonly SyncKey[],
   ): Promise<void> => {
     await ensureReady();
-    const result = await syncStorageCoordinator.commitOwned(
+    const result = await syncStorageCoordinator.commitLocalChangeOwned(
       ownerToken.uid,
       currentOwner,
       sets,
       removals,
-      [],
       `account-generation-${ownerToken.generation}`,
     );
     if (result.status === "stale") {

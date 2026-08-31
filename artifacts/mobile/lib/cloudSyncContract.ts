@@ -3,6 +3,7 @@ export type RestoreOutcome =
   | { status: "empty" }
   | { status: "offline" }
   | { status: "unauthorized" }
+  | { status: "local_changes" }
   | { status: "server" };
 
 export type BackupOutcome =

@@ -116,6 +116,74 @@ export function scopedSyncCacheKey(
   return `@elovia_sync_cache:${encodeURIComponent(storedOwner)}:${encodeURIComponent(storageKey)}`;
 }
 
+export type SyncGenerationKind = "change" | "clean";
+
+export interface SyncGenerationState {
+  changeGeneration: number;
+  cleanGeneration: number;
+  dirty: boolean;
+}
+
+export interface OwnedSyncSnapshot extends SyncGenerationState {
+  entries: readonly (readonly [string, string | null])[];
+}
+
+function storedOwnerForUserId(userId: string | null): string {
+  return userId === null ? LOCAL_SYNC_GUEST_OWNER : storedSyncUserOwner(userId);
+}
+
+export function scopedSyncGenerationKey(
+  storedOwner: string,
+  kind: SyncGenerationKind,
+): string {
+  if (
+    storedOwner !== LOCAL_SYNC_GUEST_OWNER &&
+    !isStoredUserOwner(storedOwner)
+  ) {
+    throw new Error("Sync generation keys require an encoded stored owner.");
+  }
+  return `@elovia_sync_generation:${encodeURIComponent(storedOwner)}:${kind}`;
+}
+
+function generationKeysForUser(userId: string | null): {
+  changeKey: string;
+  cleanKey: string;
+} {
+  const owner = storedOwnerForUserId(userId);
+  return {
+    changeKey: scopedSyncGenerationKey(owner, "change"),
+    cleanKey: scopedSyncGenerationKey(owner, "clean"),
+  };
+}
+
+function parseGeneration(value: string | null): number {
+  if (value === null) return 0;
+  if (!/^\d+$/.test(value)) {
+    throw new Error("Sync generation metadata is invalid.");
+  }
+  const generation = Number(value);
+  if (!Number.isSafeInteger(generation) || generation < 0) {
+    throw new Error("Sync generation metadata is invalid.");
+  }
+  return generation;
+}
+
+function parseGenerationState(
+  changeValue: string | null,
+  cleanValue: string | null,
+): SyncGenerationState {
+  const changeGeneration = parseGeneration(changeValue);
+  const cleanGeneration = parseGeneration(cleanValue);
+  if (cleanGeneration > changeGeneration) {
+    throw new Error("Sync generation metadata is invalid.");
+  }
+  return {
+    changeGeneration,
+    cleanGeneration,
+    dirty: changeGeneration > cleanGeneration,
+  };
+}
+
 function currentUserMatches(
   current: string | null | StaleCurrentUser,
   expectedUserId: string | null,
@@ -451,6 +519,41 @@ export class SyncStorageCoordinator {
         // Unowned guest data stays unowned so the first authenticated account
         // can claim it in place without an unnecessary cache round trip.
         if (expectedUserId === null) return { status: "ready", changed: false };
+
+        // A guest-created snapshot becomes the first account's local snapshot.
+        // Mark it dirty before assigning the owner so it cannot be overwritten
+        // by that account's first automatic cloud restore. If a crash happens
+        // after this journaled metadata commit but before the owner write, a
+        // retry observes the already-dirty generation and does not increment it
+        // again.
+        const globalValues = await this.storage.multiGet([...this.syncKeys]);
+        const hasGuestData = globalValues.some(([, value]) => value !== null);
+        const { changeKey, cleanKey } = generationKeysForUser(expectedUserId);
+        const generationValues = new Map(
+          await this.storage.multiGet([changeKey, cleanKey]),
+        );
+        const generations = parseGenerationState(
+          generationValues.get(changeKey) ?? null,
+          generationValues.get(cleanKey) ?? null,
+        );
+        if (hasGuestData && !generations.dirty) {
+          if (generations.changeGeneration === Number.MAX_SAFE_INTEGER) {
+            throw new Error(
+              "Sync change generation cannot be advanced safely.",
+            );
+          }
+          const claimed = await this.commitOwnedLocked(
+            owner,
+            expectedUserId,
+            currentUserId,
+            [],
+            [],
+            [[changeKey, String(generations.changeGeneration + 1)]],
+            "owner-claim",
+            [],
+          );
+          if (claimed.status === "stale") return claimed;
+        }
         await this.storage.setItem(
           LOCAL_SYNC_OWNER_KEY,
           storedSyncUserOwner(expectedUserId),
@@ -497,6 +600,119 @@ export class SyncStorageCoordinator {
     });
   }
 
+  async readSyncSnapshotOwned(
+    expectedUserId: string | null,
+    currentUserId: CurrentUserId,
+    keys: readonly string[],
+  ): Promise<OwnedStorageOutcome<OwnedSyncSnapshot>> {
+    return this.exclusive(async () => {
+      await this.recoverIfNeeded();
+      if (!currentUserMatches(await currentUserId(), expectedUserId)) {
+        return { status: "stale" };
+      }
+      const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
+      if (!storedOwnerMatches(owner, expectedUserId)) {
+        return { status: "stale" };
+      }
+
+      const { changeKey, cleanKey } = generationKeysForUser(expectedUserId);
+      const values = await this.storage.multiGet([
+        ...keys,
+        changeKey,
+        cleanKey,
+      ]);
+      if (!currentUserMatches(await currentUserId(), expectedUserId)) {
+        return { status: "stale" };
+      }
+      const valueByKey = new Map(values);
+      const generations = parseGenerationState(
+        valueByKey.get(changeKey) ?? null,
+        valueByKey.get(cleanKey) ?? null,
+      );
+      return {
+        status: "ready",
+        value: {
+          entries: keys.map((key) => [key, valueByKey.get(key) ?? null]),
+          ...generations,
+        },
+      };
+    });
+  }
+
+  private async commitOwnedLocked(
+    owner: string | null,
+    expectedUserId: string | null,
+    currentUserId: CurrentUserId,
+    sets: readonly (readonly [string, string])[],
+    removals: readonly string[],
+    finalSets: readonly (readonly [string, string])[],
+    sessionGeneration: string,
+    recoveryFinalSets: readonly (readonly [string, string])[],
+  ): Promise<OwnedStorageOutcome<void>> {
+    const touchedKeys = [
+      ...new Set([
+        ...sets.map(([key]) => key),
+        ...removals,
+        ...finalSets.map(([key]) => key),
+        ...recoveryFinalSets.map(([key]) => key),
+      ]),
+    ];
+    const originals = await this.storage.multiGet(touchedKeys);
+
+    if (touchedKeys.length === 0) {
+      return { status: "ready", value: undefined };
+    }
+
+    const journal: OwnedMutationJournal = {
+      version: recoveryFinalSets.length > 0 ? 3 : 2,
+      kind: "mutation",
+      stableOwner: owner,
+      sessionGeneration,
+      originals: originals.map(([key, value]) => [key, value]),
+      sets: sets.map(([key, value]) => [key, value]),
+      removals: [...removals],
+      finalSets: finalSets.map(([key, value]) => [key, value]),
+      ...(recoveryFinalSets.length > 0
+        ? {
+            recoveryFinalSets: recoveryFinalSets.map(([key, value]) => [
+              key,
+              value,
+            ]),
+          }
+        : {}),
+    };
+
+    await this.storage.setItem(LOCAL_SYNC_JOURNAL_KEY, JSON.stringify(journal));
+    await this.storage.setItem(
+      LOCAL_SYNC_OWNER_KEY,
+      LOCAL_SYNC_QUARANTINE_OWNER,
+    );
+
+    if (sets.length > 0) await this.storage.multiSet(sets);
+    if (removals.length > 0) await this.storage.multiRemove([...removals]);
+    if (finalSets.length > 0) await this.storage.multiSet(finalSets);
+
+    if (!currentUserMatches(await currentUserId(), expectedUserId)) {
+      try {
+        await this.writeExactEntries(originals);
+        if (recoveryFinalSets.length > 0) {
+          await this.writeExactEntries(recoveryFinalSets);
+        }
+        if (owner === null) await this.storage.removeItem(LOCAL_SYNC_OWNER_KEY);
+        else await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, owner);
+        await this.storage.removeItem(LOCAL_SYNC_JOURNAL_KEY);
+      } catch (error) {
+        await this.quarantineBestEffort();
+        throw error;
+      }
+      return { status: "stale" };
+    }
+    if (owner === null) await this.storage.removeItem(LOCAL_SYNC_OWNER_KEY);
+    else await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, owner);
+    await this.storage.removeItem(LOCAL_SYNC_JOURNAL_KEY);
+    return { status: "ready", value: undefined };
+  }
+
   async commitOwned(
     expectedUserId: string | null,
     currentUserId: CurrentUserId,
@@ -514,73 +730,158 @@ export class SyncStorageCoordinator {
       if (!storedOwnerMatches(owner, expectedUserId)) {
         return { status: "stale" };
       }
+      return this.commitOwnedLocked(
+        owner,
+        expectedUserId,
+        currentUserId,
+        sets,
+        removals,
+        finalSets,
+        sessionGeneration,
+        recoveryFinalSets,
+      );
+    });
+  }
 
-      const touchedKeys = [
-        ...new Set([
-          ...sets.map(([key]) => key),
-          ...removals,
-          ...finalSets.map(([key]) => key),
-          ...recoveryFinalSets.map(([key]) => key),
-        ]),
-      ];
-      const originals = await this.storage.multiGet(touchedKeys);
-
-      if (touchedKeys.length === 0) {
+  async commitLocalChangeOwned(
+    expectedUserId: string | null,
+    currentUserId: CurrentUserId,
+    sets: readonly (readonly [string, string])[],
+    removals: readonly string[],
+    sessionGeneration = "unspecified",
+  ): Promise<OwnedStorageOutcome<void>> {
+    return this.exclusive(async () => {
+      await this.recoverIfNeeded();
+      if (!currentUserMatches(await currentUserId(), expectedUserId)) {
+        return { status: "stale" };
+      }
+      const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
+      if (!storedOwnerMatches(owner, expectedUserId)) {
+        return { status: "stale" };
+      }
+      if (sets.length === 0 && removals.length === 0) {
         return { status: "ready", value: undefined };
       }
 
-      const journal: OwnedMutationJournal = {
-        version: recoveryFinalSets.length > 0 ? 3 : 2,
-        kind: "mutation",
-        stableOwner: owner,
+      const { changeKey, cleanKey } = generationKeysForUser(expectedUserId);
+      const generationValues = new Map(
+        await this.storage.multiGet([changeKey, cleanKey]),
+      );
+      const generations = parseGenerationState(
+        generationValues.get(changeKey) ?? null,
+        generationValues.get(cleanKey) ?? null,
+      );
+      if (generations.changeGeneration === Number.MAX_SAFE_INTEGER) {
+        throw new Error("Sync change generation cannot be advanced safely.");
+      }
+      return this.commitOwnedLocked(
+        owner,
+        expectedUserId,
+        currentUserId,
+        sets,
+        removals,
+        [[changeKey, String(generations.changeGeneration + 1)]],
         sessionGeneration,
-        originals: originals.map(([key, value]) => [key, value]),
-        sets: sets.map(([key, value]) => [key, value]),
-        removals: [...removals],
-        finalSets: finalSets.map(([key, value]) => [key, value]),
-        ...(recoveryFinalSets.length > 0
-          ? {
-              recoveryFinalSets: recoveryFinalSets.map(([key, value]) => [
-                key,
-                value,
-              ]),
-            }
-          : {}),
-      };
-
-      await this.storage.setItem(
-        LOCAL_SYNC_JOURNAL_KEY,
-        JSON.stringify(journal),
+        [],
       );
-      await this.storage.setItem(
-        LOCAL_SYNC_OWNER_KEY,
-        LOCAL_SYNC_QUARANTINE_OWNER,
-      );
+    });
+  }
 
-      if (sets.length > 0) await this.storage.multiSet(sets);
-      if (removals.length > 0) await this.storage.multiRemove([...removals]);
-      if (finalSets.length > 0) await this.storage.multiSet(finalSets);
-
+  async commitBackupSavedOwned(
+    expectedUserId: string | null,
+    currentUserId: CurrentUserId,
+    capturedChangeGeneration: number,
+    savedSets: readonly (readonly [string, string])[],
+    sessionGeneration = "unspecified",
+  ): Promise<OwnedStorageOutcome<{ markedClean: boolean }>> {
+    return this.exclusive(async () => {
+      await this.recoverIfNeeded();
       if (!currentUserMatches(await currentUserId(), expectedUserId)) {
-        try {
-          await this.writeExactEntries(originals);
-          if (recoveryFinalSets.length > 0) {
-            await this.writeExactEntries(recoveryFinalSets);
-          }
-          if (owner === null)
-            await this.storage.removeItem(LOCAL_SYNC_OWNER_KEY);
-          else await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, owner);
-          await this.storage.removeItem(LOCAL_SYNC_JOURNAL_KEY);
-        } catch (error) {
-          await this.quarantineBestEffort();
-          throw error;
-        }
         return { status: "stale" };
       }
-      if (owner === null) await this.storage.removeItem(LOCAL_SYNC_OWNER_KEY);
-      else await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, owner);
-      await this.storage.removeItem(LOCAL_SYNC_JOURNAL_KEY);
-      return { status: "ready", value: undefined };
+      const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
+      if (!storedOwnerMatches(owner, expectedUserId)) {
+        return { status: "stale" };
+      }
+
+      const { changeKey, cleanKey } = generationKeysForUser(expectedUserId);
+      const generationValues = new Map(
+        await this.storage.multiGet([changeKey, cleanKey]),
+      );
+      const generations = parseGenerationState(
+        generationValues.get(changeKey) ?? null,
+        generationValues.get(cleanKey) ?? null,
+      );
+      const markedClean =
+        generations.changeGeneration === capturedChangeGeneration;
+      const finalSets = markedClean
+        ? [...savedSets, [cleanKey, String(capturedChangeGeneration)] as const]
+        : [...savedSets];
+      const committed = await this.commitOwnedLocked(
+        owner,
+        expectedUserId,
+        currentUserId,
+        [],
+        [],
+        finalSets,
+        sessionGeneration,
+        [],
+      );
+      return committed.status === "stale"
+        ? committed
+        : { status: "ready", value: { markedClean } };
+    });
+  }
+
+  async commitRestoreOwned(
+    expectedUserId: string | null,
+    currentUserId: CurrentUserId,
+    capturedChangeGeneration: number,
+    sets: readonly (readonly [string, string])[],
+    removals: readonly string[],
+    finalSets: readonly (readonly [string, string])[],
+    sessionGeneration = "unspecified",
+  ): Promise<OwnedStorageOutcome<{ committed: boolean }>> {
+    return this.exclusive(async () => {
+      await this.recoverIfNeeded();
+      if (!currentUserMatches(await currentUserId(), expectedUserId)) {
+        return { status: "stale" };
+      }
+      const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
+      if (!storedOwnerMatches(owner, expectedUserId)) {
+        return { status: "stale" };
+      }
+
+      const { changeKey, cleanKey } = generationKeysForUser(expectedUserId);
+      const generationValues = new Map(
+        await this.storage.multiGet([changeKey, cleanKey]),
+      );
+      const generations = parseGenerationState(
+        generationValues.get(changeKey) ?? null,
+        generationValues.get(cleanKey) ?? null,
+      );
+      if (
+        generations.dirty ||
+        generations.changeGeneration !== capturedChangeGeneration
+      ) {
+        return { status: "ready", value: { committed: false } };
+      }
+      const committed = await this.commitOwnedLocked(
+        owner,
+        expectedUserId,
+        currentUserId,
+        sets,
+        removals,
+        [
+          ...finalSets,
+          [cleanKey, String(generations.changeGeneration)] as const,
+        ],
+        sessionGeneration,
+        [],
+      );
+      return committed.status === "stale"
+        ? committed
+        : { status: "ready", value: { committed: true } };
     });
   }
 
@@ -592,21 +893,51 @@ export class SyncStorageCoordinator {
     finalSets: readonly (readonly [string, string])[] = [],
     recoveryFinalSets: readonly (readonly [string, string])[] = [],
   ): Promise<OwnedStorageOutcome<void>> {
-    const cacheOwner =
-      expectedUserId === null
-        ? LOCAL_SYNC_GUEST_OWNER
-        : storedSyncUserOwner(expectedUserId);
-    const cacheKeys = this.syncKeys.map((key) =>
-      scopedSyncCacheKey(cacheOwner, key),
-    );
-    return this.commitOwned(
-      expectedUserId,
-      currentUserId,
-      [],
-      [...this.syncKeys, ...cacheKeys, ...additionalKeys],
-      finalSets,
-      sessionGeneration,
-      recoveryFinalSets,
-    );
+    return this.exclusive(async () => {
+      await this.recoverIfNeeded();
+      if (!currentUserMatches(await currentUserId(), expectedUserId)) {
+        return { status: "stale" };
+      }
+      const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
+      if (!storedOwnerMatches(owner, expectedUserId)) {
+        return { status: "stale" };
+      }
+
+      const storedOwner = storedOwnerForUserId(expectedUserId);
+      const cacheKeys = this.syncKeys.map((key) =>
+        scopedSyncCacheKey(storedOwner, key),
+      );
+      const { changeKey, cleanKey } = generationKeysForUser(expectedUserId);
+      let effectiveRecoveryFinalSets = [...recoveryFinalSets];
+      if (recoveryFinalSets.length > 0) {
+        const generationValues = new Map(
+          await this.storage.multiGet([changeKey, cleanKey]),
+        );
+        const generations = parseGenerationState(
+          generationValues.get(changeKey) ?? null,
+          generationValues.get(cleanKey) ?? null,
+        );
+        effectiveRecoveryFinalSets = [
+          ...effectiveRecoveryFinalSets,
+          [cleanKey, String(generations.changeGeneration)],
+        ];
+      }
+      return this.commitOwnedLocked(
+        owner,
+        expectedUserId,
+        currentUserId,
+        [],
+        [
+          ...this.syncKeys,
+          ...cacheKeys,
+          ...additionalKeys,
+          changeKey,
+          cleanKey,
+        ],
+        finalSets,
+        sessionGeneration,
+        effectiveRecoveryFinalSets,
+      );
+    });
   }
 }
