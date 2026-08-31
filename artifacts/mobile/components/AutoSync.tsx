@@ -4,11 +4,14 @@ import { useAuth } from "@/lib/auth";
 import {
   backupToCloud,
   beginCloudSyncSession,
+  endCloudSyncSession,
   getCurrentCloudSyncUserId,
   isCloudSyncConflictBlocked,
+  isCloudSyncSessionCurrent,
   migrateLegacyFirebaseData,
   prepareLocalSyncOwner,
   restoreFromCloud,
+  type CloudSyncSessionToken,
 } from "@/lib/cloudSync";
 import { canUploadAfterRestore } from "@/lib/cloudSyncContract";
 import { emitDataRestored } from "@/lib/syncEvents";
@@ -31,7 +34,7 @@ function reportAutomaticBackupFailure(
 export function AutoSync() {
   const { user, isAuthenticated } = useAuth();
 
-  const activeUserIdRef = useRef<string | null>(null);
+  const activeSessionRef = useRef<CloudSyncSessionToken | null>(null);
   const backupTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const backupInFlightRef = useRef(false);
   const lastBackupRef = useRef(0);
@@ -40,19 +43,23 @@ export function AutoSync() {
 
   useEffect(() => {
     const currentUserId = isAuthenticated && user ? user.id : null;
+    const localSession = ++sessionIdRef.current;
+    let ownedSessionToken: CloudSyncSessionToken | null = null;
+    restoreSettledRef.current = false;
 
-    if (currentUserId && currentUserId !== activeUserIdRef.current) {
-      const session = ++sessionIdRef.current;
-      activeUserIdRef.current = currentUserId;
-      restoreSettledRef.current = false;
-      beginCloudSyncSession(currentUserId);
+    if (currentUserId) {
+      const sessionToken = beginCloudSyncSession(currentUserId);
+      ownedSessionToken = sessionToken;
+      activeSessionRef.current = sessionToken;
 
       void (async () => {
         const sessionIsCurrent = async () =>
-          session === sessionIdRef.current &&
+          localSession === sessionIdRef.current &&
+          activeSessionRef.current === sessionToken &&
+          isCloudSyncSessionCurrent(sessionToken) &&
           (await getCurrentCloudSyncUserId()) === currentUserId;
 
-        const owner = await prepareLocalSyncOwner(currentUserId);
+        const owner = await prepareLocalSyncOwner(sessionToken);
         if (!(await sessionIsCurrent())) return;
         if (owner.status !== "ready") return;
         if (owner.changed) {
@@ -60,7 +67,7 @@ export function AutoSync() {
           if (!(await sessionIsCurrent()) || reload.status === "failed") return;
         }
 
-        const outcome = await restoreFromCloud(currentUserId);
+        const outcome = await restoreFromCloud(sessionToken);
         if (!(await sessionIsCurrent())) return;
         if (!canUploadAfterRestore(outcome)) return;
 
@@ -73,7 +80,7 @@ export function AutoSync() {
 
         // Legacy RTDB is consulted only after the API definitively confirms
         // that this account has no Postgres snapshot.
-        const migration = await migrateLegacyFirebaseData(currentUserId);
+        const migration = await migrateLegacyFirebaseData(sessionToken);
         if (!(await sessionIsCurrent())) return;
 
         if (migration.status === "empty") {
@@ -98,12 +105,17 @@ export function AutoSync() {
       })();
     }
 
-    if (!currentUserId && activeUserIdRef.current) {
+    return () => {
       sessionIdRef.current++;
-      activeUserIdRef.current = null;
       restoreSettledRef.current = false;
-    }
-  }, [isAuthenticated, user]);
+      if (ownedSessionToken) {
+        if (activeSessionRef.current === ownedSessionToken) {
+          activeSessionRef.current = null;
+        }
+        endCloudSyncSession(ownedSessionToken);
+      }
+    };
+  }, [isAuthenticated, user?.id]);
 
   useEffect(() => {
     if (!isAuthenticated || !user) {
@@ -116,7 +128,10 @@ export function AutoSync() {
 
     const userId = user.id;
     const doBackup = async () => {
+      const sessionToken = activeSessionRef.current;
       if (
+        !sessionToken ||
+        !isCloudSyncSessionCurrent(sessionToken) ||
         !restoreSettledRef.current ||
         backupInFlightRef.current ||
         isCloudSyncConflictBlocked(userId)
@@ -131,8 +146,14 @@ export function AutoSync() {
       const session = sessionIdRef.current;
 
       try {
-        const outcome = await backupToCloud(userId);
-        if (session !== sessionIdRef.current) return;
+        const outcome = await backupToCloud(sessionToken);
+        if (
+          session !== sessionIdRef.current ||
+          activeSessionRef.current !== sessionToken ||
+          !isCloudSyncSessionCurrent(sessionToken)
+        ) {
+          return;
+        }
         if (
           outcome.status === "conflict" ||
           outcome.status === "offline" ||
@@ -161,7 +182,7 @@ export function AutoSync() {
       }
       sub.remove();
     };
-  }, [isAuthenticated, user]);
+  }, [isAuthenticated, user?.id]);
 
   return null;
 }

@@ -251,9 +251,10 @@ export class SyncStorageCoordinator {
           return { status: "stale" };
         // Unowned guest data stays unowned so the first authenticated account
         // can claim it in place without an unnecessary cache round trip.
-        if (expectedUserId === null)
-          return { status: "ready", changed: false };
+        if (expectedUserId === null) return { status: "ready", changed: false };
         await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, expectedUserId);
+        if ((await currentUserId()) !== expectedUserId)
+          return { status: "stale" };
         return { status: "ready", changed: true };
       }
 
@@ -267,6 +268,8 @@ export class SyncStorageCoordinator {
         owner,
         expectedUserId ?? LOCAL_SYNC_GUEST_OWNER,
       );
+      if ((await currentUserId()) !== expectedUserId)
+        return { status: "stale" };
       return { status: "ready", changed: true };
     });
   }
@@ -289,7 +292,10 @@ export class SyncStorageCoordinator {
       ) {
         return { status: "stale" };
       }
-      return { status: "ready", value: await this.storage.multiGet([...keys]) };
+      const value = await this.storage.multiGet([...keys]);
+      if ((await currentUserId()) !== expectedUserId)
+        return { status: "stale" };
+      return { status: "ready", value };
     });
   }
 
@@ -312,12 +318,28 @@ export class SyncStorageCoordinator {
         return { status: "stale" };
       }
 
+      const touchedKeys = [
+        ...new Set([
+          ...sets.map(([key]) => key),
+          ...removals,
+          ...finalSets.map(([key]) => key),
+        ]),
+      ];
+      const originals = await this.storage.multiGet(touchedKeys);
+
       if (sets.length > 0) await this.storage.multiSet(sets);
       if (removals.length > 0) await this.storage.multiRemove([...removals]);
       if (finalSets.length > 0) await this.storage.multiSet(finalSets);
 
-      if ((await currentUserId()) !== expectedUserId)
+      if ((await currentUserId()) !== expectedUserId) {
+        try {
+          await this.writeExactEntries(originals);
+        } catch (error) {
+          await this.quarantineBestEffort();
+          throw error;
+        }
         return { status: "stale" };
+      }
       return { status: "ready", value: undefined };
     });
   }
@@ -339,9 +361,17 @@ export class SyncStorageCoordinator {
         return { status: "stale" };
       }
 
+      const originals = await this.storage.multiGet([...this.syncKeys]);
       const value = await operation();
-      if ((await currentUserId()) !== expectedUserId)
+      if ((await currentUserId()) !== expectedUserId) {
+        try {
+          await this.writeExactEntries(originals);
+        } catch (error) {
+          await this.quarantineBestEffort();
+          throw error;
+        }
         return { status: "stale" };
+      }
       return { status: "ready", value };
     });
   }

@@ -286,7 +286,29 @@ test("stale restore commits cannot mutate another owner's global keys", async ()
   assert.equal(await storage.getItem("state"), "b-state");
 });
 
-test("a queued owner transition moves a late previous-owner commit before B can read", async () => {
+test("same-uid ABA invalidation during a commit rolls shared keys back", async () => {
+  const storage = new BlockingMemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, "A"],
+    ["state", "a2-current"],
+  ]);
+  const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
+  let generationIsCurrent = true;
+
+  const lateA1Commit = coordinator.commitOwned(
+    "A",
+    async () => (generationIsCurrent ? "A" : "stale-generation"),
+    [["state", "a1-stale"]],
+    [],
+  );
+  await storage.entered;
+  generationIsCurrent = false;
+  storage.release();
+
+  assert.deepEqual(await lateA1Commit, { status: "stale" });
+  assert.equal(await storage.getItem("state"), "a2-current");
+});
+
+test("a queued owner transition excludes a rolled-back previous-owner commit from B", async () => {
   const storage = new BlockingMemoryStorage([[LOCAL_SYNC_OWNER_KEY, "A"]]);
   const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
   let currentUser = "A";
@@ -306,10 +328,7 @@ test("a queued owner transition moves a late previous-owner commit before B can 
   assert.deepEqual(await lateACommit, { status: "stale" });
   assert.deepEqual(await switchToB, { status: "ready", changed: true });
   assert.equal(await storage.getItem("state"), null);
-  assert.equal(
-    await storage.getItem(scopedSyncCacheKey("A", "state")),
-    "late-a-state",
-  );
+  assert.equal(await storage.getItem(scopedSyncCacheKey("A", "state")), null);
   assert.deepEqual(await coordinator.readOwned("B", current, SYNC_KEYS), {
     status: "ready",
     value: [
@@ -442,20 +461,25 @@ test("automatic and manual sync bind work to an expected authenticated owner", a
   assert.match(syncSource, /syncStorageCoordinator as syncStorage/);
   assert.match(
     syncSource,
-    /backupToCloud\([\s\S]*expectedUserId\?: string[\s\S]*\): Promise<BackupOutcome>/,
+    /backupToCloud\([\s\S]*sessionToken: CloudSyncSessionToken/,
   );
-  assert.match(syncSource, /restoreFromCloud\([\s\S]*expectedUserId\?: string/);
+  assert.match(
+    syncSource,
+    /restoreFromCloud\([\s\S]*sessionToken: CloudSyncSessionToken/,
+  );
   assert.match(
     syncSource,
     /serializeRestoreFields\(data, RESTORE_FIELD_KINDS\)/,
   );
   assert.match(
     autoSource,
-    /prepareLocalSyncOwner\(currentUserId\)[\s\S]*restoreFromCloud\(currentUserId\)/,
+    /prepareLocalSyncOwner\(sessionToken\)[\s\S]*restoreFromCloud\(sessionToken\)/,
   );
-  assert.match(autoSource, /getCurrentCloudSyncUserId\(\)[\s\S]*currentUserId/);
-  assert.match(autoSource, /backupToCloud\(userId\)/);
-  assert.match(profileSource, /restoreFromCloud\(expectedUserId\)/);
-  assert.match(profileSource, /migrateLegacyFirebaseData\(expectedUserId\)/);
-  assert.doesNotMatch(profileSource, /migrateLegacyFirebaseData\(user\.id\)/);
+  assert.match(autoSource, /isCloudSyncSessionCurrent\(sessionToken\)/);
+  assert.match(autoSource, /backupToCloud\(sessionToken\)/);
+  assert.match(autoSource, /endCloudSyncSession\(ownedSessionToken\)/);
+  assert.match(profileSource, /getCurrentCloudSyncSession\(expectedUserId\)/);
+  assert.match(profileSource, /restoreFromCloud\(sessionToken\)/);
+  assert.match(profileSource, /migrateLegacyFirebaseData\(sessionToken\)/);
+  assert.doesNotMatch(profileSource, /beginCloudSyncSession/);
 });

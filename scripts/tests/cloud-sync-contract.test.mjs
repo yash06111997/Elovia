@@ -178,7 +178,12 @@ test("mobile sync sends a user-scoped base revision and clears explicit nulls", 
   assert.match(source, /return Object\.keys\(payload\)\.length > 0/);
   assert.match(source, /value === null[\s\S]*removals\.push\(key\)/);
   assert.match(source, /Promise<RestoreOutcome>/);
-  assert.doesNotMatch(source, /Promise<boolean>/);
+  assert.doesNotMatch(
+    source,
+    /restoreFromCloud\([\s\S]{0,120}Promise<boolean>/,
+  );
+  assert.match(source, /createCloudSyncNetworkOrchestrator/);
+  assert.match(source, /currentUserForSession\(sessionToken\)/);
 });
 
 test("automatic sync gates migration and pauses after conflicts", async () => {
@@ -188,10 +193,15 @@ test("automatic sync gates migration and pauses after conflicts", async () => {
   );
   assert.match(source, /canUploadAfterRestore\(outcome\)/);
   assert.match(source, /outcome\.status === "restored"/);
-  assert.match(source, /migrateLegacyFirebaseData\(currentUserId\)/);
+  assert.match(source, /migrateLegacyFirebaseData\(sessionToken\)/);
   assert.match(source, /isCloudSyncConflictBlocked\(userId\)/);
   assert.match(source, /backupInFlightRef\.current/);
   assert.match(source, /cloud_sync_failed/);
+  assert.match(source, /endCloudSyncSession\(ownedSessionToken\)/);
+  assert.doesNotMatch(
+    source,
+    /trackEvent\([\s\S]{0,160}(?:sessionToken|generation)/,
+  );
 });
 
 test("manual sync presents conflict and restore failures honestly", async () => {

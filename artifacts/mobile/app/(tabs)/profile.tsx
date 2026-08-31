@@ -10,7 +10,7 @@ import { useWorkout } from "@/context/WorkoutContext";
 import { useHealth } from "@/context/HealthContext";
 import { useAuth } from "@/lib/auth";
 import { useSubscription } from "@/context/SubscriptionContext";
-import { backupToCloud, restoreFromCloud, migrateLegacyFirebaseData, getCurrentCloudSyncUserId, prepareLocalSyncOwner } from "@/lib/cloudSync";
+import { backupToCloud, restoreFromCloud, migrateLegacyFirebaseData, getCurrentCloudSyncUserId, getCurrentCloudSyncSession, isCloudSyncSessionCurrent, prepareLocalSyncOwner } from "@/lib/cloudSync";
 import { emitDataRestored } from "@/lib/syncEvents";
 import { NumberEditModal } from "@/components/NumberEditModal";
 import { Colors } from "@/constants/colors";
@@ -105,10 +105,18 @@ export default function ProfileScreen() {
   const uploadData = async () => {
     if (!isAuthenticated || !user) return;
     const expectedUserId = user.id;
+    const sessionToken = getCurrentCloudSyncSession(expectedUserId);
+    if (!sessionToken) {
+      Alert.alert("Backup unavailable", "Cloud sync is not ready for this account yet. Please try again in a moment.");
+      return;
+    }
+    const operationIsCurrent = async () =>
+      isCloudSyncSessionCurrent(sessionToken) &&
+      (await getCurrentCloudSyncUserId()) === expectedUserId;
     setSyncing(true);
     try {
-      const owner = await prepareLocalSyncOwner(expectedUserId);
-      if (owner.status !== "ready" || (await getCurrentCloudSyncUserId()) !== expectedUserId) {
+      const owner = await prepareLocalSyncOwner(sessionToken);
+      if (owner.status !== "ready" || !(await operationIsCurrent())) {
         Alert.alert(
           owner.status === "server" ? "Backup unavailable" : "Sign-in changed",
           owner.status === "server"
@@ -119,13 +127,17 @@ export default function ProfileScreen() {
       }
       if (owner.changed) {
         const reload = await emitDataRestored();
-        if (reload.status === "failed") {
+        if (!(await operationIsCurrent()) || reload.status === "failed") {
           Alert.alert("Backup unavailable", "Elovia could not reload the active account's local data safely.");
           return;
         }
       }
 
-      const result = await backupToCloud(expectedUserId);
+      const result = await backupToCloud(sessionToken);
+      if (!(await operationIsCurrent())) {
+        Alert.alert("Sign-in changed", "Your account changed before backup completed. Try again from the current account.");
+        return;
+      }
       switch (result.status) {
         case "saved":
           Alert.alert("Backup complete", "Your data has been saved to your account.");
@@ -160,10 +172,18 @@ export default function ProfileScreen() {
   const downloadData = async () => {
     if (!isAuthenticated || !user) return;
     const expectedUserId = user.id;
+    const sessionToken = getCurrentCloudSyncSession(expectedUserId);
+    if (!sessionToken) {
+      Alert.alert("Restore unavailable", "Cloud sync is not ready for this account yet. Please try again in a moment.");
+      return;
+    }
+    const operationIsCurrent = async () =>
+      isCloudSyncSessionCurrent(sessionToken) &&
+      (await getCurrentCloudSyncUserId()) === expectedUserId;
     setSyncing(true);
     try {
-      const owner = await prepareLocalSyncOwner(expectedUserId);
-      if (owner.status !== "ready" || (await getCurrentCloudSyncUserId()) !== expectedUserId) {
+      const owner = await prepareLocalSyncOwner(sessionToken);
+      if (owner.status !== "ready" || !(await operationIsCurrent())) {
         Alert.alert(
           owner.status === "server" ? "Restore unavailable" : "Sign-in changed",
           owner.status === "server"
@@ -174,21 +194,22 @@ export default function ProfileScreen() {
       }
       if (owner.changed) {
         const reload = await emitDataRestored();
-        if (reload.status === "failed") {
+        if (!(await operationIsCurrent()) || reload.status === "failed") {
           Alert.alert("Restore unavailable", "Elovia could not reload the active account's local data safely.");
           return;
         }
       }
 
-      const outcome = await restoreFromCloud(expectedUserId);
-      if ((await getCurrentCloudSyncUserId()) !== expectedUserId) {
+      const outcome = await restoreFromCloud(sessionToken);
+      if (!(await operationIsCurrent())) {
         Alert.alert("Sign-in changed", "Your account changed before restore completed. Open the current account and try again.");
         return;
       }
 
       if (outcome.status === "restored") {
+        if (!(await operationIsCurrent())) return;
         const reload = await emitDataRestored();
-        if (reload.status === "failed") {
+        if (!(await operationIsCurrent()) || reload.status === "failed") {
           Alert.alert("Restore incomplete", "Your cloud data was saved locally, but Elovia could not reload every screen. Please reopen the app.");
           return;
         }
@@ -198,8 +219,8 @@ export default function ProfileScreen() {
       }
 
       if (outcome.status === "empty") {
-        const migration = await migrateLegacyFirebaseData(expectedUserId);
-        if ((await getCurrentCloudSyncUserId()) !== expectedUserId) {
+        const migration = await migrateLegacyFirebaseData(sessionToken);
+        if (!(await operationIsCurrent())) {
           Alert.alert("Sign-in changed", "Your account changed before restore completed. Open the current account and try again.");
           return;
         }
@@ -216,8 +237,9 @@ export default function ProfileScreen() {
           return;
         }
 
+        if (!(await operationIsCurrent())) return;
         const reload = await emitDataRestored();
-        if (reload.status === "failed") {
+        if (!(await operationIsCurrent()) || reload.status === "failed") {
           Alert.alert("Restore incomplete", "Your older data was restored, but Elovia could not reload every screen. Please reopen the app.");
           return;
         }
