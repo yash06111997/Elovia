@@ -12,6 +12,26 @@ if (process.env.CI === "true" && !testDatabaseUrl) {
 
 const integrationTest = testDatabaseUrl ? test : test.skip;
 const schemaName = `elovia_sync_test_${process.pid}_${Date.now()}`;
+const expectedUserDataFields = [
+  "appState",
+  "workoutPlan",
+  "customPlans",
+  "activePlanType",
+  "activeCustomPlanId",
+  "activeSession",
+  "sessions",
+  "personalRecords",
+  "mealPlan",
+  "foodLog",
+  "customMealPlans",
+  "activeMealPlanType",
+  "activeCustomMealPlanId",
+  "healthData",
+  "wellnessData",
+  "waterGoal",
+  "reminderPrefs",
+  "places",
+];
 const requireFromDatabasePackage = createRequire(
   new URL("../../lib/db/package.json", import.meta.url),
 );
@@ -150,6 +170,8 @@ integrationTest(
         baseRevision: null,
         activePlanType: "custom",
         activeCustomPlanId: null,
+        activeMealPlanType: "custom-meal",
+        activeCustomMealPlanId: null,
       }),
     });
     assert.equal(validResponse.status, 200);
@@ -161,6 +183,8 @@ integrationTest(
     for (const payload of [
       { baseRevision: 1, activePlanType: { invalid: true } },
       { baseRevision: 1, activeCustomPlanId: 7 },
+      { baseRevision: 1, activeMealPlanType: { invalid: true } },
+      { baseRevision: 1, activeCustomMealPlanId: 7 },
     ]) {
       const invalidResponse = await fetch(`${routeBaseUrl}/user-data`, {
         method: "POST",
@@ -180,9 +204,35 @@ integrationTest(
     const getResponse = await fetch(`${routeBaseUrl}/user-data`);
     assert.equal(getResponse.headers.get("cache-control"), "private, no-store");
     const snapshot = await getResponse.json();
-    assert.equal(snapshot.data.activePlanType, "custom");
-    assert.equal(snapshot.data.activeCustomPlanId, null);
+    assert.deepEqual(Object.keys(snapshot), ["data", "revision", "updatedAt"]);
+    assert.deepEqual(Object.keys(snapshot.data), expectedUserDataFields);
+    assert.deepEqual(snapshot.data, {
+      appState: null,
+      workoutPlan: null,
+      customPlans: null,
+      activePlanType: "custom",
+      activeCustomPlanId: null,
+      activeSession: null,
+      sessions: null,
+      personalRecords: null,
+      mealPlan: null,
+      foodLog: null,
+      customMealPlans: null,
+      activeMealPlanType: "custom-meal",
+      activeCustomMealPlanId: null,
+      healthData: null,
+      wellnessData: null,
+      waterGoal: null,
+      reminderPrefs: null,
+      places: null,
+    });
     assert.equal(snapshot.revision, 1);
+    assert.equal(
+      new Date(snapshot.updatedAt).toISOString(),
+      snapshot.updatedAt,
+    );
+    assert.equal("userId" in snapshot.data, false);
+    assert.equal("updatedAt" in snapshot.data, false);
   },
 );
 
@@ -288,26 +338,7 @@ integrationTest(
   "load serialization exposes exact fields, revision, and ISO time",
   async () => {
     const loaded = await loadUserData(db, "partial-user");
-    assert.deepEqual(Object.keys(loaded.data), [
-      "appState",
-      "workoutPlan",
-      "customPlans",
-      "activePlanType",
-      "activeCustomPlanId",
-      "activeSession",
-      "sessions",
-      "personalRecords",
-      "mealPlan",
-      "foodLog",
-      "customMealPlans",
-      "activeMealPlanType",
-      "activeCustomMealPlanId",
-      "healthData",
-      "wellnessData",
-      "waterGoal",
-      "reminderPrefs",
-      "places",
-    ]);
+    assert.deepEqual(Object.keys(loaded.data), expectedUserDataFields);
     assert.equal(loaded.revision, 2);
     assert.equal(new Date(loaded.updatedAt).toISOString(), loaded.updatedAt);
   },

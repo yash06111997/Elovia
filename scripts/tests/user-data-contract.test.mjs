@@ -213,6 +213,7 @@ test("production startup runs ordered migrations and CI exercises PostgreSQL int
   const [
     dbPackage,
     apiPackage,
+    railwayConfig,
     migrationRunner,
     migrationSql,
     errorHandler,
@@ -223,6 +224,7 @@ test("production startup runs ordered migrations and CI exercises PostgreSQL int
       new URL("../../artifacts/api-server/package.json", import.meta.url),
       "utf8",
     ),
+    readFile(new URL("../../railway.json", import.meta.url), "utf8"),
     readFile(
       new URL("../../lib/db/scripts/migrate.mjs", import.meta.url),
       "utf8",
@@ -254,6 +256,14 @@ test("production startup runs ordered migrations and CI exercises PostgreSQL int
   assert.match(
     JSON.parse(apiPackage).scripts.prestart,
     /@workspace\/db migrate/,
+  );
+  assert.equal(
+    JSON.parse(railwayConfig).deploy.startCommand,
+    "pnpm --filter @workspace/api-server start",
+  );
+  assert.doesNotMatch(
+    JSON.parse(railwayConfig).deploy.startCommand,
+    /node .*dist\/index\.mjs/,
   );
   assert.match(migrationRunner, /BEGIN/);
   assert.match(migrationRunner, /COMMIT/);
