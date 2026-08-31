@@ -13,7 +13,10 @@ import {
   restoreFromCloud,
   type CloudSyncSessionToken,
 } from "@/lib/cloudSync";
-import { canUploadAfterRestore } from "@/lib/cloudSyncContract";
+import {
+  canSettleAfterLegacyCommit,
+  canUploadAfterRestore,
+} from "@/lib/cloudSyncContract";
 import { emitDataRestored } from "@/lib/syncEvents";
 import { trackEvent } from "@/lib/telemetry";
 
@@ -92,9 +95,9 @@ export function AutoSync() {
           const reload = await emitDataRestored();
           if (!(await sessionIsCurrent()) || reload.status === "failed") return;
           const backupStatus = migration.cloudBackup.status;
-          if (backupStatus === "saved") {
-            restoreSettledRef.current = true;
-          } else if (
+          if (!canSettleAfterLegacyCommit(migration.cloudBackup)) return;
+          restoreSettledRef.current = true;
+          if (
             backupStatus === "conflict" ||
             backupStatus === "offline" ||
             backupStatus === "server"

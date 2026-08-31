@@ -1,6 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getFirebaseAuth } from "./firebase";
-import { SyncStorageCoordinator } from "./cloudSyncStorage";
+import {
+  createGenerationGuardedCurrentUserResolver,
+  SyncStorageCoordinator,
+  type CurrentUserId,
+} from "./cloudSyncStorage";
 
 export const SYNC_KEYS = [
   "@elovia_state",
@@ -52,7 +56,6 @@ export class StaleAccountStorageSessionError extends Error {
   }
 }
 
-const STALE_GENERATION_OWNER = "@elovia_sync_owner:stale-generation";
 const syncKeySet = new Set<string>(SYNC_KEYS);
 let authScope: AuthScope = { ready: false, uid: null, generation: 0 };
 
@@ -82,27 +85,18 @@ export function getAccountStorageScopeKey(): string {
 }
 
 async function getFirebaseUid(): Promise<string | null> {
-  try {
-    const auth = await getFirebaseAuth();
-    return auth?.currentUser?.uid ?? null;
-  } catch {
-    return STALE_GENERATION_OWNER;
-  }
+  const auth = await getFirebaseAuth();
+  return auth?.currentUser?.uid ?? null;
 }
 
 function currentOwnerForToken(
   token: AccountStorageOwnerToken,
-): () => Promise<string | null> {
-  return async () => {
-    if (
-      !authScope.ready ||
-      authScope.generation !== token.generation ||
-      authScope.uid !== token.uid
-    ) {
-      return STALE_GENERATION_OWNER;
-    }
-    return getFirebaseUid();
-  };
+): ReturnType<typeof createGenerationGuardedCurrentUserResolver> {
+  return createGenerationGuardedCurrentUserResolver(
+    token,
+    () => authScope,
+    getFirebaseUid,
+  );
 }
 
 function assertSyncKeys(keys: readonly string[]): asserts keys is SyncKey[] {
@@ -113,7 +107,7 @@ function assertSyncKeys(keys: readonly string[]): asserts keys is SyncKey[] {
 
 async function prepareSession(
   token: AccountStorageOwnerToken,
-  currentOwner: () => Promise<string | null>,
+  currentOwner: CurrentUserId,
 ): Promise<void> {
   const prepared = await syncStorageCoordinator.prepareOwner(
     token.uid,

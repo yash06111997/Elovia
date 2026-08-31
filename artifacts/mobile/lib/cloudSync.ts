@@ -15,7 +15,11 @@ import {
   type RestoreFieldKind,
   type RestoreOutcome,
 } from "./cloudSyncContract";
-import { type OwnerPreparationOutcome } from "./cloudSyncStorage";
+import {
+  STALE_CURRENT_USER,
+  type CurrentUserId,
+  type OwnerPreparationOutcome,
+} from "./cloudSyncStorage";
 import { createCloudSyncNetworkOrchestrator } from "./cloudSyncOrchestrator";
 import {
   beginCloudSyncSession as beginSessionToken,
@@ -134,11 +138,11 @@ async function sessionMatchesFirebase(
 
 function currentUserForSession(
   sessionToken: CloudSyncSessionToken,
-): () => Promise<string | null> {
+): CurrentUserId {
   return async () =>
     (await sessionMatchesFirebase(sessionToken))
       ? cloudSyncSessionUid(sessionToken)
-      : "@elovia_sync_owner:stale-cloud-session";
+      : STALE_CURRENT_USER;
 }
 
 const networkOrchestrator = createCloudSyncNetworkOrchestrator(

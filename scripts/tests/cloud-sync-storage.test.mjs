@@ -2,10 +2,16 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  createGenerationGuardedCurrentUserResolver,
+  LEGACY_LOCAL_SYNC_GUEST_OWNER,
+  LEGACY_LOCAL_SYNC_QUARANTINE_OWNER,
   LOCAL_SYNC_JOURNAL_KEY,
+  LOCAL_SYNC_GUEST_OWNER,
   LOCAL_SYNC_OWNER_KEY,
   LOCAL_SYNC_QUARANTINE_OWNER,
+  STALE_CURRENT_USER,
   scopedSyncCacheKey,
+  storedSyncUserOwner,
   SyncStorageCoordinator,
 } from "../../artifacts/mobile/lib/cloudSyncStorage.ts";
 
@@ -103,6 +109,158 @@ class FailingMemoryStorage extends MemoryStorage {
 
 const SYNC_KEYS = ["state", "plan"];
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+test("an A1 Firebase lookup resolving after A to B to A2 is stale before mutation", async () => {
+  const lookup = deferred();
+  let scope = { ready: true, uid: "A", generation: 1 };
+  const resolver = createGenerationGuardedCurrentUserResolver(
+    { uid: "A", generation: 1 },
+    () => scope,
+    () => lookup.promise,
+  );
+  const storage = new MemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
+    ["state", "A2-current"],
+  ]);
+  const coordinator = new SyncStorageCoordinator(storage, ["state"]);
+
+  const staleCommit = coordinator.commitOwned(
+    "A",
+    resolver,
+    [["state", "A1-stale"]],
+    [],
+  );
+  scope = { ready: true, uid: "B", generation: 2 };
+  scope = { ready: true, uid: "A", generation: 3 };
+  lookup.resolve("A");
+
+  assert.deepEqual(await staleCommit, { status: "stale" });
+  assert.equal(await storage.getItem("state"), "A2-current");
+  assert.deepEqual(await resolver(), STALE_CURRENT_USER);
+
+  const failedLookup = createGenerationGuardedCurrentUserResolver(
+    { uid: "A", generation: 3 },
+    () => scope,
+    async () => {
+      throw new Error("auth unavailable");
+    },
+  );
+  assert.deepEqual(await failedLookup(), STALE_CURRENT_USER);
+});
+
+test("Firebase-looking sentinel UIDs are encoded as users and never impersonate system owners", async () => {
+  const collisionUids = [
+    LEGACY_LOCAL_SYNC_GUEST_OWNER,
+    LEGACY_LOCAL_SYNC_QUARANTINE_OWNER,
+    "@elovia_sync_owner:stale-generation",
+    "@elovia_sync_owner:stale-cloud-session",
+    LOCAL_SYNC_GUEST_OWNER,
+    LOCAL_SYNC_QUARANTINE_OWNER,
+    "user:A",
+  ];
+  assert.equal(
+    new Set(collisionUids.map(storedSyncUserOwner)).size,
+    collisionUids.length,
+  );
+
+  for (const uid of collisionUids) {
+    const storage = new MemoryStorage([["state", `owned:${uid}`]]);
+    const coordinator = new SyncStorageCoordinator(storage, ["state"]);
+    assert.deepEqual(await coordinator.prepareOwner(uid, async () => uid), {
+      status: "ready",
+      changed: true,
+    });
+    const storedOwner = storedSyncUserOwner(uid);
+    assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), storedOwner);
+    assert.notEqual(storedOwner, LOCAL_SYNC_GUEST_OWNER);
+    assert.notEqual(storedOwner, LOCAL_SYNC_QUARANTINE_OWNER);
+
+    assert.deepEqual(await coordinator.prepareOwner(null, async () => null), {
+      status: "ready",
+      changed: true,
+    });
+    assert.equal(
+      await storage.getItem(LOCAL_SYNC_OWNER_KEY),
+      LOCAL_SYNC_GUEST_OWNER,
+    );
+    assert.equal(
+      await storage.getItem(scopedSyncCacheKey(storedOwner, "state")),
+      `owned:${uid}`,
+    );
+
+    const legacyStorage = new MemoryStorage([
+      [LOCAL_SYNC_OWNER_KEY, uid],
+      ["state", `legacy:${uid}`],
+    ]);
+    const legacy = new SyncStorageCoordinator(legacyStorage, ["state"]);
+    assert.deepEqual(await legacy.prepareOwner(uid, async () => uid), {
+      status: "ready",
+      changed: true,
+    });
+    assert.equal(
+      await legacyStorage.getItem(LOCAL_SYNC_OWNER_KEY),
+      storedSyncUserOwner(uid),
+    );
+    assert.equal(await legacyStorage.getItem("state"), `legacy:${uid}`);
+  }
+});
+
+test("legacy raw owner markers migrate only for the exact authenticated UID", async () => {
+  const exactStorage = new MemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, "A"],
+    ["state", "A-state"],
+  ]);
+  const exact = new SyncStorageCoordinator(exactStorage, ["state"]);
+  assert.deepEqual(await exact.prepareOwner("A", async () => "A"), {
+    status: "ready",
+    changed: true,
+  });
+  assert.equal(
+    await exactStorage.getItem(LOCAL_SYNC_OWNER_KEY),
+    storedSyncUserOwner("A"),
+  );
+
+  const mismatchedStorage = new MemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, "A"],
+    ["state", "A-state"],
+  ]);
+  const mismatched = new SyncStorageCoordinator(mismatchedStorage, ["state"]);
+  await assert.rejects(mismatched.prepareOwner("B", async () => "B"));
+  assert.equal(
+    await mismatchedStorage.getItem(LOCAL_SYNC_OWNER_KEY),
+    LOCAL_SYNC_QUARANTINE_OWNER,
+  );
+  assert.equal(await mismatchedStorage.getItem("state"), "A-state");
+  assert.deepEqual(await mismatched.prepareOwner("A", async () => "A"), {
+    status: "ready",
+    changed: true,
+  });
+  assert.equal(
+    await mismatchedStorage.getItem(LOCAL_SYNC_OWNER_KEY),
+    storedSyncUserOwner("A"),
+  );
+
+  const guestStorage = new MemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, LEGACY_LOCAL_SYNC_GUEST_OWNER],
+  ]);
+  const guest = new SyncStorageCoordinator(guestStorage, ["state"]);
+  assert.deepEqual(await guest.prepareOwner(null, async () => null), {
+    status: "ready",
+    changed: true,
+  });
+  assert.equal(
+    await guestStorage.getItem(LOCAL_SYNC_OWNER_KEY),
+    LOCAL_SYNC_GUEST_OWNER,
+  );
+});
+
 test("guest data is claimed, isolated on A to B, and restored on B to A", async () => {
   const storage = new MemoryStorage([["state", "guest-a"]]);
   const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
@@ -122,7 +280,9 @@ test("guest data is claimed, isolated on A to B, and restored on B to A", async 
   });
   assert.equal(await storage.getItem("state"), null);
   assert.equal(
-    await storage.getItem(scopedSyncCacheKey("A", "state")),
+    await storage.getItem(
+      scopedSyncCacheKey(storedSyncUserOwner("A"), "state"),
+    ),
     "guest-a",
   );
 
@@ -143,17 +303,22 @@ test("guest data is claimed, isolated on A to B, and restored on B to A", async 
   });
   assert.equal(await storage.getItem("state"), "guest-a");
   assert.equal(
-    await storage.getItem(scopedSyncCacheKey("B", "state")),
+    await storage.getItem(
+      scopedSyncCacheKey(storedSyncUserOwner("B"), "state"),
+    ),
     "b-state",
   );
-  assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), "A");
+  assert.equal(
+    await storage.getItem(LOCAL_SYNC_OWNER_KEY),
+    storedSyncUserOwner("A"),
+  );
 });
 
 test("authenticated A is isolated from signed-out guest and later B", async () => {
   const accountKeys = ["@elovia_state"];
   const storage = new MemoryStorage(
     Object.entries({
-      [LOCAL_SYNC_OWNER_KEY]: "A",
+      [LOCAL_SYNC_OWNER_KEY]: storedSyncUserOwner("A"),
       "@elovia_state": "A-state",
     }),
   );
@@ -164,7 +329,9 @@ test("authenticated A is isolated from signed-out guest and later B", async () =
   assert.deepEqual(guest, { status: "ready", changed: true });
   assert.equal(await storage.getItem("@elovia_state"), null);
   assert.equal(
-    await storage.getItem(scopedSyncCacheKey("A", "@elovia_state")),
+    await storage.getItem(
+      scopedSyncCacheKey(storedSyncUserOwner("A"), "@elovia_state"),
+    ),
     "A-state",
   );
   assert.deepEqual(
@@ -203,13 +370,16 @@ test("the first authenticated user claims unowned guest data without losing it",
     await coordinator.prepareOwner("A", async () => currentUser),
     { status: "ready", changed: true },
   );
-  assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), "A");
+  assert.equal(
+    await storage.getItem(LOCAL_SYNC_OWNER_KEY),
+    storedSyncUserOwner("A"),
+  );
   assert.equal(await storage.getItem("@elovia_state"), "guest-state");
 });
 
 test("an old A generation cannot write after A to B to A remounts", async () => {
   const storage = new MemoryStorage([
-    [LOCAL_SYNC_OWNER_KEY, "A"],
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
     ["state", "A-current"],
   ]);
   const coordinator = new SyncStorageCoordinator(storage, ["state"]);
@@ -217,7 +387,7 @@ test("an old A generation cannot write after A to B to A remounts", async () => 
   let generation = 1;
   const oldGeneration = generation;
   const oldAResolver = async () =>
-    generation === oldGeneration ? currentUid : "stale-generation";
+    generation === oldGeneration ? currentUid : STALE_CURRENT_USER;
 
   currentUid = "B";
   generation++;
@@ -238,7 +408,7 @@ test("an old A generation cannot write after A to B to A remounts", async () => 
 
 test("a stale expected uid aborts an owner transition without mutation", async () => {
   const storage = new MemoryStorage([
-    [LOCAL_SYNC_OWNER_KEY, "A"],
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
     ["state", "a-state"],
   ]);
   const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
@@ -252,7 +422,7 @@ test("a stale expected uid aborts an owner transition without mutation", async (
 
 test("an auth change during transition is rechecked before any mutation", async () => {
   const storage = new MemoryStorage([
-    [LOCAL_SYNC_OWNER_KEY, "A"],
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
     ["state", "a-state"],
   ]);
   const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
@@ -270,7 +440,7 @@ test("an auth change during transition is rechecked before any mutation", async 
 
 test("stale restore commits cannot mutate another owner's global keys", async () => {
   const storage = new MemoryStorage([
-    [LOCAL_SYNC_OWNER_KEY, "B"],
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("B")],
     ["state", "b-state"],
   ]);
   const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
@@ -288,7 +458,7 @@ test("stale restore commits cannot mutate another owner's global keys", async ()
 
 test("same-uid ABA invalidation during a commit rolls shared keys back", async () => {
   const storage = new BlockingMemoryStorage([
-    [LOCAL_SYNC_OWNER_KEY, "A"],
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
     ["state", "a2-current"],
   ]);
   const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
@@ -296,7 +466,7 @@ test("same-uid ABA invalidation during a commit rolls shared keys back", async (
 
   const lateA1Commit = coordinator.commitOwned(
     "A",
-    async () => (generationIsCurrent ? "A" : "stale-generation"),
+    async () => (generationIsCurrent ? "A" : STALE_CURRENT_USER),
     [["state", "a1-stale"]],
     [],
   );
@@ -313,7 +483,7 @@ test("every owned commit phase is crash-recoverable without partial data or revi
 
   for (let failAt = 1; failAt <= mutationPhases; failAt++) {
     const storage = new FailingMemoryStorage([
-      [LOCAL_SYNC_OWNER_KEY, "A"],
+      [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
       ["state", "old-state"],
       ["plan", "old-plan"],
       ["revision", "4"],
@@ -349,14 +519,17 @@ test("every owned commit phase is crash-recoverable without partial data or revi
         ],
       },
     );
-    assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), "A");
+    assert.equal(
+      await storage.getItem(LOCAL_SYNC_OWNER_KEY),
+      storedSyncUserOwner("A"),
+    );
     assert.equal(await storage.getItem(LOCAL_SYNC_JOURNAL_KEY), null);
   }
 });
 
 test("failed owned-commit recovery remains quarantined until a later retry", async () => {
   const storage = new FailingMemoryStorage([
-    [LOCAL_SYNC_OWNER_KEY, "A"],
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
     ["state", "old-state"],
     ["revision", "4"],
   ]);
@@ -402,12 +575,12 @@ test("failed owned-commit recovery remains quarantined until a later retry", asy
 
 test("scoped reset clears only A globals/cache and preserves B and guest caches", async () => {
   const storage = new MemoryStorage([
-    [LOCAL_SYNC_OWNER_KEY, "A"],
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
     ["state", "a-global"],
     ["revision:A", "7"],
-    [scopedSyncCacheKey("A", "state"), "a-cache"],
-    [scopedSyncCacheKey("B", "state"), "b-cache"],
-    [scopedSyncCacheKey("@elovia_sync_owner:guest", "state"), "guest-cache"],
+    [scopedSyncCacheKey(storedSyncUserOwner("A"), "state"), "a-cache"],
+    [scopedSyncCacheKey(storedSyncUserOwner("B"), "state"), "b-cache"],
+    [scopedSyncCacheKey(LOCAL_SYNC_GUEST_OWNER, "state"), "guest-cache"],
   ]);
   const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
 
@@ -422,21 +595,28 @@ test("scoped reset clears only A globals/cache and preserves B and guest caches"
   );
   assert.equal(await storage.getItem("state"), null);
   assert.equal(await storage.getItem("revision:A"), null);
-  assert.equal(await storage.getItem(scopedSyncCacheKey("A", "state")), null);
   assert.equal(
-    await storage.getItem(scopedSyncCacheKey("B", "state")),
-    "b-cache",
+    await storage.getItem(
+      scopedSyncCacheKey(storedSyncUserOwner("A"), "state"),
+    ),
+    null,
   );
   assert.equal(
     await storage.getItem(
-      scopedSyncCacheKey("@elovia_sync_owner:guest", "state"),
+      scopedSyncCacheKey(storedSyncUserOwner("B"), "state"),
     ),
+    "b-cache",
+  );
+  assert.equal(
+    await storage.getItem(scopedSyncCacheKey(LOCAL_SYNC_GUEST_OWNER, "state")),
     "guest-cache",
   );
 });
 
 test("a queued owner transition excludes a rolled-back previous-owner commit from B", async () => {
-  const storage = new BlockingMemoryStorage([[LOCAL_SYNC_OWNER_KEY, "A"]]);
+  const storage = new BlockingMemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
+  ]);
   const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
   let currentUser = "A";
   const current = async () => currentUser;
@@ -455,7 +635,12 @@ test("a queued owner transition excludes a rolled-back previous-owner commit fro
   assert.deepEqual(await lateACommit, { status: "stale" });
   assert.deepEqual(await switchToB, { status: "ready", changed: true });
   assert.equal(await storage.getItem("state"), null);
-  assert.equal(await storage.getItem(scopedSyncCacheKey("A", "state")), null);
+  assert.equal(
+    await storage.getItem(
+      scopedSyncCacheKey(storedSyncUserOwner("A"), "state"),
+    ),
+    null,
+  );
   assert.deepEqual(await coordinator.readOwned("B", current, SYNC_KEYS), {
     status: "ready",
     value: [
@@ -467,11 +652,11 @@ test("a queued owner transition excludes a rolled-back previous-owner commit fro
 
 function transitionFixture() {
   return new FailingMemoryStorage([
-    [LOCAL_SYNC_OWNER_KEY, "A"],
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
     ["state", "a-state"],
-    [scopedSyncCacheKey("A", "state"), "old-a-cache"],
-    [scopedSyncCacheKey("A", "plan"), "old-a-plan-cache"],
-    [scopedSyncCacheKey("B", "state"), "b-state"],
+    [scopedSyncCacheKey(storedSyncUserOwner("A"), "state"), "old-a-cache"],
+    [scopedSyncCacheKey(storedSyncUserOwner("A"), "plan"), "old-a-plan-cache"],
+    [scopedSyncCacheKey(storedSyncUserOwner("B"), "state"), "b-state"],
   ]);
 }
 
@@ -493,18 +678,27 @@ test("every transition write phase fails closed, rolls back, and retries cleanly
         status: "stale",
       },
     );
-    assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), "A");
+    assert.equal(
+      await storage.getItem(LOCAL_SYNC_OWNER_KEY),
+      storedSyncUserOwner("A"),
+    );
     assert.equal(await storage.getItem("state"), "a-state");
     assert.equal(
-      await storage.getItem(scopedSyncCacheKey("A", "state")),
+      await storage.getItem(
+        scopedSyncCacheKey(storedSyncUserOwner("A"), "state"),
+      ),
       "old-a-cache",
     );
     assert.equal(
-      await storage.getItem(scopedSyncCacheKey("A", "plan")),
+      await storage.getItem(
+        scopedSyncCacheKey(storedSyncUserOwner("A"), "plan"),
+      ),
       "old-a-plan-cache",
     );
     assert.equal(
-      await storage.getItem(scopedSyncCacheKey("B", "state")),
+      await storage.getItem(
+        scopedSyncCacheKey(storedSyncUserOwner("B"), "state"),
+      ),
       "b-state",
     );
 
@@ -515,16 +709,28 @@ test("every transition write phase fails closed, rolls back, and retries cleanly
         changed: true,
       },
     );
-    assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), "B");
+    assert.equal(
+      await storage.getItem(LOCAL_SYNC_OWNER_KEY),
+      storedSyncUserOwner("B"),
+    );
     assert.equal(await storage.getItem(LOCAL_SYNC_JOURNAL_KEY), null);
     assert.equal(await storage.getItem("state"), "b-state");
     assert.equal(
-      await storage.getItem(scopedSyncCacheKey("A", "state")),
+      await storage.getItem(
+        scopedSyncCacheKey(storedSyncUserOwner("A"), "state"),
+      ),
       "a-state",
     );
-    assert.equal(await storage.getItem(scopedSyncCacheKey("A", "plan")), null);
     assert.equal(
-      await storage.getItem(scopedSyncCacheKey("B", "state")),
+      await storage.getItem(
+        scopedSyncCacheKey(storedSyncUserOwner("A"), "plan"),
+      ),
+      null,
+    );
+    assert.equal(
+      await storage.getItem(
+        scopedSyncCacheKey(storedSyncUserOwner("B"), "state"),
+      ),
       "b-state",
     );
   }
@@ -561,31 +767,52 @@ test("failed rollback remains quarantined and a later restart can recover", asyn
     status: "ready",
     changed: true,
   });
-  assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), "B");
+  assert.equal(
+    await storage.getItem(LOCAL_SYNC_OWNER_KEY),
+    storedSyncUserOwner("B"),
+  );
   assert.equal(await storage.getItem(LOCAL_SYNC_JOURNAL_KEY), null);
   assert.equal(await storage.getItem("state"), "b-state");
 });
 
 test("automatic and manual sync bind work to an expected authenticated owner", async () => {
-  const [syncSource, autoSource, profileSource] = await Promise.all([
-    readFile(
-      new URL("../../artifacts/mobile/lib/cloudSync.ts", import.meta.url),
-      "utf8",
-    ),
-    readFile(
-      new URL(
-        "../../artifacts/mobile/components/AutoSync.tsx",
-        import.meta.url,
+  const [syncSource, autoSource, profileSource, accountStorageSource] =
+    await Promise.all([
+      readFile(
+        new URL("../../artifacts/mobile/lib/cloudSync.ts", import.meta.url),
+        "utf8",
       ),
-      "utf8",
-    ),
-    readFile(
-      new URL("../../artifacts/mobile/app/(tabs)/profile.tsx", import.meta.url),
-      "utf8",
-    ),
-  ]);
+      readFile(
+        new URL(
+          "../../artifacts/mobile/components/AutoSync.tsx",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      readFile(
+        new URL(
+          "../../artifacts/mobile/app/(tabs)/profile.tsx",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      readFile(
+        new URL(
+          "../../artifacts/mobile/lib/accountSyncStorage.ts",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ]);
 
   assert.match(syncSource, /syncStorageCoordinator as syncStorage/);
+  assert.doesNotMatch(syncSource, /stale-cloud-session/);
+  assert.doesNotMatch(syncSource, /stale-generation/);
+  assert.match(
+    accountStorageSource,
+    /createGenerationGuardedCurrentUserResolver/,
+  );
+  assert.doesNotMatch(accountStorageSource, /STALE_GENERATION_OWNER/);
   assert.match(
     syncSource,
     /backupToCloud\([\s\S]*sessionToken: CloudSyncSessionToken/,

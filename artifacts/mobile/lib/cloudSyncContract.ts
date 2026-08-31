@@ -69,6 +69,11 @@ export function canUploadAfterRestore(outcome: RestoreOutcome): boolean {
   return outcome.status === "restored" || outcome.status === "empty";
 }
 
+/** A validated local legacy commit is settled unless its auth session failed. */
+export function canSettleAfterLegacyCommit(outcome: BackupOutcome): boolean {
+  return outcome.status !== "unauthorized";
+}
+
 export function revisionStorageKey(firebaseUserId: string): string {
   return `@elovia_sync_revision:${encodeURIComponent(firebaseUserId)}`;
 }

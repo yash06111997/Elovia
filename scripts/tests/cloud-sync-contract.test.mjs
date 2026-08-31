@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   buildStoredSyncPayload,
+  canSettleAfterLegacyCommit,
   canUploadAfterRestore,
   classifyAuthTokenFailure,
   classifyBackupResponse,
@@ -20,6 +21,19 @@ test("only definitive restore states permit upload", () => {
   assert.equal(canUploadAfterRestore({ status: "offline" }), false);
   assert.equal(canUploadAfterRestore({ status: "server" }), false);
   assert.equal(canUploadAfterRestore({ status: "unauthorized" }), false);
+});
+
+test("a committed legacy restore settles despite backup transport or conflict outcomes", () => {
+  for (const outcome of [
+    { status: "saved", revision: 2 },
+    { status: "empty" },
+    { status: "offline" },
+    { status: "server" },
+    { status: "conflict", currentRevision: 3 },
+  ]) {
+    assert.equal(canSettleAfterLegacyCommit(outcome), true);
+  }
+  assert.equal(canSettleAfterLegacyCommit({ status: "unauthorized" }), false);
 });
 
 test("HTTP restore responses are not collapsed into empty", () => {
@@ -294,6 +308,11 @@ test("automatic sync gates migration and pauses after conflicts", async () => {
   assert.match(source, /canUploadAfterRestore\(outcome\)/);
   assert.match(source, /outcome\.status === "restored"/);
   assert.match(source, /migrateLegacyFirebaseData\(sessionToken\)/);
+  assert.match(source, /canSettleAfterLegacyCommit\(migration\.cloudBackup\)/);
+  assert.match(
+    source,
+    /await emitDataRestored\(\)[\s\S]*canSettleAfterLegacyCommit\(migration\.cloudBackup\)[\s\S]*restoreSettledRef\.current = true/,
+  );
   assert.match(source, /isCloudSyncConflictBlocked\(userId\)/);
   assert.match(source, /backupInFlightRef\.current/);
   assert.match(source, /cloud_sync_failed/);

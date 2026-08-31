@@ -9,6 +9,8 @@ import {
 import { createCloudSyncNetworkOrchestrator } from "../../artifacts/mobile/lib/cloudSyncOrchestrator.ts";
 import {
   LOCAL_SYNC_OWNER_KEY,
+  STALE_CURRENT_USER,
+  storedSyncUserOwner,
   SyncStorageCoordinator,
 } from "../../artifacts/mobile/lib/cloudSyncStorage.ts";
 
@@ -53,7 +55,7 @@ test("a deferred A1 restore cannot mutate or settle A2 after A to B to A", async
   );
   const response = deferred();
   const storage = new MemoryStorage([
-    [LOCAL_SYNC_OWNER_KEY, "A"],
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
     ["state", "A2-local"],
     ["revision", "8"],
   ]);
@@ -67,7 +69,7 @@ test("a deferred A1 restore cannot mutate or settle A2 after A to B to A", async
       async () =>
         isCloudSyncSessionCurrent(token) && firebaseUid === "A"
           ? "A"
-          : "stale-session",
+          : STALE_CURRENT_USER,
       [["state", snapshot.state]],
       [],
       [["revision", String(snapshot.revision)]],
@@ -225,7 +227,7 @@ test("deferred legacy reads do not hold storage and stale snapshots cannot commi
   const token = beginCloudSyncSession("A");
   const response = deferred();
   const storage = new MemoryStorage([
-    [LOCAL_SYNC_OWNER_KEY, "A"],
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
     ["state", "current"],
   ]);
   const coordinator = new SyncStorageCoordinator(storage, ["state"]);
@@ -242,7 +244,7 @@ test("deferred legacy reads do not hold storage and stale snapshots cannot commi
       async () =>
         isCloudSyncSessionCurrent(token) && firebaseUid === "A"
           ? "A"
-          : "stale-session",
+          : STALE_CURRENT_USER,
       [["state", guarded.value.state]],
       [],
     );

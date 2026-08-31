@@ -9,7 +9,52 @@ export interface SyncStorageAdapter {
   multiRemove(keys: string[]): Promise<void>;
 }
 
-export type CurrentUserId = () => Promise<string | null>;
+export interface StaleCurrentUser {
+  readonly status: "stale";
+}
+
+export const STALE_CURRENT_USER: StaleCurrentUser = Object.freeze({
+  status: "stale",
+});
+
+export type CurrentUserId = () => Promise<string | null | StaleCurrentUser>;
+
+export interface GenerationGuardedUserToken {
+  readonly uid: string | null;
+  readonly generation: number;
+}
+
+export interface GenerationGuardedUserScope {
+  readonly ready: boolean;
+  readonly uid: string | null;
+  readonly generation: number;
+}
+
+/** Guard both sides of an async auth lookup so same-uid ABA cannot validate. */
+export function createGenerationGuardedCurrentUserResolver(
+  token: GenerationGuardedUserToken,
+  getScope: () => GenerationGuardedUserScope,
+  getFirebaseUid: () => Promise<string | null>,
+): CurrentUserId {
+  const scopeMatches = () => {
+    const scope = getScope();
+    return (
+      scope.ready &&
+      scope.generation === token.generation &&
+      scope.uid === token.uid
+    );
+  };
+
+  return async () => {
+    if (!scopeMatches()) return STALE_CURRENT_USER;
+    try {
+      const uid = await getFirebaseUid();
+      return scopeMatches() ? uid : STALE_CURRENT_USER;
+    } catch {
+      return STALE_CURRENT_USER;
+    }
+  };
+}
 
 export type OwnerPreparationOutcome =
   | { status: "ready"; changed: boolean }
@@ -46,11 +91,54 @@ type SyncStorageJournal = OwnerTransitionJournal | OwnedMutationJournal;
 
 export const LOCAL_SYNC_OWNER_KEY = "@elovia_sync_owner";
 export const LOCAL_SYNC_JOURNAL_KEY = "@elovia_sync_owner_transition";
-export const LOCAL_SYNC_QUARANTINE_OWNER = "@elovia_sync_owner:quarantine";
-export const LOCAL_SYNC_GUEST_OWNER = "@elovia_sync_owner:guest";
+export const LOCAL_SYNC_LEGACY_OWNER_KEY = "@elovia_sync_legacy_owner";
+export const LOCAL_SYNC_QUARANTINE_OWNER = "system:quarantine";
+export const LOCAL_SYNC_GUEST_OWNER = "system:guest";
+export const LEGACY_LOCAL_SYNC_QUARANTINE_OWNER =
+  "@elovia_sync_owner:quarantine";
+export const LEGACY_LOCAL_SYNC_GUEST_OWNER = "@elovia_sync_owner:guest";
 
-export function scopedSyncCacheKey(userId: string, storageKey: string): string {
-  return `@elovia_sync_cache:${encodeURIComponent(userId)}:${encodeURIComponent(storageKey)}`;
+export function storedSyncUserOwner(userId: string): string {
+  return `user:${encodeURIComponent(userId)}`;
+}
+
+export function scopedSyncCacheKey(
+  storedOwner: string,
+  storageKey: string,
+): string {
+  if (
+    storedOwner !== LOCAL_SYNC_GUEST_OWNER &&
+    !isStoredUserOwner(storedOwner)
+  ) {
+    throw new Error("Sync cache keys require an encoded stored owner.");
+  }
+  return `@elovia_sync_cache:${encodeURIComponent(storedOwner)}:${encodeURIComponent(storageKey)}`;
+}
+
+function currentUserMatches(
+  current: string | null | StaleCurrentUser,
+  expectedUserId: string | null,
+): boolean {
+  return current !== STALE_CURRENT_USER && current === expectedUserId;
+}
+
+function isStoredUserOwner(owner: string): boolean {
+  if (!owner.startsWith("user:")) return false;
+  try {
+    const decoded = decodeURIComponent(owner.slice("user:".length));
+    return storedSyncUserOwner(decoded) === owner;
+  } catch {
+    return false;
+  }
+}
+
+function storedOwnerMatches(
+  owner: string | null,
+  expectedUserId: string | null,
+): boolean {
+  return expectedUserId === null
+    ? owner === null || owner === LOCAL_SYNC_GUEST_OWNER
+    : owner === storedSyncUserOwner(expectedUserId);
 }
 
 function isStoredEntries(input: unknown): input is StoredEntry[] {
@@ -176,11 +264,9 @@ export class SyncStorageCoordinator {
     const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
 
     if (rawJournal === null) {
-      if (owner === LOCAL_SYNC_QUARANTINE_OWNER) {
-        throw new Error(
-          "Local sync storage is quarantined without a recovery journal.",
-        );
-      }
+      // A quarantined legacy raw marker is resolved only by prepareOwner once
+      // the exact authenticated uid returns. Reads and commits still fail
+      // their owner checks while quarantine remains.
       return;
     }
 
@@ -215,6 +301,60 @@ export class SyncStorageCoordinator {
       await this.quarantineBestEffort();
       throw error;
     }
+  }
+
+  private async normalizeStoredOwner(
+    owner: string | null,
+    expectedUserId: string | null,
+  ): Promise<{ owner: string | null; changed: boolean }> {
+    if (owner === null) return { owner, changed: false };
+    if (owner === LOCAL_SYNC_QUARANTINE_OWNER) {
+      const legacyOwner = await this.storage.getItem(
+        LOCAL_SYNC_LEGACY_OWNER_KEY,
+      );
+      if (
+        expectedUserId !== null &&
+        (legacyOwner === storedSyncUserOwner(expectedUserId) ||
+          (legacyOwner === null && owner === expectedUserId))
+      ) {
+        const encodedOwner = storedSyncUserOwner(expectedUserId);
+        await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, encodedOwner);
+        await this.storage.removeItem(LOCAL_SYNC_LEGACY_OWNER_KEY);
+        return { owner: encodedOwner, changed: true };
+      }
+      throw new Error("Local sync storage remains quarantined.");
+    }
+
+    // Legacy releases stored a raw Firebase uid. It is safe to migrate only
+    // when the authenticated uid is an exact match; every other raw marker is
+    // ambiguous and therefore quarantined without exposing shared data.
+    if (expectedUserId !== null && owner === expectedUserId) {
+      const encodedOwner = storedSyncUserOwner(expectedUserId);
+      await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, encodedOwner);
+      return { owner: encodedOwner, changed: true };
+    }
+    if (owner === LOCAL_SYNC_GUEST_OWNER || isStoredUserOwner(owner)) {
+      return { owner, changed: false };
+    }
+    if (expectedUserId === null && owner === LEGACY_LOCAL_SYNC_GUEST_OWNER) {
+      await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, LOCAL_SYNC_GUEST_OWNER);
+      return { owner: LOCAL_SYNC_GUEST_OWNER, changed: true };
+    }
+
+    try {
+      await this.storage.setItem(
+        LOCAL_SYNC_LEGACY_OWNER_KEY,
+        storedSyncUserOwner(owner),
+      );
+      await this.storage.setItem(
+        LOCAL_SYNC_OWNER_KEY,
+        LOCAL_SYNC_QUARANTINE_OWNER,
+      );
+    } catch (error) {
+      await this.quarantineBestEffort();
+      throw error;
+    }
+    throw new Error("Legacy local sync ownership cannot be verified.");
   }
 
   private async transitionOwner(
@@ -285,40 +425,43 @@ export class SyncStorageCoordinator {
   ): Promise<OwnerPreparationOutcome> {
     return this.exclusive(async () => {
       await this.recoverIfNeeded();
-      if ((await currentUserId()) !== expectedUserId)
+      if (!currentUserMatches(await currentUserId(), expectedUserId))
         return { status: "stale" };
 
-      const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
-      if (
-        owner === expectedUserId ||
-        (expectedUserId === null && owner === LOCAL_SYNC_GUEST_OWNER)
-      ) {
-        return { status: "ready", changed: false };
+      const normalized = await this.normalizeStoredOwner(
+        await this.storage.getItem(LOCAL_SYNC_OWNER_KEY),
+        expectedUserId,
+      );
+      const owner = normalized.owner;
+      if (storedOwnerMatches(owner, expectedUserId)) {
+        return { status: "ready", changed: normalized.changed };
       }
 
       if (owner === null) {
-        if ((await currentUserId()) !== expectedUserId)
+        if (!currentUserMatches(await currentUserId(), expectedUserId))
           return { status: "stale" };
         // Unowned guest data stays unowned so the first authenticated account
         // can claim it in place without an unnecessary cache round trip.
         if (expectedUserId === null) return { status: "ready", changed: false };
-        await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, expectedUserId);
-        if ((await currentUserId()) !== expectedUserId)
+        await this.storage.setItem(
+          LOCAL_SYNC_OWNER_KEY,
+          storedSyncUserOwner(expectedUserId),
+        );
+        if (!currentUserMatches(await currentUserId(), expectedUserId))
           return { status: "stale" };
         return { status: "ready", changed: true };
       }
 
-      if (owner === LOCAL_SYNC_QUARANTINE_OWNER) {
-        throw new Error("Local sync storage remains quarantined.");
-      }
-      if ((await currentUserId()) !== expectedUserId)
+      if (!currentUserMatches(await currentUserId(), expectedUserId))
         return { status: "stale" };
 
       await this.transitionOwner(
         owner,
-        expectedUserId ?? LOCAL_SYNC_GUEST_OWNER,
+        expectedUserId === null
+          ? LOCAL_SYNC_GUEST_OWNER
+          : storedSyncUserOwner(expectedUserId),
       );
-      if ((await currentUserId()) !== expectedUserId)
+      if (!currentUserMatches(await currentUserId(), expectedUserId))
         return { status: "stale" };
       return { status: "ready", changed: true };
     });
@@ -333,17 +476,14 @@ export class SyncStorageCoordinator {
   > {
     return this.exclusive(async () => {
       await this.recoverIfNeeded();
-      if ((await currentUserId()) !== expectedUserId)
+      if (!currentUserMatches(await currentUserId(), expectedUserId))
         return { status: "stale" };
       const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
-      if (
-        owner !== expectedUserId &&
-        !(expectedUserId === null && owner === LOCAL_SYNC_GUEST_OWNER)
-      ) {
+      if (!storedOwnerMatches(owner, expectedUserId)) {
         return { status: "stale" };
       }
       const value = await this.storage.multiGet([...keys]);
-      if ((await currentUserId()) !== expectedUserId)
+      if (!currentUserMatches(await currentUserId(), expectedUserId))
         return { status: "stale" };
       return { status: "ready", value };
     });
@@ -359,13 +499,10 @@ export class SyncStorageCoordinator {
   ): Promise<OwnedStorageOutcome<void>> {
     return this.exclusive(async () => {
       await this.recoverIfNeeded();
-      if ((await currentUserId()) !== expectedUserId)
+      if (!currentUserMatches(await currentUserId(), expectedUserId))
         return { status: "stale" };
       const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
-      if (
-        owner !== expectedUserId &&
-        !(expectedUserId === null && owner === LOCAL_SYNC_GUEST_OWNER)
-      ) {
+      if (!storedOwnerMatches(owner, expectedUserId)) {
         return { status: "stale" };
       }
 
@@ -406,7 +543,7 @@ export class SyncStorageCoordinator {
       if (removals.length > 0) await this.storage.multiRemove([...removals]);
       if (finalSets.length > 0) await this.storage.multiSet(finalSets);
 
-      if ((await currentUserId()) !== expectedUserId) {
+      if (!currentUserMatches(await currentUserId(), expectedUserId)) {
         try {
           await this.writeExactEntries(originals);
           if (owner === null)
@@ -432,7 +569,10 @@ export class SyncStorageCoordinator {
     additionalKeys: readonly string[] = [],
     sessionGeneration = "unspecified",
   ): Promise<OwnedStorageOutcome<void>> {
-    const cacheOwner = expectedUserId ?? LOCAL_SYNC_GUEST_OWNER;
+    const cacheOwner =
+      expectedUserId === null
+        ? LOCAL_SYNC_GUEST_OWNER
+        : storedSyncUserOwner(expectedUserId);
     const cacheKeys = this.syncKeys.map((key) =>
       scopedSyncCacheKey(cacheOwner, key),
     );
