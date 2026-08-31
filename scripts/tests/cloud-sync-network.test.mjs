@@ -57,6 +57,33 @@ test("a bounded timeout releases the session operation queue without leaks", asy
   endCloudSyncSession(token);
 });
 
+test("a stale token rejects once without an unhandled cancellation", async () => {
+  const stale = beginCloudSyncSession("stale-token");
+  const current = beginCloudSyncSession("current-token");
+  const unhandled = [];
+  let operationExecutions = 0;
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+
+  try {
+    await assert.rejects(
+      runCloudSyncBoundedOperation(stale, async () => {
+        operationExecutions += 1;
+        return "must-not-run";
+      }),
+      (error) =>
+        error instanceof CloudSyncDeadlineError && error.reason === "session",
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(operationExecutions, 0);
+    assert.deepEqual(unhandled, []);
+    assert.equal(cloudSyncSessionAbortControllerCount(stale), 0);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+    endCloudSyncSession(current);
+  }
+});
+
 test("ending A aborts immediately and never blocks a new B operation", async () => {
   const a = beginCloudSyncSession("A");
   const lateA = deferred();

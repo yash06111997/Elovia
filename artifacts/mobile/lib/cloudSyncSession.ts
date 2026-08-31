@@ -161,7 +161,7 @@ export async function runCloudSyncBoundedOperation<Value>(
 
   try {
     if (controller.signal.aborted) {
-      throw new CloudSyncDeadlineError(cancellationReason(controller.signal));
+      return await cancellation;
     }
     return await Promise.race([operation(controller.signal), cancellation]);
   } catch (error) {
