@@ -4,13 +4,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useApp, CustomMacros, FitnessGoal, FitnessLevel, ActivityLevel, WorkoutPreference, FoodPreference, Equipment, DietType, type UserProfile } from "@/context/AppContext";
 import { useWorkout } from "@/context/WorkoutContext";
 import { useHealth } from "@/context/HealthContext";
 import { useAuth } from "@/lib/auth";
 import { useSubscription } from "@/context/SubscriptionContext";
-import { backupToCloud, restoreFromCloud, migrateLegacyFirebaseData, getCurrentCloudSyncUserId, getCurrentCloudSyncSession, isCloudSyncSessionCurrent, prepareLocalSyncOwner } from "@/lib/cloudSync";
+import { backupToCloud, restoreFromCloud, migrateLegacyFirebaseData, getCurrentCloudSyncUserId, getCurrentCloudSyncSession, isCloudSyncSessionCurrent, prepareLocalSyncOwner, resetCurrentAccountData } from "@/lib/cloudSync";
 import { emitDataRestored } from "@/lib/syncEvents";
 import { NumberEditModal } from "@/components/NumberEditModal";
 import { Colors } from "@/constants/colors";
@@ -314,8 +313,29 @@ export default function ProfileScreen() {
         text: "Reset",
         style: "destructive",
         onPress: async () => {
-          const AsyncStorage = require("@react-native-async-storage/async-storage").default;
-          await AsyncStorage.clear();
+          if (!isAuthenticated || !user) {
+            Alert.alert("Sign-in required", "Sign in again before resetting this account's local data.");
+            return;
+          }
+          const sessionToken = getCurrentCloudSyncSession(user.id);
+          if (!sessionToken) {
+            Alert.alert("Reset unavailable", "Cloud sync is not ready for this account yet. Please try again in a moment.");
+            return;
+          }
+          const outcome = await resetCurrentAccountData(sessionToken);
+          if (outcome.status === "unauthorized") {
+            Alert.alert("Sign-in changed", "Your account changed before reset completed. No other account data was cleared.");
+            return;
+          }
+          if (outcome.status === "server") {
+            Alert.alert("Reset unavailable", "Elovia could not safely reset this account's local data. Please try again.");
+            return;
+          }
+          const reload = await emitDataRestored();
+          if (reload.status === "failed" || !isCloudSyncSessionCurrent(sessionToken)) {
+            Alert.alert("Reset incomplete", "Your local data was cleared, but Elovia could not reload every screen. Please reopen the app.");
+            return;
+          }
           router.replace("/onboarding");
         },
       },

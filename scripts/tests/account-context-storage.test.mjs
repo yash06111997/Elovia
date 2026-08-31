@@ -85,6 +85,25 @@ test("context reloads reset missing synchronized values to defaults", async () =
   assert.match(wellness, /setWaterGoalMlState\(2500\)/);
 });
 
+test("workout and nutrition reload each use one facade multiGet", async () => {
+  const [workout, nutrition] = await Promise.all([
+    source("context/WorkoutContext.tsx"),
+    source("context/NutritionContext.tsx"),
+  ]);
+  assert.equal((workout.match(/accountStorage\.multiGet\(/g) ?? []).length, 1);
+  assert.equal(
+    (nutrition.match(/accountStorage\.multiGet\(/g) ?? []).length,
+    1,
+  );
+  assert.doesNotMatch(workout, /accountStorage\.getItem\(/);
+  assert.doesNotMatch(nutrition, /accountStorage\.getItem\(/);
+});
+
+test("subscription entitlement refresh is outside the storage restore barrier", async () => {
+  const subscription = await source("context/SubscriptionContext.tsx");
+  assert.doesNotMatch(subscription, /onDataRestored/);
+});
+
 test("auth remounts the account provider subtree and invalidates storage generations", async () => {
   const auth = await source("lib/auth.tsx");
   const facade = await source("lib/accountSyncStorage.ts");

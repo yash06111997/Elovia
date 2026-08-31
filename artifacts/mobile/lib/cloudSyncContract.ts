@@ -10,7 +10,12 @@ export type BackupOutcome =
   | { status: "empty" | "offline" | "unauthorized" | "server" }
   | { status: "conflict"; currentRevision: number | null };
 
-export type RestoreFieldKind = "json" | "scalar";
+export type RestoreFieldKind =
+  | "string"
+  | "plain-object"
+  | "nullable-object"
+  | "array"
+  | "positive-number";
 export type SerializedRestoreChange = readonly [
   field: string,
   value: string | null,
@@ -18,6 +23,10 @@ export type SerializedRestoreChange = readonly [
 
 export type SerializedRestoreFields =
   | { status: "valid"; changes: SerializedRestoreChange[] }
+  | { status: "invalid" };
+
+export type StoredSyncPayload =
+  | { status: "valid"; payload: Record<string, unknown> }
   | { status: "invalid" };
 
 export type AuthTokenFailureStatus = "offline" | "unauthorized";
@@ -111,6 +120,70 @@ function isJsonCompatible(value: unknown, ancestors: Set<object>): boolean {
   return compatible;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isValidFieldValue(value: unknown, kind: RestoreFieldKind): boolean {
+  if (value === null) return true;
+  if (!isJsonCompatible(value, new Set())) return false;
+
+  switch (kind) {
+    case "string":
+      return typeof value === "string";
+    case "plain-object":
+    case "nullable-object":
+      return isPlainObject(value);
+    case "array":
+      return Array.isArray(value);
+    case "positive-number":
+      return typeof value === "number" && Number.isFinite(value) && value > 0;
+  }
+}
+
+function parseStoredFieldValue(
+  stored: string,
+  kind: RestoreFieldKind,
+): unknown | typeof INVALID_STORED_VALUE {
+  try {
+    return JSON.parse(stored);
+  } catch {
+    // Earlier app versions stored the four scalar selectors without JSON
+    // quoting. Accept only those legacy strings; all structured values fail.
+    return kind === "string" ? stored : INVALID_STORED_VALUE;
+  }
+}
+
+const INVALID_STORED_VALUE = Symbol("invalid-stored-sync-value");
+
+/** Build an upload patch and optionally materialize absent keys as tombstones. */
+export function buildStoredSyncPayload(
+  storedFields: readonly (readonly [string, string | null])[],
+  fieldKinds: Readonly<Record<string, RestoreFieldKind>>,
+  includeMissingAsNull: boolean,
+): StoredSyncPayload {
+  const storedByField = new Map(storedFields);
+  const payload: Record<string, unknown> = {};
+
+  for (const [field, kind] of Object.entries(fieldKinds)) {
+    const stored = storedByField.get(field);
+    if (stored === undefined || stored === null) {
+      if (includeMissingAsNull) payload[field] = null;
+      continue;
+    }
+
+    const value = parseStoredFieldValue(stored, kind);
+    if (value === INVALID_STORED_VALUE || !isValidFieldValue(value, kind)) {
+      return { status: "invalid" };
+    }
+    payload[field] = value;
+  }
+
+  return { status: "valid", payload };
+}
+
 /** Validate and serialize the complete known restore change set before storage mutates. */
 export function serializeRestoreFields(
   input: unknown,
@@ -130,13 +203,7 @@ export function serializeRestoreFields(
       continue;
     }
 
-    if (kind === "scalar") {
-      if (typeof value !== "string") return { status: "invalid" };
-      changes.push([field, value]);
-      continue;
-    }
-
-    if (!isJsonCompatible(value, new Set())) return { status: "invalid" };
+    if (!isValidFieldValue(value, kind)) return { status: "invalid" };
     const serialized = JSON.stringify(value);
     if (serialized === undefined) return { status: "invalid" };
     changes.push([field, serialized]);

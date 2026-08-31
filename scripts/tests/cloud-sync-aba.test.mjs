@@ -154,3 +154,108 @@ test("a deferred A1 backup response cannot advance A2 revision or conflict state
   endCloudSyncSession(a2);
   assert.equal(isCloudSyncSessionCurrent(a2), false);
 });
+
+test("same-session backup and restore operations run in deterministic order", async () => {
+  let firebaseUid = "A";
+  const runner = createCloudSyncNetworkOrchestrator(
+    async (token) =>
+      isCloudSyncSessionCurrent(token) &&
+      cloudSyncSessionUid(token) === firebaseUid,
+  );
+  const token = beginCloudSyncSession("A");
+  const firstResponse = deferred();
+  const automaticStarted = deferred();
+  const order = [];
+  let cloudRevision = 4;
+  let localPayload = "older";
+
+  const automaticBackup = runner.runExclusive(token, async () => {
+    order.push(`auto-read:${localPayload}:${cloudRevision}`);
+    automaticStarted.resolve();
+    await firstResponse.promise;
+    cloudRevision += 1;
+    order.push(`auto-saved:${cloudRevision}`);
+    return { status: "saved", revision: cloudRevision };
+  });
+
+  localPayload = "newest";
+  const manualBackup = runner.runExclusive(token, async () => {
+    order.push(`manual-read:${localPayload}:${cloudRevision}`);
+    cloudRevision += 1;
+    order.push(`manual-saved:${cloudRevision}`);
+    return { status: "saved", revision: cloudRevision };
+  });
+  const manualRestore = runner.runExclusive(token, async () => {
+    order.push(`restore-read:${cloudRevision}`);
+    return { status: "restored", revision: cloudRevision };
+  });
+
+  await automaticStarted.promise;
+  assert.deepEqual(order, ["auto-read:newest:4"]);
+  firstResponse.resolve();
+
+  assert.deepEqual(await automaticBackup, {
+    status: "applied",
+    value: { status: "saved", revision: 5 },
+  });
+  assert.deepEqual(await manualBackup, {
+    status: "applied",
+    value: { status: "saved", revision: 6 },
+  });
+  assert.deepEqual(await manualRestore, {
+    status: "applied",
+    value: { status: "restored", revision: 6 },
+  });
+  assert.deepEqual(order, [
+    "auto-read:newest:4",
+    "auto-saved:5",
+    "manual-read:newest:5",
+    "manual-saved:6",
+    "restore-read:6",
+  ]);
+});
+
+test("deferred legacy reads do not hold storage and stale snapshots cannot commit", async () => {
+  let firebaseUid = "A";
+  const runner = createCloudSyncNetworkOrchestrator(
+    async (token) =>
+      isCloudSyncSessionCurrent(token) &&
+      cloudSyncSessionUid(token) === firebaseUid,
+  );
+  const token = beginCloudSyncSession("A");
+  const response = deferred();
+  const storage = new MemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, "A"],
+    ["state", "current"],
+  ]);
+  const coordinator = new SyncStorageCoordinator(storage, ["state"]);
+
+  const migration = runner.runExclusive(token, async () => {
+    const guarded = await runner.execute(
+      token,
+      () => response.promise,
+      async (snapshot) => snapshot,
+    );
+    if (guarded.status === "stale") return { status: "unauthorized" };
+    return coordinator.commitOwned(
+      "A",
+      async () =>
+        isCloudSyncSessionCurrent(token) && firebaseUid === "A"
+          ? "A"
+          : "stale-session",
+      [["state", guarded.value.state]],
+      [],
+    );
+  });
+
+  assert.deepEqual(
+    await coordinator.readOwned("A", async () => "A", ["state"]),
+    { status: "ready", value: [["state", "current"]] },
+  );
+
+  firebaseUid = "B";
+  beginCloudSyncSession("B");
+  response.resolve({ state: "stale-legacy" });
+  assert.deepEqual(await migration, { status: "stale" });
+  assert.equal(await storage.getItem("state"), "current");
+});

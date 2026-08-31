@@ -88,13 +88,18 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
 
   const load = async () => {
     try {
-      const [mp, fl, cmp, ampt, acmpid] = await Promise.all([
-        accountStorage.getItem("@elovia_meal_plan"),
-        accountStorage.getItem("@elovia_food_log"),
-        accountStorage.getItem("@elovia_custom_meal_plans"),
-        accountStorage.getItem("@elovia_active_meal_plan_type"),
-        accountStorage.getItem("@elovia_active_custom_meal_plan_id"),
-      ]);
+      const values = new Map(await accountStorage.multiGet([
+        "@elovia_meal_plan",
+        "@elovia_food_log",
+        "@elovia_custom_meal_plans",
+        "@elovia_active_meal_plan_type",
+        "@elovia_active_custom_meal_plan_id",
+      ]));
+      const mp = values.get("@elovia_meal_plan") ?? null;
+      const fl = values.get("@elovia_food_log") ?? null;
+      const cmp = values.get("@elovia_custom_meal_plans") ?? null;
+      const ampt = values.get("@elovia_active_meal_plan_type") ?? null;
+      const acmpid = values.get("@elovia_active_custom_meal_plan_id") ?? null;
       setMealPlanState(mp ? JSON.parse(mp) : null);
       setFoodLog(fl ? JSON.parse(fl) : []);
       setCustomMealPlans(cmp ? JSON.parse(cmp) : []);

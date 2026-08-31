@@ -130,6 +130,41 @@ test("varchar snapshot fields accept only strings or explicit null", () => {
   }
 });
 
+test("sync JSON fields enforce their container and water domains", () => {
+  const valid = parseUserDataWrite({
+    baseRevision: 4,
+    appState: { onboardingCompleted: true },
+    workoutPlan: null,
+    activeSession: { id: "session" },
+    customPlans: [],
+    sessions: [],
+    personalRecords: [],
+    mealPlan: { id: "meal" },
+    foodLog: [],
+    customMealPlans: [],
+    healthData: {},
+    wellnessData: {},
+    waterGoal: 3.5,
+  });
+  assert.equal(valid.waterGoal, 3.5);
+
+  for (const invalid of [
+    { sessions: {} },
+    { foodLog: {} },
+    { customPlans: {} },
+    { appState: [] },
+    { workoutPlan: [] },
+    { activeSession: [] },
+    { healthData: [] },
+    { wellnessData: [] },
+    { waterGoal: 0 },
+    { waterGoal: -1 },
+    { waterGoal: "3" },
+  ]) {
+    assert.throws(() => parseUserDataWrite({ baseRevision: 4, ...invalid }));
+  }
+});
+
 test("sync patches preserve omission and permit explicit clearing", () => {
   assert.deepEqual(
     buildUserDataPatch({ baseRevision: 7, appState: null, sessions: [] }),

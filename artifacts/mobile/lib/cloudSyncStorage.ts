@@ -22,13 +22,27 @@ export type OwnedStorageOutcome<T> =
 type StoredEntry = readonly [key: string, value: string | null];
 
 interface OwnerTransitionJournal {
-  version: 1;
+  version: 1 | 2;
+  kind?: "transition";
   priorOwner: string;
   targetOwner: string;
   originalGlobals: StoredEntry[];
   originalPriorCache: StoredEntry[];
   originalTargetCache: StoredEntry[];
 }
+
+interface OwnedMutationJournal {
+  version: 2;
+  kind: "mutation";
+  stableOwner: string | null;
+  sessionGeneration: string;
+  originals: StoredEntry[];
+  sets: StoredEntry[];
+  removals: string[];
+  finalSets: StoredEntry[];
+}
+
+type SyncStorageJournal = OwnerTransitionJournal | OwnedMutationJournal;
 
 export const LOCAL_SYNC_OWNER_KEY = "@elovia_sync_owner";
 export const LOCAL_SYNC_JOURNAL_KEY = "@elovia_sync_owner_transition";
@@ -52,13 +66,39 @@ function isStoredEntries(input: unknown): input is StoredEntry[] {
   );
 }
 
-function parseJournal(raw: string): OwnerTransitionJournal {
+function isStringArray(input: unknown): input is string[] {
+  return (
+    Array.isArray(input) && input.every((value) => typeof value === "string")
+  );
+}
+
+function parseJournal(raw: string): SyncStorageJournal {
   const input: unknown = JSON.parse(raw);
+  if (
+    input &&
+    typeof input === "object" &&
+    !Array.isArray(input) &&
+    (input as { version?: unknown }).version === 2 &&
+    (input as { kind?: unknown }).kind === "mutation" &&
+    (typeof (input as { stableOwner?: unknown }).stableOwner === "string" ||
+      (input as { stableOwner?: unknown }).stableOwner === null) &&
+    typeof (input as { sessionGeneration?: unknown }).sessionGeneration ===
+      "string" &&
+    isStoredEntries((input as { originals?: unknown }).originals) &&
+    isStoredEntries((input as { sets?: unknown }).sets) &&
+    isStringArray((input as { removals?: unknown }).removals) &&
+    isStoredEntries((input as { finalSets?: unknown }).finalSets)
+  ) {
+    return input as OwnedMutationJournal;
+  }
+
   if (
     !input ||
     typeof input !== "object" ||
     Array.isArray(input) ||
-    (input as { version?: unknown }).version !== 1 ||
+    ![1, 2].includes((input as { version?: number }).version ?? -1) ||
+    ((input as { version?: unknown }).version === 2 &&
+      (input as { kind?: unknown }).kind !== "transition") ||
     typeof (input as { priorOwner?: unknown }).priorOwner !== "string" ||
     typeof (input as { targetOwner?: unknown }).targetOwner !== "string" ||
     !isStoredEntries(
@@ -144,7 +184,7 @@ export class SyncStorageCoordinator {
       return;
     }
 
-    let journal: OwnerTransitionJournal;
+    let journal: SyncStorageJournal;
     try {
       journal = parseJournal(rawJournal);
     } catch (error) {
@@ -157,10 +197,19 @@ export class SyncStorageCoordinator {
         LOCAL_SYNC_OWNER_KEY,
         LOCAL_SYNC_QUARANTINE_OWNER,
       );
-      await this.writeExactEntries(journal.originalPriorCache);
-      await this.writeExactEntries(journal.originalTargetCache);
-      await this.writeExactEntries(journal.originalGlobals);
-      await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, journal.priorOwner);
+      if (journal.kind === "mutation") {
+        await this.writeExactEntries(journal.originals);
+        if (journal.stableOwner === null) {
+          await this.storage.removeItem(LOCAL_SYNC_OWNER_KEY);
+        } else {
+          await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, journal.stableOwner);
+        }
+      } else {
+        await this.writeExactEntries(journal.originalPriorCache);
+        await this.writeExactEntries(journal.originalTargetCache);
+        await this.writeExactEntries(journal.originalGlobals);
+        await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, journal.priorOwner);
+      }
       await this.storage.removeItem(LOCAL_SYNC_JOURNAL_KEY);
     } catch (error) {
       await this.quarantineBestEffort();
@@ -186,7 +235,8 @@ export class SyncStorageCoordinator {
       ]);
 
     const journal: OwnerTransitionJournal = {
-      version: 1,
+      version: 2,
+      kind: "transition",
       priorOwner,
       targetOwner,
       originalGlobals: originalGlobals.map(([key, value]) => [key, value]),
@@ -305,6 +355,7 @@ export class SyncStorageCoordinator {
     sets: readonly (readonly [string, string])[],
     removals: readonly string[],
     finalSets: readonly (readonly [string, string])[] = [],
+    sessionGeneration = "unspecified",
   ): Promise<OwnedStorageOutcome<void>> {
     return this.exclusive(async () => {
       await this.recoverIfNeeded();
@@ -327,6 +378,30 @@ export class SyncStorageCoordinator {
       ];
       const originals = await this.storage.multiGet(touchedKeys);
 
+      if (touchedKeys.length === 0) {
+        return { status: "ready", value: undefined };
+      }
+
+      const journal: OwnedMutationJournal = {
+        version: 2,
+        kind: "mutation",
+        stableOwner: owner,
+        sessionGeneration,
+        originals: originals.map(([key, value]) => [key, value]),
+        sets: sets.map(([key, value]) => [key, value]),
+        removals: [...removals],
+        finalSets: finalSets.map(([key, value]) => [key, value]),
+      };
+
+      await this.storage.setItem(
+        LOCAL_SYNC_JOURNAL_KEY,
+        JSON.stringify(journal),
+      );
+      await this.storage.setItem(
+        LOCAL_SYNC_OWNER_KEY,
+        LOCAL_SYNC_QUARANTINE_OWNER,
+      );
+
       if (sets.length > 0) await this.storage.multiSet(sets);
       if (removals.length > 0) await this.storage.multiRemove([...removals]);
       if (finalSets.length > 0) await this.storage.multiSet(finalSets);
@@ -334,45 +409,40 @@ export class SyncStorageCoordinator {
       if ((await currentUserId()) !== expectedUserId) {
         try {
           await this.writeExactEntries(originals);
+          if (owner === null)
+            await this.storage.removeItem(LOCAL_SYNC_OWNER_KEY);
+          else await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, owner);
+          await this.storage.removeItem(LOCAL_SYNC_JOURNAL_KEY);
         } catch (error) {
           await this.quarantineBestEffort();
           throw error;
         }
         return { status: "stale" };
       }
+      if (owner === null) await this.storage.removeItem(LOCAL_SYNC_OWNER_KEY);
+      else await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, owner);
+      await this.storage.removeItem(LOCAL_SYNC_JOURNAL_KEY);
       return { status: "ready", value: undefined };
     });
   }
 
-  async runOwnedMutation<T>(
+  async resetOwned(
     expectedUserId: string | null,
     currentUserId: CurrentUserId,
-    operation: () => Promise<T>,
-  ): Promise<OwnedStorageOutcome<T>> {
-    return this.exclusive(async () => {
-      await this.recoverIfNeeded();
-      if ((await currentUserId()) !== expectedUserId)
-        return { status: "stale" };
-      const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
-      if (
-        owner !== expectedUserId &&
-        !(expectedUserId === null && owner === LOCAL_SYNC_GUEST_OWNER)
-      ) {
-        return { status: "stale" };
-      }
-
-      const originals = await this.storage.multiGet([...this.syncKeys]);
-      const value = await operation();
-      if ((await currentUserId()) !== expectedUserId) {
-        try {
-          await this.writeExactEntries(originals);
-        } catch (error) {
-          await this.quarantineBestEffort();
-          throw error;
-        }
-        return { status: "stale" };
-      }
-      return { status: "ready", value };
-    });
+    additionalKeys: readonly string[] = [],
+    sessionGeneration = "unspecified",
+  ): Promise<OwnedStorageOutcome<void>> {
+    const cacheOwner = expectedUserId ?? LOCAL_SYNC_GUEST_OWNER;
+    const cacheKeys = this.syncKeys.map((key) =>
+      scopedSyncCacheKey(cacheOwner, key),
+    );
+    return this.commitOwned(
+      expectedUserId,
+      currentUserId,
+      [],
+      [...this.syncKeys, ...cacheKeys, ...additionalKeys],
+      [],
+      sessionGeneration,
+    );
   }
 }

@@ -27,6 +27,14 @@ export const MAX_SYNC_REVISION = Number.MAX_SAFE_INTEGER;
 
 const jsonField = z.unknown().optional();
 const varcharField = z.string().nullable().optional();
+const objectField = z.record(z.string(), z.unknown()).nullable().optional();
+const arrayField = z.array(z.unknown()).nullable().optional();
+const positiveNumberField = z
+  .number()
+  .finite()
+  .positive()
+  .nullable()
+  .optional();
 
 const userDataWriteSchema = z
   .object({
@@ -36,22 +44,22 @@ const userDataWriteSchema = z
       .nonnegative()
       .max(MAX_SYNC_REVISION)
       .nullable(),
-    appState: jsonField,
-    workoutPlan: jsonField,
-    customPlans: jsonField,
+    appState: objectField,
+    workoutPlan: objectField,
+    customPlans: arrayField,
     activePlanType: varcharField,
     activeCustomPlanId: varcharField,
-    activeSession: jsonField,
-    sessions: jsonField,
-    personalRecords: jsonField,
-    mealPlan: jsonField,
-    foodLog: jsonField,
-    customMealPlans: jsonField,
+    activeSession: objectField,
+    sessions: arrayField,
+    personalRecords: arrayField,
+    mealPlan: objectField,
+    foodLog: arrayField,
+    customMealPlans: arrayField,
     activeMealPlanType: varcharField,
     activeCustomMealPlanId: varcharField,
-    healthData: jsonField,
-    wellnessData: jsonField,
-    waterGoal: jsonField,
+    healthData: objectField,
+    wellnessData: objectField,
+    waterGoal: positiveNumberField,
     reminderPrefs: jsonField,
     places: jsonField,
   })

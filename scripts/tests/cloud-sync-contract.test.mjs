@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  buildStoredSyncPayload,
   canUploadAfterRestore,
   classifyAuthTokenFailure,
   classifyBackupResponse,
@@ -116,11 +117,22 @@ test("token refresh failures distinguish offline from unauthorized", () => {
 });
 
 const RESTORE_FIELD_KINDS = {
-  activePlanType: "scalar",
-  activeCustomPlanId: "scalar",
-  activeMealPlanType: "scalar",
-  activeCustomMealPlanId: "scalar",
-  appState: "json",
+  activePlanType: "string",
+  activeCustomPlanId: "string",
+  activeMealPlanType: "string",
+  activeCustomMealPlanId: "string",
+  appState: "plain-object",
+  workoutPlan: "nullable-object",
+  activeSession: "nullable-object",
+  customPlans: "array",
+  sessions: "array",
+  personalRecords: "array",
+  mealPlan: "nullable-object",
+  foodLog: "array",
+  customMealPlans: "array",
+  healthData: "plain-object",
+  wellnessData: "plain-object",
+  waterGoal: "positive-number",
 };
 
 test("restore scalar fields accept only strings or explicit null", () => {
@@ -132,7 +144,7 @@ test("restore scalar fields accept only strings or explicit null", () => {
     {
       status: "valid",
       changes: [
-        ["activePlanType", "custom"],
+        ["activePlanType", '"custom"'],
         ["activeCustomPlanId", null],
       ],
     },
@@ -144,6 +156,23 @@ test("restore scalar fields accept only strings or explicit null", () => {
       { status: "invalid" },
     );
   }
+
+  assert.deepEqual(
+    buildStoredSyncPayload(
+      [["activePlanType", "custom"]],
+      RESTORE_FIELD_KINDS,
+      false,
+    ),
+    { status: "valid", payload: { activePlanType: "custom" } },
+  );
+  assert.deepEqual(
+    buildStoredSyncPayload(
+      [["activePlanType", '"custom"']],
+      RESTORE_FIELD_KINDS,
+      false,
+    ),
+    { status: "valid", payload: { activePlanType: "custom" } },
+  );
 });
 
 test("restore JSON fields are fully validated and unknown fields are ignored", () => {
@@ -163,6 +192,77 @@ test("restore JSON fields are fully validated and unknown fields are ignored", (
   for (const invalid of [undefined, 4n, () => {}, cyclic, new Date()]) {
     assert.deepEqual(
       serializeRestoreFields({ appState: invalid }, RESTORE_FIELD_KINDS),
+      { status: "invalid" },
+    );
+  }
+});
+
+test("sync field schemas reject wrong containers and malformed water goals", () => {
+  for (const input of [
+    { sessions: {} },
+    { foodLog: {} },
+    { customPlans: { id: "one" } },
+    { appState: [] },
+    { workoutPlan: [] },
+    { waterGoal: 0 },
+    { waterGoal: -1 },
+    { waterGoal: Number.POSITIVE_INFINITY },
+    { waterGoal: "3" },
+  ]) {
+    assert.deepEqual(serializeRestoreFields(input, RESTORE_FIELD_KINDS), {
+      status: "invalid",
+    });
+  }
+});
+
+test("existing revisions upload missing synchronized fields as deletion tombstones", () => {
+  const stored = [
+    ["workoutPlan", '{"id":"plan"}'],
+    ["activeSession", null],
+    ["activeCustomPlanId", null],
+  ];
+  const outcome = buildStoredSyncPayload(stored, RESTORE_FIELD_KINDS, true);
+  assert.equal(outcome.status, "valid");
+  assert.deepEqual(outcome.payload.workoutPlan, { id: "plan" });
+  assert.equal(outcome.payload.activeSession, null);
+  assert.equal(outcome.payload.activeCustomPlanId, null);
+  assert.equal(outcome.payload.sessions, null);
+
+  const restored = serializeRestoreFields(outcome.payload, RESTORE_FIELD_KINDS);
+  assert.equal(restored.status, "valid");
+  const changes = new Map(restored.changes);
+  assert.equal(changes.get("activeSession"), null);
+  assert.equal(changes.get("activeCustomPlanId"), null);
+});
+
+test("new accounts keep the all-empty guard and preserve stored JSON null", () => {
+  assert.deepEqual(
+    buildStoredSyncPayload(
+      [["activeSession", null]],
+      RESTORE_FIELD_KINDS,
+      false,
+    ),
+    { status: "valid", payload: {} },
+  );
+  assert.deepEqual(
+    buildStoredSyncPayload(
+      [["activeSession", "null"]],
+      RESTORE_FIELD_KINDS,
+      false,
+    ),
+    { status: "valid", payload: { activeSession: null } },
+  );
+});
+
+test("malformed local synchronized values abort upload before fetch", () => {
+  for (const [field, stored] of [
+    ["sessions", "{}"],
+    ["foodLog", "{}"],
+    ["waterGoal", "0"],
+    ["waterGoal", '"three"'],
+  ]) {
+    assert.deepEqual(
+      buildStoredSyncPayload([[field, stored]], RESTORE_FIELD_KINDS, false),
       { status: "invalid" },
     );
   }

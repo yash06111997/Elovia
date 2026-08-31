@@ -146,6 +146,8 @@ export function captureAccountStorageSession(): AccountStorageSession {
       currentOwner,
       sets,
       removals,
+      [],
+      `account-generation-${ownerToken.generation}`,
     );
     if (result.status === "stale") {
       throw new StaleAccountStorageSessionError();

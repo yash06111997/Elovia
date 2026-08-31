@@ -3,7 +3,6 @@ import { AppState, type AppStateStatus } from "react-native";
 import { type PlanType, type PremiumFeatureKey, type SubscriptionPlatform, type SubscriptionStatus } from "@/constants/subscription";
 import { useAuth } from "@/lib/auth";
 import { useRevenueCat } from "@/lib/revenuecat";
-import { onDataRestored } from "@/lib/syncEvents";
 import { ApiError, fetchEntitlement, type EntitlementStatus } from "@/utils/api";
 
 interface SubscriptionContextValue {
@@ -133,8 +132,6 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
     setIsLoaded(false);
     void refreshEntitlement();
   }, [refreshEntitlement, user?.id]);
-
-  useEffect(() => onDataRestored(() => refreshEntitlement()), [refreshEntitlement]);
 
   useEffect(() => {
     const onAppStateChange = (nextState: AppStateStatus) => {

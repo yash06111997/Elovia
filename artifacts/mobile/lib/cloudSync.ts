@@ -5,6 +5,7 @@ import {
   syncStorageCoordinator as syncStorage,
 } from "./accountSyncStorage";
 import {
+  buildStoredSyncPayload,
   classifyBackupResponse,
   classifyAuthTokenFailure,
   classifyRestoreResponse,
@@ -18,6 +19,7 @@ import { type OwnerPreparationOutcome } from "./cloudSyncStorage";
 import { createCloudSyncNetworkOrchestrator } from "./cloudSyncOrchestrator";
 import {
   beginCloudSyncSession as beginSessionToken,
+  cloudSyncSessionGeneration,
   cloudSyncSessionUid,
   endCloudSyncSession,
   getCurrentCloudSyncSession,
@@ -60,28 +62,24 @@ const REVERSE_FIELD_MAP: Record<string, string> = Object.fromEntries(
   Object.entries(FIELD_MAP).map(([key, field]) => [field, key]),
 );
 
-const JSON_KEYS = new Set([
-  "@elovia_state",
-  "@elovia_plan",
-  "@elovia_active_session",
-  "@elovia_custom_plans",
-  "@elovia_sessions",
-  "@elovia_prs",
-  "@elovia_meal_plan",
-  "@elovia_food_log",
-  "@elovia_custom_meal_plans",
-  "@elovia_health_data",
-  "@elovia_wellness",
-  "@elovia_water_goal",
-]);
-
-const RESTORE_FIELD_KINDS: Record<string, RestoreFieldKind> =
-  Object.fromEntries(
-    Object.entries(FIELD_MAP).map(([key, field]) => [
-      field,
-      JSON_KEYS.has(key) ? "json" : "scalar",
-    ]),
-  );
+const RESTORE_FIELD_KINDS: Record<string, RestoreFieldKind> = {
+  appState: "plain-object",
+  workoutPlan: "nullable-object",
+  activeSession: "nullable-object",
+  customPlans: "array",
+  activePlanType: "string",
+  activeCustomPlanId: "string",
+  sessions: "array",
+  personalRecords: "array",
+  mealPlan: "nullable-object",
+  foodLog: "array",
+  customMealPlans: "array",
+  activeMealPlanType: "string",
+  activeCustomMealPlanId: "string",
+  healthData: "plain-object",
+  wellnessData: "plain-object",
+  waterGoal: "positive-number",
+};
 
 type AuthIdentity = { uid: string; token: string };
 type AuthIdentityOutcome =
@@ -97,6 +95,10 @@ export type LegacyMigrationOutcome =
   | { status: "empty" }
   | { status: "unauthorized" }
   | { status: "server" };
+
+export type LocalResetOutcome =
+  | { status: "reset" }
+  | { status: "unauthorized" | "server" };
 
 const conflictBlockedUsers = new Set<string>();
 function getBaseUrl(): string {
@@ -142,6 +144,10 @@ function currentUserForSession(
 const networkOrchestrator = createCloudSyncNetworkOrchestrator(
   sessionMatchesFirebase,
 );
+
+function sessionStorageGeneration(sessionToken: CloudSyncSessionToken): string {
+  return `cloud-generation-${cloudSyncSessionGeneration(sessionToken)}`;
+}
 
 async function getAuthIdentity(
   sessionToken: CloudSyncSessionToken,
@@ -211,18 +217,6 @@ function parseStoredRevision(stored: string | null): number | null | "corrupt" {
   return /^\d+$/.test(stored) && isRevision(revision) ? revision : "corrupt";
 }
 
-function collectLocalPayload(
-  entries: readonly (readonly [string, string | null])[],
-): Record<string, unknown> {
-  const payload: Record<string, unknown> = {};
-  for (const [key, value] of entries) {
-    const field = FIELD_MAP[key];
-    if (!field || value === null) continue;
-    payload[field] = JSON_KEYS.has(key) ? JSON.parse(value) : value;
-  }
-  return payload;
-}
-
 export function payloadHasContent(payload: Record<string, unknown>): boolean {
   // Presence, not truthiness, is the contract. A stored JSON null is an
   // intentional clear and must reach the server; a fresh device has no keys.
@@ -240,7 +234,7 @@ export function beginCloudSyncSession(uid: string): CloudSyncSessionToken {
 }
 
 /** Upload local state without ever reading another account's shared keys. */
-export async function backupToCloud(
+async function backupToCloudUnlocked(
   sessionToken: CloudSyncSessionToken,
 ): Promise<BackupOutcome> {
   const auth = await getAuthIdentity(sessionToken);
@@ -268,9 +262,6 @@ export async function backupToCloud(
   let baseRevision: number | null;
   try {
     const values = new Map(ownedRead.value);
-    payload = collectLocalPayload(
-      SYNC_KEYS.map((key) => [key, values.get(key) ?? null] as const),
-    );
     const parsedRevision = parseStoredRevision(values.get(revisionKey) ?? null);
     if (parsedRevision === "corrupt") {
       const removed = await syncStorage.commitOwned(
@@ -278,6 +269,8 @@ export async function backupToCloud(
         currentUserForSession(sessionToken),
         [],
         [revisionKey],
+        [],
+        sessionStorageGeneration(sessionToken),
       );
       if (removed.status === "stale") return { status: "unauthorized" };
       if (!(await sessionMatchesFirebase(sessionToken))) {
@@ -287,6 +280,17 @@ export async function backupToCloud(
     } else {
       baseRevision = parsedRevision;
     }
+
+    const storedFields = SYNC_KEYS.map(
+      (key) => [FIELD_MAP[key], values.get(key) ?? null] as const,
+    );
+    const built = buildStoredSyncPayload(
+      storedFields,
+      RESTORE_FIELD_KINDS,
+      baseRevision !== null,
+    );
+    if (built.status === "invalid") return { status: "server" };
+    payload = built.payload;
   } catch {
     return { status: "server" };
   }
@@ -355,6 +359,8 @@ export async function backupToCloud(
         currentUserForSession(sessionToken),
         [[revisionKey, String(outcome.revision)]],
         [],
+        [],
+        sessionStorageGeneration(sessionToken),
       );
       if (persisted.status === "stale") return { status: "unauthorized" };
       if (!(await sessionMatchesFirebase(sessionToken))) {
@@ -368,8 +374,19 @@ export async function backupToCloud(
   return outcome;
 }
 
+export async function backupToCloud(
+  sessionToken: CloudSyncSessionToken,
+): Promise<BackupOutcome> {
+  const guarded = await networkOrchestrator.runExclusive(sessionToken, () =>
+    backupToCloudUnlocked(sessionToken),
+  );
+  return guarded.status === "stale"
+    ? { status: "unauthorized" }
+    : guarded.value;
+}
+
 /** Pull a validated server snapshot into the expected account's local keys. */
-export async function restoreFromCloud(
+async function restoreFromCloudUnlocked(
   sessionToken: CloudSyncSessionToken,
 ): Promise<RestoreOutcome> {
   const auth = await getAuthIdentity(sessionToken);
@@ -432,6 +449,8 @@ export async function restoreFromCloud(
         currentUserForSession(sessionToken),
         [],
         [revisionKey],
+        [],
+        sessionStorageGeneration(sessionToken),
       );
       if (committed.status === "stale") return { status: "unauthorized" };
       if (!(await sessionMatchesFirebase(sessionToken))) {
@@ -472,6 +491,7 @@ export async function restoreFromCloud(
       pairs,
       removals,
       [[revisionKey, String(outcome.revision)]],
+      sessionStorageGeneration(sessionToken),
     );
     if (committed.status === "stale") return { status: "unauthorized" };
     if (!(await sessionMatchesFirebase(sessionToken))) {
@@ -484,10 +504,65 @@ export async function restoreFromCloud(
   }
 }
 
+export async function restoreFromCloud(
+  sessionToken: CloudSyncSessionToken,
+): Promise<RestoreOutcome> {
+  const guarded = await networkOrchestrator.runExclusive(sessionToken, () =>
+    restoreFromCloudUnlocked(sessionToken),
+  );
+  return guarded.status === "stale"
+    ? { status: "unauthorized" }
+    : guarded.value;
+}
+
 const MIGRATION_FLAG = "@elovia_rtdb_migrated";
 
+async function resetCurrentAccountDataUnlocked(
+  sessionToken: CloudSyncSessionToken,
+): Promise<LocalResetOutcome> {
+  if (!(await sessionMatchesFirebase(sessionToken))) {
+    return { status: "unauthorized" };
+  }
+  const expectedUserId = cloudSyncSessionUid(sessionToken);
+  const owner = await prepareLocalSyncOwner(sessionToken);
+  if (owner.status === "stale") return { status: "unauthorized" };
+  if (owner.status === "server") return { status: "server" };
+
+  const revisionKey = revisionStorageKey(expectedUserId);
+  const migrationKey = `${MIGRATION_FLAG}:${encodeURIComponent(expectedUserId)}`;
+  try {
+    const reset = await syncStorage.resetOwned(
+      expectedUserId,
+      currentUserForSession(sessionToken),
+      [revisionKey, migrationKey],
+      sessionStorageGeneration(sessionToken),
+    );
+    if (
+      reset.status === "stale" ||
+      !(await sessionMatchesFirebase(sessionToken))
+    ) {
+      return { status: "unauthorized" };
+    }
+    conflictBlockedUsers.delete(expectedUserId);
+    return { status: "reset" };
+  } catch {
+    return { status: "server" };
+  }
+}
+
+export async function resetCurrentAccountData(
+  sessionToken: CloudSyncSessionToken,
+): Promise<LocalResetOutcome> {
+  const guarded = await networkOrchestrator.runExclusive(sessionToken, () =>
+    resetCurrentAccountDataUnlocked(sessionToken),
+  );
+  return guarded.status === "stale"
+    ? { status: "unauthorized" }
+    : guarded.value;
+}
+
 /** Pull a legacy snapshot only for the currently authenticated local owner. */
-export async function migrateLegacyFirebaseData(
+async function migrateLegacyFirebaseDataUnlocked(
   sessionToken: CloudSyncSessionToken,
 ): Promise<LegacyMigrationOutcome> {
   if (!(await sessionMatchesFirebase(sessionToken))) {
@@ -508,23 +583,21 @@ export async function migrateLegacyFirebaseData(
     if (flag.status === "stale") return { status: "unauthorized" };
     if (flag.value[0]?.[1]) return { status: "empty" };
 
-    const { restoreFromFirestore } = await import("./firebaseSync");
-    const legacyRestore = await syncStorage.runOwnedMutation(
-      expectedUserId,
-      currentUser,
-      () => restoreFromFirestore(expectedUserId),
-    );
-    if (legacyRestore.status === "stale") return { status: "unauthorized" };
+    // Network I/O deliberately happens outside the storage coordinator mutex.
+    const { fetchLegacySnapshot } = await import("./firebaseSync");
+    const legacySnapshot = await fetchLegacySnapshot(expectedUserId);
     if (!(await sessionMatchesFirebase(sessionToken))) {
       return { status: "unauthorized" };
     }
 
-    if (!legacyRestore.value) {
+    if (legacySnapshot === null) {
       const flagged = await syncStorage.commitOwned(
         expectedUserId,
         currentUser,
         [[migrationKey, new Date().toISOString()]],
         [],
+        [],
+        sessionStorageGeneration(sessionToken),
       );
       if (
         flagged.status === "stale" ||
@@ -534,11 +607,49 @@ export async function migrateLegacyFirebaseData(
       }
       return { status: "empty" };
     }
+
+    const serialized = serializeRestoreFields(
+      legacySnapshot,
+      RESTORE_FIELD_KINDS,
+    );
+    if (serialized.status === "invalid") return { status: "server" };
+
+    const pairs: [string, string][] = [];
+    const removals: string[] = [];
+    for (const [field, value] of serialized.changes) {
+      const key = REVERSE_FIELD_MAP[field];
+      if (!key) continue;
+      if (value === null) removals.push(key);
+      else pairs.push([key, value]);
+    }
+    if (pairs.length === 0 && removals.length === 0) {
+      const flagged = await syncStorage.commitOwned(
+        expectedUserId,
+        currentUser,
+        [[migrationKey, new Date().toISOString()]],
+        [],
+        [],
+        sessionStorageGeneration(sessionToken),
+      );
+      return flagged.status === "stale"
+        ? { status: "unauthorized" }
+        : { status: "empty" };
+    }
+
+    const committed = await syncStorage.commitOwned(
+      expectedUserId,
+      currentUser,
+      pairs,
+      removals,
+      [],
+      sessionStorageGeneration(sessionToken),
+    );
+    if (committed.status === "stale") return { status: "unauthorized" };
   } catch {
     return { status: "server" };
   }
 
-  const cloudBackup = await backupToCloud(sessionToken).catch(
+  const cloudBackup = await backupToCloudUnlocked(sessionToken).catch(
     (): BackupOutcome => ({ status: "server" }),
   );
   if (!(await sessionMatchesFirebase(sessionToken))) {
@@ -551,6 +662,8 @@ export async function migrateLegacyFirebaseData(
         currentUser,
         [[migrationKey, new Date().toISOString()]],
         [],
+        [],
+        sessionStorageGeneration(sessionToken),
       );
       if (
         flagged.status === "stale" ||
@@ -564,4 +677,15 @@ export async function migrateLegacyFirebaseData(
     }
   }
   return { status: "migrated", cloudBackup };
+}
+
+export async function migrateLegacyFirebaseData(
+  sessionToken: CloudSyncSessionToken,
+): Promise<LegacyMigrationOutcome> {
+  const guarded = await networkOrchestrator.runExclusive(sessionToken, () =>
+    migrateLegacyFirebaseDataUnlocked(sessionToken),
+  );
+  return guarded.status === "stale"
+    ? { status: "unauthorized" }
+    : guarded.value;
 }

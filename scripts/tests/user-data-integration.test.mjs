@@ -645,6 +645,10 @@ integrationTest(
       { baseRevision: 1, activeCustomPlanId: 7 },
       { baseRevision: 1, activeMealPlanType: { invalid: true } },
       { baseRevision: 1, activeCustomMealPlanId: 7 },
+      { baseRevision: 1, sessions: {} },
+      { baseRevision: 1, foodLog: {} },
+      { baseRevision: 1, activeSession: [] },
+      { baseRevision: 1, waterGoal: 0 },
     ]) {
       const invalidResponse = await fetch(`${routeBaseUrl}/user-data`, {
         method: "POST",

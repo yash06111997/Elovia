@@ -308,6 +308,133 @@ test("same-uid ABA invalidation during a commit rolls shared keys back", async (
   assert.equal(await storage.getItem("state"), "a2-current");
 });
 
+test("every owned commit phase is crash-recoverable without partial data or revision", async () => {
+  const mutationPhases = 7;
+
+  for (let failAt = 1; failAt <= mutationPhases; failAt++) {
+    const storage = new FailingMemoryStorage([
+      [LOCAL_SYNC_OWNER_KEY, "A"],
+      ["state", "old-state"],
+      ["plan", "old-plan"],
+      ["revision", "4"],
+    ]);
+    storage.setFailure(failAt);
+    const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
+
+    await assert.rejects(
+      coordinator.commitOwned(
+        "A",
+        async () => "A",
+        [["state", "new-state"]],
+        ["plan"],
+        [["revision", "5"]],
+        "cloud-generation-7",
+      ),
+    );
+
+    storage.clearFailure();
+    const restarted = new SyncStorageCoordinator(storage, SYNC_KEYS);
+    assert.deepEqual(
+      await restarted.readOwned("A", async () => "A", [
+        "state",
+        "plan",
+        "revision",
+      ]),
+      {
+        status: "ready",
+        value: [
+          ["state", "old-state"],
+          ["plan", "old-plan"],
+          ["revision", "4"],
+        ],
+      },
+    );
+    assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), "A");
+    assert.equal(await storage.getItem(LOCAL_SYNC_JOURNAL_KEY), null);
+  }
+});
+
+test("failed owned-commit recovery remains quarantined until a later retry", async () => {
+  const storage = new FailingMemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, "A"],
+    ["state", "old-state"],
+    ["revision", "4"],
+  ]);
+  storage.setFailure(4);
+  await assert.rejects(
+    new SyncStorageCoordinator(storage, SYNC_KEYS).commitOwned(
+      "A",
+      async () => "A",
+      [["state", "new-state"]],
+      [],
+      [["revision", "5"]],
+      "cloud-generation-9",
+    ),
+  );
+
+  storage.setFailure(2);
+  await assert.rejects(
+    new SyncStorageCoordinator(storage, SYNC_KEYS).readOwned(
+      "A",
+      async () => "A",
+      ["state", "revision"],
+    ),
+  );
+  assert.equal(
+    await storage.getItem(LOCAL_SYNC_OWNER_KEY),
+    LOCAL_SYNC_QUARANTINE_OWNER,
+  );
+  assert.notEqual(await storage.getItem(LOCAL_SYNC_JOURNAL_KEY), null);
+
+  storage.clearFailure();
+  const recovered = new SyncStorageCoordinator(storage, SYNC_KEYS);
+  assert.deepEqual(
+    await recovered.readOwned("A", async () => "A", ["state", "revision"]),
+    {
+      status: "ready",
+      value: [
+        ["state", "old-state"],
+        ["revision", "4"],
+      ],
+    },
+  );
+});
+
+test("scoped reset clears only A globals/cache and preserves B and guest caches", async () => {
+  const storage = new MemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, "A"],
+    ["state", "a-global"],
+    ["revision:A", "7"],
+    [scopedSyncCacheKey("A", "state"), "a-cache"],
+    [scopedSyncCacheKey("B", "state"), "b-cache"],
+    [scopedSyncCacheKey("@elovia_sync_owner:guest", "state"), "guest-cache"],
+  ]);
+  const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
+
+  assert.deepEqual(
+    await coordinator.resetOwned(
+      "A",
+      async () => "A",
+      ["revision:A"],
+      "cloud-generation-11",
+    ),
+    { status: "ready", value: undefined },
+  );
+  assert.equal(await storage.getItem("state"), null);
+  assert.equal(await storage.getItem("revision:A"), null);
+  assert.equal(await storage.getItem(scopedSyncCacheKey("A", "state")), null);
+  assert.equal(
+    await storage.getItem(scopedSyncCacheKey("B", "state")),
+    "b-cache",
+  );
+  assert.equal(
+    await storage.getItem(
+      scopedSyncCacheKey("@elovia_sync_owner:guest", "state"),
+    ),
+    "guest-cache",
+  );
+});
+
 test("a queued owner transition excludes a rolled-back previous-owner commit from B", async () => {
   const storage = new BlockingMemoryStorage([[LOCAL_SYNC_OWNER_KEY, "A"]]);
   const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
@@ -481,5 +608,31 @@ test("automatic and manual sync bind work to an expected authenticated owner", a
   assert.match(profileSource, /getCurrentCloudSyncSession\(expectedUserId\)/);
   assert.match(profileSource, /restoreFromCloud\(sessionToken\)/);
   assert.match(profileSource, /migrateLegacyFirebaseData\(sessionToken\)/);
+  assert.match(profileSource, /resetCurrentAccountData\(sessionToken\)/);
+  assert.doesNotMatch(profileSource, /AsyncStorage\.clear\(\)/);
+  assert.doesNotMatch(
+    profileSource,
+    /require\(["']@react-native-async-storage/,
+  );
   assert.doesNotMatch(profileSource, /beginCloudSyncSession/);
+});
+
+test("legacy migration fetches outside storage and applies a validated journaled commit", async () => {
+  const [syncSource, firebaseSource] = await Promise.all([
+    readFile(
+      new URL("../../artifacts/mobile/lib/cloudSync.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../../artifacts/mobile/lib/firebaseSync.ts", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  assert.match(syncSource, /fetchLegacySnapshot\(expectedUserId\)/);
+  assert.match(syncSource, /serializeRestoreFields\([\s\S]*legacySnapshot/);
+  assert.doesNotMatch(syncSource, /runOwnedMutation/);
+  assert.doesNotMatch(syncSource, /restoreFromFirestore/);
+  assert.match(firebaseSource, /fetchLegacySnapshot/);
+  assert.doesNotMatch(firebaseSource, /AsyncStorage/);
+  assert.doesNotMatch(firebaseSource, /multiSet/);
 });

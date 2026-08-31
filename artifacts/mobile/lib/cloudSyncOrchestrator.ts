@@ -12,7 +12,32 @@ export type GuardedCloudSyncResult<T> =
 export function createCloudSyncNetworkOrchestrator(
   isCurrent: (token: CloudSyncSessionToken) => boolean | Promise<boolean>,
 ) {
+  const operationTails = new WeakMap<CloudSyncSessionToken, Promise<void>>();
+
   return {
+    async runExclusive<Value>(
+      token: CloudSyncSessionToken,
+      operation: () => Promise<Value>,
+    ): Promise<GuardedCloudSyncResult<Value>> {
+      const previous = operationTails.get(token) ?? Promise.resolve();
+      let release = () => {};
+      const current = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      operationTails.set(token, current);
+
+      await previous;
+      try {
+        if (!(await isCurrent(token))) return { status: "stale" };
+        const value = await operation();
+        if (!(await isCurrent(token))) return { status: "stale" };
+        return { status: "applied", value };
+      } finally {
+        release();
+        if (operationTails.get(token) === current) operationTails.delete(token);
+      }
+    },
+
     async execute<ResponseValue, AppliedValue>(
       token: CloudSyncSessionToken,
       request: () => Promise<ResponseValue>,

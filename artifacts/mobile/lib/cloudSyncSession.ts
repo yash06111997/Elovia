@@ -32,6 +32,12 @@ export function cloudSyncSessionUid(token: CloudSyncSessionToken): string {
   return (token as CloudSyncSessionRecord).uid;
 }
 
+export function cloudSyncSessionGeneration(
+  token: CloudSyncSessionToken,
+): number {
+  return (token as CloudSyncSessionRecord).generation;
+}
+
 export function isCloudSyncSessionCurrent(
   token: CloudSyncSessionToken,
 ): boolean {

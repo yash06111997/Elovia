@@ -125,15 +125,22 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
 
   const load = async () => {
     try {
-      const [p, s, pr, active, cp, apt, acpid] = await Promise.all([
-        accountStorage.getItem("@elovia_plan"),
-        accountStorage.getItem("@elovia_sessions"),
-        accountStorage.getItem("@elovia_prs"),
-        accountStorage.getItem("@elovia_active_session"),
-        accountStorage.getItem("@elovia_custom_plans"),
-        accountStorage.getItem("@elovia_active_plan_type"),
-        accountStorage.getItem("@elovia_active_custom_plan_id"),
-      ]);
+      const values = new Map(await accountStorage.multiGet([
+        "@elovia_plan",
+        "@elovia_sessions",
+        "@elovia_prs",
+        "@elovia_active_session",
+        "@elovia_custom_plans",
+        "@elovia_active_plan_type",
+        "@elovia_active_custom_plan_id",
+      ]));
+      const p = values.get("@elovia_plan") ?? null;
+      const s = values.get("@elovia_sessions") ?? null;
+      const pr = values.get("@elovia_prs") ?? null;
+      const active = values.get("@elovia_active_session") ?? null;
+      const cp = values.get("@elovia_custom_plans") ?? null;
+      const apt = values.get("@elovia_active_plan_type") ?? null;
+      const acpid = values.get("@elovia_active_custom_plan_id") ?? null;
       setPlanState(p ? JSON.parse(p) : null);
       setSessions(s ? JSON.parse(s) : []);
       setPersonalRecords(pr ? JSON.parse(pr) : []);
