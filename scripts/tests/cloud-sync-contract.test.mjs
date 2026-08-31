@@ -6,6 +6,7 @@ import {
   classifyBackupResponse,
   classifyRestoreResponse,
   revisionStorageKey,
+  serializeRestoreFields,
 } from "../../artifacts/mobile/lib/cloudSyncContract.ts";
 
 test("only definitive restore states permit upload", () => {
@@ -91,6 +92,59 @@ test("revision storage is scoped to the Firebase user", () => {
     revisionStorageKey("second-user"),
   );
   assert.match(revisionStorageKey("first-user"), /first-user/);
+});
+
+const RESTORE_FIELD_KINDS = {
+  activePlanType: "scalar",
+  activeCustomPlanId: "scalar",
+  activeMealPlanType: "scalar",
+  activeCustomMealPlanId: "scalar",
+  appState: "json",
+};
+
+test("restore scalar fields accept only strings or explicit null", () => {
+  assert.deepEqual(
+    serializeRestoreFields(
+      { activePlanType: "custom", activeCustomPlanId: null },
+      RESTORE_FIELD_KINDS,
+    ),
+    {
+      status: "valid",
+      changes: [
+        ["activePlanType", "custom"],
+        ["activeCustomPlanId", null],
+      ],
+    },
+  );
+
+  for (const invalid of [{}, 3, ["custom"]]) {
+    assert.deepEqual(
+      serializeRestoreFields({ activePlanType: invalid }, RESTORE_FIELD_KINDS),
+      { status: "invalid" },
+    );
+  }
+});
+
+test("restore JSON fields are fully validated and unknown fields are ignored", () => {
+  assert.deepEqual(
+    serializeRestoreFields(
+      { appState: { profile: { age: 30 }, flags: [true, null] }, ignored: 4n },
+      RESTORE_FIELD_KINDS,
+    ),
+    {
+      status: "valid",
+      changes: [["appState", '{"profile":{"age":30},"flags":[true,null]}']],
+    },
+  );
+
+  const cyclic = {};
+  cyclic.self = cyclic;
+  for (const invalid of [undefined, 4n, () => {}, cyclic, new Date()]) {
+    assert.deepEqual(
+      serializeRestoreFields({ appState: invalid }, RESTORE_FIELD_KINDS),
+      { status: "invalid" },
+    );
+  }
 });
 
 test("mobile sync sends a user-scoped base revision and clears explicit nulls", async () => {

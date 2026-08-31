@@ -5,9 +5,15 @@ import {
   classifyBackupResponse,
   classifyRestoreResponse,
   revisionStorageKey,
+  serializeRestoreFields,
   type BackupOutcome,
+  type RestoreFieldKind,
   type RestoreOutcome,
 } from "./cloudSyncContract";
+import {
+  SyncStorageCoordinator,
+  type OwnerPreparationOutcome,
+} from "./cloudSyncStorage";
 
 /**
  * Cloud sync against the Postgres-backed API. Firebase Auth remains the
@@ -62,14 +68,27 @@ const JSON_KEYS = new Set([
   "@elovia_health_data",
 ]);
 
+const RESTORE_FIELD_KINDS: Record<string, RestoreFieldKind> = Object.fromEntries(
+  Object.entries(FIELD_MAP).map(([key, field]) => [
+    field,
+    JSON_KEYS.has(key) ? "json" : "scalar",
+  ]),
+);
+
 type AuthIdentity = { uid: string; token: string };
+
+export type LocalSyncOwnerOutcome =
+  | OwnerPreparationOutcome
+  | { status: "server" };
 
 export type LegacyMigrationOutcome =
   | { status: "migrated"; cloudBackup: BackupOutcome }
   | { status: "empty" }
+  | { status: "unauthorized" }
   | { status: "server" };
 
 const conflictBlockedUsers = new Set<string>();
+const syncStorage = new SyncStorageCoordinator(AsyncStorage, SYNC_KEYS);
 
 function getBaseUrl(): string {
   const domain = process.env.EXPO_PUBLIC_DOMAIN;
@@ -78,11 +97,20 @@ function getBaseUrl(): string {
   return "http://localhost:8080";
 }
 
-async function getAuthIdentity(): Promise<AuthIdentity | null> {
+export async function getCurrentCloudSyncUserId(): Promise<string | null> {
+  try {
+    const auth = await getFirebaseAuth();
+    return auth?.currentUser?.uid ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function getAuthIdentity(expectedUserId?: string): Promise<AuthIdentity | null> {
   try {
     const auth = await getFirebaseAuth();
     const user = auth?.currentUser;
-    if (!user) return null;
+    if (!user || (expectedUserId !== undefined && user.uid !== expectedUserId)) return null;
     const token = await user.getIdToken();
     if (!token) return null;
     return { uid: user.uid, token };
@@ -91,40 +119,38 @@ async function getAuthIdentity(): Promise<AuthIdentity | null> {
   }
 }
 
+export async function prepareLocalSyncOwner(
+  expectedUserId: string,
+): Promise<LocalSyncOwnerOutcome> {
+  try {
+    return await syncStorage.prepareOwner(
+      expectedUserId,
+      getCurrentCloudSyncUserId,
+    );
+  } catch {
+    return { status: "server" };
+  }
+}
+
 function isRevision(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
 }
 
-async function readStoredRevision(uid: string): Promise<number | null> {
-  const key = revisionStorageKey(uid);
-  const stored = await AsyncStorage.getItem(key);
+function parseStoredRevision(stored: string | null): number | null | "corrupt" {
   if (stored === null) return null;
-
   const revision = Number(stored);
-  if (!/^\d+$/.test(stored) || !isRevision(revision)) {
-    await AsyncStorage.removeItem(key);
-    return null;
-  }
-  return revision;
+  return /^\d+$/.test(stored) && isRevision(revision) ? revision : "corrupt";
 }
 
-async function collectLocalPayload(): Promise<Record<string, unknown>> {
-  const entries = await AsyncStorage.multiGet([...SYNC_KEYS]);
+function collectLocalPayload(
+  entries: readonly (readonly [string, string | null])[],
+): Record<string, unknown> {
   const payload: Record<string, unknown> = {};
-
   for (const [key, value] of entries) {
     const field = FIELD_MAP[key];
     if (!field || value === null) continue;
-
-    if (JSON_KEYS.has(key)) {
-      // Refuse a partial backup when a local JSON document is corrupt. A
-      // partial snapshot is more dangerous than asking the user to retry.
-      payload[field] = JSON.parse(value);
-    } else {
-      payload[field] = value;
-    }
+    payload[field] = JSON_KEYS.has(key) ? JSON.parse(value) : value;
   }
-
   return payload;
 }
 
@@ -143,16 +169,48 @@ export function beginCloudSyncSession(uid: string): void {
   conflictBlockedUsers.delete(uid);
 }
 
-/** Upload local state without ever overwriting a newer cloud revision. */
-export async function backupToCloud(): Promise<BackupOutcome> {
-  const identity = await getAuthIdentity();
+/** Upload local state without ever reading another account's shared keys. */
+export async function backupToCloud(expectedUserId?: string): Promise<BackupOutcome> {
+  const identity = await getAuthIdentity(expectedUserId);
   if (!identity) return { status: "unauthorized" };
+
+  const owner = await prepareLocalSyncOwner(identity.uid);
+  if (owner.status === "stale") return { status: "unauthorized" };
+  if (owner.status === "server") return { status: "server" };
+
+  const revisionKey = revisionStorageKey(identity.uid);
+  let ownedRead;
+  try {
+    ownedRead = await syncStorage.readOwned(
+      identity.uid,
+      getCurrentCloudSyncUserId,
+      [...SYNC_KEYS, revisionKey],
+    );
+  } catch {
+    return { status: "server" };
+  }
+  if (ownedRead.status === "stale") return { status: "unauthorized" };
 
   let payload: Record<string, unknown>;
   let baseRevision: number | null;
   try {
-    payload = await collectLocalPayload();
-    baseRevision = await readStoredRevision(identity.uid);
+    const values = new Map(ownedRead.value);
+    payload = collectLocalPayload(
+      SYNC_KEYS.map((key) => [key, values.get(key) ?? null] as const),
+    );
+    const parsedRevision = parseStoredRevision(values.get(revisionKey) ?? null);
+    if (parsedRevision === "corrupt") {
+      const removed = await syncStorage.commitOwned(
+        identity.uid,
+        getCurrentCloudSyncUserId,
+        [],
+        [revisionKey],
+      );
+      if (removed.status === "stale") return { status: "unauthorized" };
+      baseRevision = null;
+    } else {
+      baseRevision = parsedRevision;
+    }
   } catch {
     return { status: "server" };
   }
@@ -201,10 +259,13 @@ export async function backupToCloud(): Promise<BackupOutcome> {
 
   if (outcome.status === "saved") {
     try {
-      await AsyncStorage.setItem(
-        revisionStorageKey(identity.uid),
-        String(outcome.revision),
+      const persisted = await syncStorage.commitOwned(
+        identity.uid,
+        getCurrentCloudSyncUserId,
+        [[revisionKey, String(outcome.revision)]],
+        [],
       );
+      if (persisted.status === "stale") return { status: "unauthorized" };
     } catch {
       return { status: "server" };
     }
@@ -213,10 +274,16 @@ export async function backupToCloud(): Promise<BackupOutcome> {
   return outcome;
 }
 
-/** Pull a validated server snapshot into AsyncStorage. */
-export async function restoreFromCloud(): Promise<RestoreOutcome> {
-  const identity = await getAuthIdentity();
+/** Pull a validated server snapshot into the expected account's local keys. */
+export async function restoreFromCloud(
+  expectedUserId?: string,
+): Promise<RestoreOutcome> {
+  const identity = await getAuthIdentity(expectedUserId);
   if (!identity) return { status: "unauthorized" };
+
+  const owner = await prepareLocalSyncOwner(identity.uid);
+  if (owner.status === "stale") return { status: "unauthorized" };
+  if (owner.status === "server") return { status: "server" };
 
   let response: Response;
   try {
@@ -227,8 +294,9 @@ export async function restoreFromCloud(): Promise<RestoreOutcome> {
     return { status: "offline" };
   }
 
-  if (response.status === 401 || response.status === 403)
+  if (response.status === 401 || response.status === 403) {
     return { status: "unauthorized" };
+  }
   if (!response.ok) return { status: "server" };
 
   let body: unknown;
@@ -238,21 +306,26 @@ export async function restoreFromCloud(): Promise<RestoreOutcome> {
     return { status: "server" };
   }
 
-  if (!body || typeof body !== "object" || Array.isArray(body))
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { status: "server" };
+  }
   const envelope = body as Record<string, unknown>;
-  if (
-    !Object.hasOwn(envelope, "data") ||
-    !Object.hasOwn(envelope, "revision")
-  ) {
+  if (!Object.hasOwn(envelope, "data") || !Object.hasOwn(envelope, "revision")) {
     return { status: "server" };
   }
 
+  const revisionKey = revisionStorageKey(identity.uid);
   const data = envelope.data;
   if (data === null) {
     if (envelope.revision !== null) return { status: "server" };
     try {
-      await AsyncStorage.removeItem(revisionStorageKey(identity.uid));
+      const committed = await syncStorage.commitOwned(
+        identity.uid,
+        getCurrentCloudSyncUserId,
+        [],
+        [revisionKey],
+      );
+      if (committed.status === "stale") return { status: "unauthorized" };
       conflictBlockedUsers.delete(identity.uid);
       return { status: "empty" };
     } catch {
@@ -260,40 +333,32 @@ export async function restoreFromCloud(): Promise<RestoreOutcome> {
     }
   }
 
-  if (typeof data !== "object" || Array.isArray(data))
-    return { status: "server" };
-  const outcome = classifyRestoreResponse(
-    response.status,
-    true,
-    envelope.revision,
-  );
+  const outcome = classifyRestoreResponse(response.status, true, envelope.revision);
   if (outcome.status !== "restored") return outcome;
+
+  // Validate and serialize every known field before the storage mutex is
+  // acquired, so malformed scalar/JSON data cannot partially mutate storage.
+  const serialized = serializeRestoreFields(data, RESTORE_FIELD_KINDS);
+  if (serialized.status === "invalid") return { status: "server" };
 
   const pairs: [string, string][] = [];
   const removals: string[] = [];
+  for (const [field, value] of serialized.changes) {
+    const key = REVERSE_FIELD_MAP[field];
+    if (!key) continue;
+    if (value === null) removals.push(key);
+    else pairs.push([key, value]);
+  }
+
   try {
-    for (const [field, value] of Object.entries(data)) {
-      const key = REVERSE_FIELD_MAP[field];
-      if (!key) continue;
-
-      if (value === null) {
-        removals.push(key);
-        continue;
-      }
-
-      const serialized = JSON_KEYS.has(key)
-        ? JSON.stringify(value)
-        : String(value);
-      if (serialized === undefined) return { status: "server" };
-      pairs.push([key, serialized]);
-    }
-
-    if (pairs.length > 0) await AsyncStorage.multiSet(pairs);
-    if (removals.length > 0) await AsyncStorage.multiRemove(removals);
-    await AsyncStorage.setItem(
-      revisionStorageKey(identity.uid),
-      String(outcome.revision),
+    const committed = await syncStorage.commitOwned(
+      identity.uid,
+      getCurrentCloudSyncUserId,
+      pairs,
+      removals,
+      [[revisionKey, String(outcome.revision)]],
     );
+    if (committed.status === "stale") return { status: "unauthorized" };
     conflictBlockedUsers.delete(identity.uid);
     return outcome;
   } catch {
@@ -303,41 +368,65 @@ export async function restoreFromCloud(): Promise<RestoreOutcome> {
 
 const MIGRATION_FLAG = "@elovia_rtdb_migrated";
 
-/**
- * Pull an old Realtime Database snapshot only after Postgres definitively
- * reported an empty account. The typed result preserves local-restore success
- * even when securing that migrated copy in Postgres fails.
- */
+/** Pull a legacy snapshot only for the currently authenticated local owner. */
 export async function migrateLegacyFirebaseData(
-  userId: string,
+  expectedUserId: string,
 ): Promise<LegacyMigrationOutcome> {
-  const migrationKey = `${MIGRATION_FLAG}:${encodeURIComponent(userId)}`;
-  let found: boolean;
+  if ((await getCurrentCloudSyncUserId()) !== expectedUserId) {
+    return { status: "unauthorized" };
+  }
+
+  const owner = await prepareLocalSyncOwner(expectedUserId);
+  if (owner.status === "stale") return { status: "unauthorized" };
+  if (owner.status === "server") return { status: "server" };
+
+  const migrationKey = `${MIGRATION_FLAG}:${encodeURIComponent(expectedUserId)}`;
   try {
-    if (await AsyncStorage.getItem(migrationKey)) return { status: "empty" };
+    const flag = await syncStorage.readOwned(
+      expectedUserId,
+      getCurrentCloudSyncUserId,
+      [migrationKey],
+    );
+    if (flag.status === "stale") return { status: "unauthorized" };
+    if (flag.value[0]?.[1]) return { status: "empty" };
 
     const { restoreFromFirestore } = await import("./firebaseSync");
-    found = await restoreFromFirestore(userId);
-    if (!found) {
-      await AsyncStorage.setItem(migrationKey, new Date().toISOString());
-      return { status: "empty" };
+    const legacyRestore = await syncStorage.runOwnedMutation(
+      expectedUserId,
+      getCurrentCloudSyncUserId,
+      () => restoreFromFirestore(expectedUserId),
+    );
+    if (legacyRestore.status === "stale") return { status: "unauthorized" };
+
+    if (!legacyRestore.value) {
+      const flagged = await syncStorage.commitOwned(
+        expectedUserId,
+        getCurrentCloudSyncUserId,
+        [[migrationKey, new Date().toISOString()]],
+        [],
+      );
+      return flagged.status === "stale"
+        ? { status: "unauthorized" }
+        : { status: "empty" };
     }
   } catch {
     return { status: "server" };
   }
 
-  // Once the legacy read succeeded, preserve that fact even if securing the
-  // local copy in Postgres or writing the one-time flag fails.
-  const cloudBackup = await backupToCloud().catch(
+  const cloudBackup = await backupToCloud(expectedUserId).catch(
     (): BackupOutcome => ({ status: "server" }),
   );
   if (cloudBackup.status === "saved") {
     try {
-      await AsyncStorage.setItem(migrationKey, new Date().toISOString());
+      await syncStorage.commitOwned(
+        expectedUserId,
+        getCurrentCloudSyncUserId,
+        [[migrationKey, new Date().toISOString()]],
+        [],
+      );
     } catch {
-      // The data is already restored locally and saved remotely. A future
-      // launch may recheck legacy storage, but optimistic concurrency keeps it
-      // from overwriting the newer Postgres revision.
+      // Local restore and cloud save already succeeded. Optimistic concurrency
+      // keeps a future migration check from overwriting a newer revision.
     }
   }
   return { status: "migrated", cloudBackup };

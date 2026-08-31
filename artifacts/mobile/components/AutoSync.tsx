@@ -4,8 +4,10 @@ import { useAuth } from "@/lib/auth";
 import {
   backupToCloud,
   beginCloudSyncSession,
+  getCurrentCloudSyncUserId,
   isCloudSyncConflictBlocked,
   migrateLegacyFirebaseData,
+  prepareLocalSyncOwner,
   restoreFromCloud,
 } from "@/lib/cloudSync";
 import { canUploadAfterRestore } from "@/lib/cloudSyncContract";
@@ -46,8 +48,17 @@ export function AutoSync() {
       beginCloudSyncSession(currentUserId);
 
       void (async () => {
-        const outcome = await restoreFromCloud();
-        if (session !== sessionIdRef.current) return;
+        const sessionIsCurrent = async () =>
+          session === sessionIdRef.current &&
+          (await getCurrentCloudSyncUserId()) === currentUserId;
+
+        const owner = await prepareLocalSyncOwner(currentUserId);
+        if (!(await sessionIsCurrent())) return;
+        if (owner.status !== "ready") return;
+        if (owner.changed) emitDataRestored();
+
+        const outcome = await restoreFromCloud(currentUserId);
+        if (!(await sessionIsCurrent())) return;
         if (!canUploadAfterRestore(outcome)) return;
 
         if (outcome.status === "restored") {
@@ -59,7 +70,7 @@ export function AutoSync() {
         // Legacy RTDB is consulted only after the API definitively confirms
         // that this account has no Postgres snapshot.
         const migration = await migrateLegacyFirebaseData(currentUserId);
-        if (session !== sessionIdRef.current) return;
+        if (!(await sessionIsCurrent())) return;
 
         if (migration.status === "empty") {
           restoreSettledRef.current = true;
@@ -115,7 +126,7 @@ export function AutoSync() {
       const session = sessionIdRef.current;
 
       try {
-        const outcome = await backupToCloud();
+        const outcome = await backupToCloud(userId);
         if (session !== sessionIdRef.current) return;
         if (
           outcome.status === "conflict" ||
