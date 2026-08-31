@@ -1,17 +1,17 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
 import { getFirebaseAuth } from "./firebase";
+import {
+  classifyBackupResponse,
+  classifyRestoreResponse,
+  revisionStorageKey,
+  type BackupOutcome,
+  type RestoreOutcome,
+} from "./cloudSyncContract";
 
 /**
- * Cloud sync against the Postgres-backed API.
- *
- * This replaces the previous Firebase Realtime Database sync as the primary
- * store. The app had TWO server-side stores - RTDB (written by the client) and
- * a `user_data` Postgres table (exposed by the API but never called) - with
- * nothing reconciling them. Entitlements and AI quotas already live in
- * Postgres, so consolidating there leaves exactly one source of truth.
- *
- * Firebase Auth is unchanged and still issues the token used here.
+ * Cloud sync against the Postgres-backed API. Firebase Auth remains the
+ * identity provider, but the ID token and uid are never persisted or logged.
  */
 
 const SYNC_KEYS = [
@@ -46,7 +46,9 @@ const FIELD_MAP: Record<string, string> = {
   "@elovia_health_data": "healthData",
 };
 
-const REVERSE_FIELD_MAP: Record<string, string> = Object.fromEntries(Object.entries(FIELD_MAP).map(([k, v]) => [v, k]));
+const REVERSE_FIELD_MAP: Record<string, string> = Object.fromEntries(
+  Object.entries(FIELD_MAP).map(([key, field]) => [field, key]),
+);
 
 const JSON_KEYS = new Set([
   "@elovia_state",
@@ -60,11 +62,14 @@ const JSON_KEYS = new Set([
   "@elovia_health_data",
 ]);
 
-/**
- * Subscription state is deliberately NOT synced from the client any more.
- * It is derived server-side from the RevenueCat webhook, so uploading the
- * client's opinion of it would be, at best, ignored.
- */
+type AuthIdentity = { uid: string; token: string };
+
+export type LegacyMigrationOutcome =
+  | { status: "migrated"; cloudBackup: BackupOutcome }
+  | { status: "empty" }
+  | { status: "server" };
+
+const conflictBlockedUsers = new Set<string>();
 
 function getBaseUrl(): string {
   const domain = process.env.EXPO_PUBLIC_DOMAIN;
@@ -73,33 +78,48 @@ function getBaseUrl(): string {
   return "http://localhost:8080";
 }
 
-async function getAuthToken(): Promise<string | null> {
+async function getAuthIdentity(): Promise<AuthIdentity | null> {
   try {
     const auth = await getFirebaseAuth();
     const user = auth?.currentUser;
     if (!user) return null;
-    return await user.getIdToken();
+    const token = await user.getIdToken();
+    if (!token) return null;
+    return { uid: user.uid, token };
   } catch {
     return null;
   }
 }
 
-/** Collect the locally-stored payload for upload. */
+function isRevision(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+async function readStoredRevision(uid: string): Promise<number | null> {
+  const key = revisionStorageKey(uid);
+  const stored = await AsyncStorage.getItem(key);
+  if (stored === null) return null;
+
+  const revision = Number(stored);
+  if (!/^\d+$/.test(stored) || !isRevision(revision)) {
+    await AsyncStorage.removeItem(key);
+    return null;
+  }
+  return revision;
+}
+
 async function collectLocalPayload(): Promise<Record<string, unknown>> {
   const entries = await AsyncStorage.multiGet([...SYNC_KEYS]);
   const payload: Record<string, unknown> = {};
 
   for (const [key, value] of entries) {
     const field = FIELD_MAP[key];
-    if (!field || value == null) continue;
+    if (!field || value === null) continue;
 
     if (JSON_KEYS.has(key)) {
-      try {
-        payload[field] = JSON.parse(value);
-      } catch {
-        // Skip unparseable blobs rather than uploading a corrupt string into
-        // a jsonb column.
-      }
+      // Refuse a partial backup when a local JSON document is corrupt. A
+      // partial snapshot is more dangerous than asking the user to retry.
+      payload[field] = JSON.parse(value);
     } else {
       payload[field] = value;
     }
@@ -108,129 +128,217 @@ async function collectLocalPayload(): Promise<Record<string, unknown>> {
   return payload;
 }
 
-/**
- * Does the local device actually hold anything worth uploading?
- *
- * This is the guard that was missing. The old backup wrote whatever
- * AsyncStorage held straight over the cloud record with a destructive `set()`.
- * On a fresh install where restore had failed, that meant an empty payload
- * silently erased the user's entire history the next time the app was
- * backgrounded.
- */
 export function payloadHasContent(payload: Record<string, unknown>): boolean {
-  const meaningful = ["appState", "workoutPlan", "customPlans", "sessions", "personalRecords", "mealPlan", "foodLog"];
-
-  return meaningful.some((field) => {
-    const value = payload[field];
-    if (value == null) return false;
-    if (Array.isArray(value)) return value.length > 0;
-    if (typeof value === "object") return Object.keys(value as object).length > 0;
-    return true;
-  });
+  // Presence, not truthiness, is the contract. A stored JSON null is an
+  // intentional clear and must reach the server; a fresh device has no keys.
+  return Object.keys(payload).length > 0;
 }
 
-export interface SyncResult {
-  ok: boolean;
-  reason?: "unauthenticated" | "empty" | "network" | "server";
+export function isCloudSyncConflictBlocked(uid: string): boolean {
+  return conflictBlockedUsers.has(uid);
 }
 
-/** Upload local state to the server. Refuses to upload an empty payload. */
-export async function backupToCloud(): Promise<SyncResult> {
-  const token = await getAuthToken();
-  if (!token) return { ok: false, reason: "unauthenticated" };
+/** A newly authenticated session is allowed one fresh restore attempt. */
+export function beginCloudSyncSession(uid: string): void {
+  conflictBlockedUsers.delete(uid);
+}
 
-  const payload = await collectLocalPayload();
+/** Upload local state without ever overwriting a newer cloud revision. */
+export async function backupToCloud(): Promise<BackupOutcome> {
+  const identity = await getAuthIdentity();
+  if (!identity) return { status: "unauthorized" };
 
-  if (!payloadHasContent(payload)) {
-    // Nothing to save. Critically, this is NOT an error - it is the guard that
-    // stops an empty device from wiping a populated account.
-    return { ok: false, reason: "empty" };
+  let payload: Record<string, unknown>;
+  let baseRevision: number | null;
+  try {
+    payload = await collectLocalPayload();
+    baseRevision = await readStoredRevision(identity.uid);
+  } catch {
+    return { status: "server" };
   }
 
+  if (!payloadHasContent(payload)) return { status: "empty" };
+
+  let response: Response;
   try {
-    const response = await fetch(`${getBaseUrl()}/api/user-data`, {
+    response = await fetch(`${getBaseUrl()}/api/user-data`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${identity.token}`,
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ baseRevision, ...payload }),
     });
-
-    return response.ok ? { ok: true } : { ok: false, reason: "server" };
   } catch {
-    return { ok: false, reason: "network" };
+    return { status: "offline" };
   }
+
+  let body: unknown = null;
+  if (response.ok || response.status === 409) {
+    try {
+      body = await response.json();
+    } catch {
+      return { status: "server" };
+    }
+  }
+
+  const envelope =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  const outcome = classifyBackupResponse(
+    response.status,
+    envelope.revision,
+    Object.hasOwn(envelope, "currentRevision")
+      ? envelope.currentRevision
+      : undefined,
+  );
+
+  if (outcome.status === "conflict") {
+    conflictBlockedUsers.add(identity.uid);
+    return outcome;
+  }
+
+  if (outcome.status === "saved") {
+    try {
+      await AsyncStorage.setItem(
+        revisionStorageKey(identity.uid),
+        String(outcome.revision),
+      );
+    } catch {
+      return { status: "server" };
+    }
+  }
+
+  return outcome;
 }
 
-/** Pull server state into AsyncStorage. Returns false when nothing is stored. */
-export async function restoreFromCloud(): Promise<boolean> {
-  const token = await getAuthToken();
-  if (!token) return false;
+/** Pull a validated server snapshot into AsyncStorage. */
+export async function restoreFromCloud(): Promise<RestoreOutcome> {
+  const identity = await getAuthIdentity();
+  if (!identity) return { status: "unauthorized" };
 
+  let response: Response;
   try {
-    const response = await fetch(`${getBaseUrl()}/api/user-data`, {
-      headers: { Authorization: `Bearer ${token}` },
+    response = await fetch(`${getBaseUrl()}/api/user-data`, {
+      headers: { Authorization: `Bearer ${identity.token}` },
     });
+  } catch {
+    return { status: "offline" };
+  }
 
-    if (!response.ok) return false;
+  if (response.status === 401 || response.status === 403)
+    return { status: "unauthorized" };
+  if (!response.ok) return { status: "server" };
 
-    const body = (await response.json()) as {
-      data: Record<string, unknown> | null;
-    };
-    if (!body?.data) return false;
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return { status: "server" };
+  }
 
-    const pairs: [string, string][] = [];
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    return { status: "server" };
+  const envelope = body as Record<string, unknown>;
+  if (
+    !Object.hasOwn(envelope, "data") ||
+    !Object.hasOwn(envelope, "revision")
+  ) {
+    return { status: "server" };
+  }
 
-    for (const [field, value] of Object.entries(body.data)) {
-      if (field === "updatedAt") continue;
+  const data = envelope.data;
+  if (data === null) {
+    if (envelope.revision !== null) return { status: "server" };
+    try {
+      await AsyncStorage.removeItem(revisionStorageKey(identity.uid));
+      conflictBlockedUsers.delete(identity.uid);
+      return { status: "empty" };
+    } catch {
+      return { status: "server" };
+    }
+  }
+
+  if (typeof data !== "object" || Array.isArray(data))
+    return { status: "server" };
+  const outcome = classifyRestoreResponse(
+    response.status,
+    true,
+    envelope.revision,
+  );
+  if (outcome.status !== "restored") return outcome;
+
+  const pairs: [string, string][] = [];
+  const removals: string[] = [];
+  try {
+    for (const [field, value] of Object.entries(data)) {
       const key = REVERSE_FIELD_MAP[field];
-      if (!key || value == null) continue;
+      if (!key) continue;
 
-      pairs.push([key, JSON_KEYS.has(key) ? JSON.stringify(value) : String(value)]);
+      if (value === null) {
+        removals.push(key);
+        continue;
+      }
+
+      const serialized = JSON_KEYS.has(key)
+        ? JSON.stringify(value)
+        : String(value);
+      if (serialized === undefined) return { status: "server" };
+      pairs.push([key, serialized]);
     }
 
-    if (pairs.length === 0) return false;
-
-    await AsyncStorage.multiSet(pairs);
-    return true;
+    if (pairs.length > 0) await AsyncStorage.multiSet(pairs);
+    if (removals.length > 0) await AsyncStorage.multiRemove(removals);
+    await AsyncStorage.setItem(
+      revisionStorageKey(identity.uid),
+      String(outcome.revision),
+    );
+    conflictBlockedUsers.delete(identity.uid);
+    return outcome;
   } catch {
-    return false;
+    return { status: "server" };
   }
 }
 
 const MIGRATION_FLAG = "@elovia_rtdb_migrated";
 
 /**
- * One-time migration for accounts whose only copy lives in the old Realtime
- * Database.
- *
- * Runs only when the server has nothing for this user, so it can never clobber
- * newer Postgres data. After a successful pull it uploads to the API and marks
- * the device so this never runs again.
+ * Pull an old Realtime Database snapshot only after Postgres definitively
+ * reported an empty account. The typed result preserves local-restore success
+ * even when securing that migrated copy in Postgres fails.
  */
-export async function migrateLegacyFirebaseData(userId: string): Promise<boolean> {
+export async function migrateLegacyFirebaseData(
+  userId: string,
+): Promise<LegacyMigrationOutcome> {
+  const migrationKey = `${MIGRATION_FLAG}:${encodeURIComponent(userId)}`;
+  let found: boolean;
   try {
-    if (await AsyncStorage.getItem(MIGRATION_FLAG)) return false;
+    if (await AsyncStorage.getItem(migrationKey)) return { status: "empty" };
 
     const { restoreFromFirestore } = await import("./firebaseSync");
-    const found = await restoreFromFirestore(userId);
-
+    found = await restoreFromFirestore(userId);
     if (!found) {
-      await AsyncStorage.setItem(MIGRATION_FLAG, new Date().toISOString());
-      return false;
+      await AsyncStorage.setItem(migrationKey, new Date().toISOString());
+      return { status: "empty" };
     }
-
-    const result = await backupToCloud();
-    if (result.ok) {
-      await AsyncStorage.setItem(MIGRATION_FLAG, new Date().toISOString());
-      return true;
-    }
-
-    // Upload failed: leave the flag unset so migration is retried next launch
-    // rather than stranding the data.
-    return true;
   } catch {
-    return false;
+    return { status: "server" };
   }
+
+  // Once the legacy read succeeded, preserve that fact even if securing the
+  // local copy in Postgres or writing the one-time flag fails.
+  const cloudBackup = await backupToCloud().catch(
+    (): BackupOutcome => ({ status: "server" }),
+  );
+  if (cloudBackup.status === "saved") {
+    try {
+      await AsyncStorage.setItem(migrationKey, new Date().toISOString());
+    } catch {
+      // The data is already restored locally and saved remotely. A future
+      // launch may recheck legacy storage, but optimistic concurrency keeps it
+      // from overwriting the newer Postgres revision.
+    }
+  }
+  return { status: "migrated", cloudBackup };
 }

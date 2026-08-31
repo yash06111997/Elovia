@@ -1,16 +1,42 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Alert, Modal, ActivityIndicator } from "react-native";
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  TextInput,
+  Platform,
+  Alert,
+  Modal,
+  ActivityIndicator,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useApp, CustomMacros, FitnessGoal, FitnessLevel, ActivityLevel, WorkoutPreference, FoodPreference, Equipment, DietType, type UserProfile } from "@/context/AppContext";
+import {
+  useApp,
+  CustomMacros,
+  FitnessGoal,
+  FitnessLevel,
+  ActivityLevel,
+  WorkoutPreference,
+  FoodPreference,
+  Equipment,
+  DietType,
+  type UserProfile,
+} from "@/context/AppContext";
 import { useWorkout } from "@/context/WorkoutContext";
 import { useHealth } from "@/context/HealthContext";
 import { useAuth } from "@/lib/auth";
 import { useSubscription } from "@/context/SubscriptionContext";
-import { backupToCloud, restoreFromCloud, migrateLegacyFirebaseData } from "@/lib/cloudSync";
+import {
+  backupToCloud,
+  restoreFromCloud,
+  migrateLegacyFirebaseData,
+} from "@/lib/cloudSync";
 import { emitDataRestored } from "@/lib/syncEvents";
 import { NumberEditModal } from "@/components/NumberEditModal";
 import { Colors } from "@/constants/colors";
@@ -76,13 +102,29 @@ const allEquipment: { label: string; value: Equipment }[] = [
   { label: "No Equipment", value: "no_equipment" },
 ];
 
-type EditField = "heightCm" | "weightKg" | "targetWeightKg" | "targetWeeks" | "age" | "sleepHours" | "waterIntakeLiters" | "workoutDaysPerWeek" | "workoutDurationMins" | null;
+type EditField =
+  | "heightCm"
+  | "weightKg"
+  | "targetWeightKg"
+  | "targetWeeks"
+  | "age"
+  | "sleepHours"
+  | "waterIntakeLiters"
+  | "workoutDaysPerWeek"
+  | "workoutDurationMins"
+  | null;
 type EditSection = "fitness" | "diet" | "equipment" | "health" | "name" | null;
 
 export default function ProfileScreen() {
   const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
-  const { state: appState, calculateTDEE, calculateMacros, updateProfileField, setCustomMacros } = useApp();
+  const {
+    state: appState,
+    calculateTDEE,
+    calculateMacros,
+    updateProfileField,
+    setCustomMacros,
+  } = useApp();
   const { sessions, personalRecords } = useWorkout();
   const {
     healthData,
@@ -97,8 +139,23 @@ export default function ProfileScreen() {
     connectHealth,
     backendName,
   } = useHealth();
-  const { user, isAuthenticated, isLoading: authLoading, login, logout } = useAuth();
-  const { state: subState, isPremium, isTrialActive, isFree, daysRemaining, trialEndDate, restorePurchases, canAccess } = useSubscription();
+  const {
+    user,
+    isAuthenticated,
+    isLoading: authLoading,
+    login,
+    logout,
+  } = useAuth();
+  const {
+    state: subState,
+    isPremium,
+    isTrialActive,
+    isFree,
+    daysRemaining,
+    trialEndDate,
+    restorePurchases,
+    canAccess,
+  } = useSubscription();
   const [syncing, setSyncing] = useState(false);
   const profile = appState.profile;
 
@@ -107,25 +164,52 @@ export default function ProfileScreen() {
     setSyncing(true);
     try {
       const result = await backupToCloud();
-
-      if (result.ok) {
-        Alert.alert("Backup complete", "Your data has been saved to your account.");
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        return;
+      switch (result.status) {
+        case "saved":
+          Alert.alert(
+            "Backup complete",
+            "Your data has been saved to your account.",
+          );
+          void Haptics.notificationAsync(
+            Haptics.NotificationFeedbackType.Success,
+          );
+          break;
+        case "empty":
+          Alert.alert(
+            "Nothing to back up",
+            "There is no workout or nutrition data on this device yet.",
+          );
+          break;
+        case "offline":
+          Alert.alert(
+            "You're offline",
+            "Connect to the internet before backing up your data.",
+          );
+          break;
+        case "unauthorized":
+          Alert.alert(
+            "Sign-in required",
+            "Sign in again before backing up your data.",
+          );
+          break;
+        case "conflict":
+          Alert.alert(
+            "Newer cloud data found",
+            "Restore the latest cloud data before backing up. Elovia did not overwrite either copy.",
+          );
+          break;
+        case "server":
+          Alert.alert(
+            "Backup unavailable",
+            "Elovia could not save your data right now. Please try again later.",
+          );
+          break;
       }
-
-      // "empty" is a guard, not a failure: uploading an empty device would
-      // overwrite whatever the account already holds.
+    } catch {
       Alert.alert(
-        result.reason === "empty" ? "Nothing to back up" : "Backup failed",
-        result.reason === "empty"
-          ? "There is no workout or nutrition data on this device yet."
-          : result.reason === "network"
-            ? "Could not reach the server. Check your connection and try again."
-            : "Something went wrong saving your data. Please try again.",
+        "Backup unavailable",
+        "Elovia could not save your data right now. Please try again later.",
       );
-    } catch (e: any) {
-      Alert.alert("Backup failed", e?.message || "Could not save data. Please try again.");
     } finally {
       setSyncing(false);
     }
@@ -135,23 +219,105 @@ export default function ProfileScreen() {
     if (!isAuthenticated || !user) return;
     setSyncing(true);
     try {
-      let found = await restoreFromCloud();
+      const outcome = await restoreFromCloud();
 
-      // Fall back to the legacy Realtime Database for accounts that predate
-      // the move to Postgres.
-      if (!found) {
-        found = await migrateLegacyFirebaseData(user.id);
-      }
-
-      if (!found) {
-        Alert.alert("No data", "No saved data was found on your account.");
-      } else {
+      if (outcome.status === "restored") {
         emitDataRestored();
-        Alert.alert("Restore complete", "Your data has been restored.");
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert(
+          "Restore complete",
+          "Your latest cloud data is now on this device.",
+        );
+        void Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Success,
+        );
+        return;
       }
-    } catch (e: any) {
-      Alert.alert("Restore Failed", e.message || "Failed to restore data.");
+
+      if (outcome.status === "empty") {
+        // Legacy RTDB is safe to consult only after the current API confirms
+        // that the account is genuinely empty.
+        const migration = await migrateLegacyFirebaseData(user.id);
+        if (migration.status === "empty") {
+          Alert.alert(
+            "No cloud backup",
+            "No saved data was found for this account.",
+          );
+          return;
+        }
+        if (migration.status === "server") {
+          Alert.alert(
+            "Legacy restore unavailable",
+            "Elovia could not check your older backup right now.",
+          );
+          return;
+        }
+
+        emitDataRestored();
+        void Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Success,
+        );
+        switch (migration.cloudBackup.status) {
+          case "saved":
+            Alert.alert(
+              "Restore complete",
+              "Your older data was restored and secured in cloud backup.",
+            );
+            break;
+          case "conflict":
+            Alert.alert(
+              "Older data restored",
+              "Your older data is on this device, but newer cloud data also exists. Restore again before backing up.",
+            );
+            break;
+          case "offline":
+            Alert.alert(
+              "Older data restored",
+              "Your older data is on this device. Connect to the internet to secure it in cloud backup.",
+            );
+            break;
+          case "unauthorized":
+            Alert.alert(
+              "Older data restored",
+              "Your older data is on this device. Sign in again before backing it up.",
+            );
+            break;
+          case "server":
+            Alert.alert(
+              "Older data restored",
+              "Your older data is on this device, but cloud backup is temporarily unavailable.",
+            );
+            break;
+          case "empty":
+            Alert.alert(
+              "Older data restored",
+              "Your older data is on this device, but there was no supported data to back up.",
+            );
+            break;
+        }
+        return;
+      }
+
+      if (outcome.status === "offline") {
+        Alert.alert(
+          "You're offline",
+          "Connect to the internet before restoring your cloud data.",
+        );
+      } else if (outcome.status === "unauthorized") {
+        Alert.alert(
+          "Sign-in required",
+          "Sign in again before restoring your cloud data.",
+        );
+      } else {
+        Alert.alert(
+          "Restore unavailable",
+          "Elovia could not read your cloud data right now. Please try again later.",
+        );
+      }
+    } catch {
+      Alert.alert(
+        "Restore unavailable",
+        "Elovia could not read your cloud data right now. Please try again later.",
+      );
     } finally {
       setSyncing(false);
     }
@@ -172,18 +338,23 @@ export default function ProfileScreen() {
   });
 
   const handleResetOnboarding = () => {
-    Alert.alert("Reset App", "This will clear all your data and restart the onboarding. Are you sure?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Reset",
-        style: "destructive",
-        onPress: async () => {
-          const AsyncStorage = require("@react-native-async-storage/async-storage").default;
-          await AsyncStorage.clear();
-          router.replace("/onboarding");
+    Alert.alert(
+      "Reset App",
+      "This will clear all your data and restart the onboarding. Are you sure?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Reset",
+          style: "destructive",
+          onPress: async () => {
+            const AsyncStorage =
+              require("@react-native-async-storage/async-storage").default;
+            await AsyncStorage.clear();
+            router.replace("/onboarding");
+          },
         },
-      },
-    ]);
+      ],
+    );
   };
 
   const handleSaveField = (value: number) => {
@@ -212,10 +383,24 @@ export default function ProfileScreen() {
 
   if (!profile) {
     return (
-      <View style={[styles.empty, { backgroundColor: theme.background, paddingTop: topPadding }]}>
-        <Ionicons name="person-circle-outline" size={64} color={theme.textMuted} />
-        <Text style={[styles.emptyTitle, { color: theme.text }]}>No Profile</Text>
-        <TouchableOpacity style={[styles.setupBtn, { backgroundColor: Colors.primary }]} onPress={() => router.push("/onboarding")}>
+      <View
+        style={[
+          styles.empty,
+          { backgroundColor: theme.background, paddingTop: topPadding },
+        ]}
+      >
+        <Ionicons
+          name="person-circle-outline"
+          size={64}
+          color={theme.textMuted}
+        />
+        <Text style={[styles.emptyTitle, { color: theme.text }]}>
+          No Profile
+        </Text>
+        <TouchableOpacity
+          style={[styles.setupBtn, { backgroundColor: Colors.primary }]}
+          onPress={() => router.push("/onboarding")}
+        >
           <Text style={styles.setupBtnText}>Complete Setup</Text>
         </TouchableOpacity>
       </View>
@@ -309,11 +494,20 @@ export default function ProfileScreen() {
 
   const currentEditConfig = editField ? editFieldConfig[editField] : null;
 
-  const weightDelta = (profile.targetWeightKg || profile.weightKg) - profile.weightKg;
-  const weightDirection = weightDelta > 0 ? "gain" : weightDelta < 0 ? "lose" : "maintain";
+  const weightDelta =
+    (profile.targetWeightKg || profile.weightKg) - profile.weightKg;
+  const weightDirection =
+    weightDelta > 0 ? "gain" : weightDelta < 0 ? "lose" : "maintain";
   const targetWeeks = profile.targetWeeks || 12;
-  const dailyCalAdjust = weightDelta !== 0 ? Math.max(-1000, Math.min(1000, Math.round((weightDelta * 7700) / (targetWeeks * 7)))) : 0;
-  const weeklyRateKg = weightDelta !== 0 ? (Math.abs(weightDelta) / targetWeeks).toFixed(2) : "0";
+  const dailyCalAdjust =
+    weightDelta !== 0
+      ? Math.max(
+          -1000,
+          Math.min(1000, Math.round((weightDelta * 7700) / (targetWeeks * 7))),
+        )
+      : 0;
+  const weeklyRateKg =
+    weightDelta !== 0 ? (Math.abs(weightDelta) / targetWeeks).toFixed(2) : "0";
 
   return (
     <ScrollView
@@ -328,18 +522,37 @@ export default function ProfileScreen() {
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.avatarSection}>
-        <View style={[styles.avatarLarge, { backgroundColor: Colors.primary + "20" }]}>
-          <Text style={[styles.avatarInitial, { color: Colors.primary }]}>{profile.name.charAt(0).toUpperCase() || "A"}</Text>
+        <View
+          style={[
+            styles.avatarLarge,
+            { backgroundColor: Colors.primary + "20" },
+          ]}
+        >
+          <Text style={[styles.avatarInitial, { color: Colors.primary }]}>
+            {profile.name.charAt(0).toUpperCase() || "A"}
+          </Text>
         </View>
-        <Text style={[styles.userName, { color: theme.text }]}>{profile.name}</Text>
+        <Text style={[styles.userName, { color: theme.text }]}>
+          {profile.name}
+        </Text>
         <View style={styles.goalBadge}>
           <Ionicons name="flag-outline" size={12} color={Colors.primary} />
-          <Text style={[styles.goalBadgeText, { color: Colors.primary }]}>{goalLabels[profile.goal]}</Text>
+          <Text style={[styles.goalBadgeText, { color: Colors.primary }]}>
+            {goalLabels[profile.goal]}
+          </Text>
         </View>
       </View>
 
-      <View style={[styles.statsCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-        <StatItem label="Workouts" value={sessions.filter((s) => s.completed).length.toString()} />
+      <View
+        style={[
+          styles.statsCard,
+          { backgroundColor: theme.card, borderColor: theme.border },
+        ]}
+      >
+        <StatItem
+          label="Workouts"
+          value={sessions.filter((s) => s.completed).length.toString()}
+        />
         <View style={[styles.statDivider, { backgroundColor: theme.border }]} />
         <StatItem label="PRs" value={personalRecords.length.toString()} />
         <View style={[styles.statDivider, { backgroundColor: theme.border }]} />
@@ -347,16 +560,44 @@ export default function ProfileScreen() {
       </View>
 
       <SectionCard title="Body Stats" subtitle="Tap values to edit">
-        <TappableRow label="Age" value={`${profile.age} years`} onPress={() => setEditField("age")} />
-        <TappableRow label="Gender" value={profile.gender.charAt(0).toUpperCase() + profile.gender.slice(1)} onPress={() => setEditSection("name")} />
-        <TappableRow label="Height" value={`${profile.heightCm} cm`} onPress={() => setEditField("heightCm")} />
-        <TappableRow label="Weight" value={`${profile.weightKg} kg`} onPress={() => setEditField("weightKg")} />
+        <TappableRow
+          label="Age"
+          value={`${profile.age} years`}
+          onPress={() => setEditField("age")}
+        />
+        <TappableRow
+          label="Gender"
+          value={
+            profile.gender.charAt(0).toUpperCase() + profile.gender.slice(1)
+          }
+          onPress={() => setEditSection("name")}
+        />
+        <TappableRow
+          label="Height"
+          value={`${profile.heightCm} cm`}
+          onPress={() => setEditField("heightCm")}
+        />
+        <TappableRow
+          label="Weight"
+          value={`${profile.weightKg} kg`}
+          onPress={() => setEditField("weightKg")}
+        />
         <TappableRow
           label="Target Weight"
           value={`${profile.targetWeightKg || profile.weightKg} kg`}
           onPress={() => setEditField("targetWeightKg")}
-          badge={weightDirection !== "maintain" ? `${Math.abs(weightDelta).toFixed(1)} kg to ${weightDirection}` : undefined}
-          badgeColor={weightDirection === "lose" ? Colors.accent : weightDirection === "gain" ? Colors.accentGreen : undefined}
+          badge={
+            weightDirection !== "maintain"
+              ? `${Math.abs(weightDelta).toFixed(1)} kg to ${weightDirection}`
+              : undefined
+          }
+          badgeColor={
+            weightDirection === "lose"
+              ? Colors.accent
+              : weightDirection === "gain"
+                ? Colors.accentGreen
+                : undefined
+          }
         />
         {weightDirection !== "maintain" && (
           <TappableRow
@@ -367,7 +608,10 @@ export default function ProfileScreen() {
             badgeColor={Colors.primary}
           />
         )}
-        <InfoRow label="BMI" value={`${(profile.weightKg / (profile.heightCm / 100) ** 2).toFixed(1)}`} />
+        <InfoRow
+          label="BMI"
+          value={`${(profile.weightKg / (profile.heightCm / 100) ** 2).toFixed(1)}`}
+        />
         <InfoRow label="TDEE" value={`${tdee} kcal`} highlight />
       </SectionCard>
 
@@ -397,7 +641,11 @@ export default function ProfileScreen() {
             activeOpacity={0.8}
           >
             <Ionicons name="create-outline" size={14} color={Colors.primary} />
-            <Text style={[styles.macroEditText, { color: Colors.primary }]}>{appState.customMacros?.enabled ? "Custom Macros" : "Override Macros"}</Text>
+            <Text style={[styles.macroEditText, { color: Colors.primary }]}>
+              {appState.customMacros?.enabled
+                ? "Custom Macros"
+                : "Override Macros"}
+            </Text>
             {!canAccess("custom_macros") && (
               <View
                 style={{
@@ -413,7 +661,11 @@ export default function ProfileScreen() {
             )}
           </TouchableOpacity>
           {appState.customMacros?.enabled && (
-            <TouchableOpacity style={[styles.macroResetBtn, { borderColor: theme.border }]} onPress={handleResetMacros} activeOpacity={0.8}>
+            <TouchableOpacity
+              style={[styles.macroResetBtn, { borderColor: theme.border }]}
+              onPress={handleResetMacros}
+              activeOpacity={0.8}
+            >
               <Ionicons name="refresh" size={14} color={theme.textSecondary} />
             </TouchableOpacity>
           )}
@@ -424,28 +676,91 @@ export default function ProfileScreen() {
         <InfoRow label="Fats" value={`${macros.fats} g`} />
       </SectionCard>
 
-      <SectionCard title="Fitness Profile" subtitle="Tap to edit" onEdit={() => setEditSection("fitness")}>
-        <TappableRow label="Goal" value={goalLabels[profile.goal]} onPress={() => setEditSection("fitness")} />
-        <TappableRow label="Level" value={levelLabels[profile.fitnessLevel]} onPress={() => setEditSection("fitness")} />
-        <TappableRow label="Activity" value={activityLabels[profile.activityLevel]} onPress={() => setEditSection("fitness")} />
-        <TappableRow label="Workout Days" value={`${profile.workoutDaysPerWeek} days/week`} onPress={() => setEditField("workoutDaysPerWeek")} />
-        <TappableRow label="Session Length" value={`${profile.workoutDurationMins} min`} onPress={() => setEditField("workoutDurationMins")} />
-        <TappableRow label="Preference" value={prefLabels[profile.workoutPreference]} onPress={() => setEditSection("fitness")} />
+      <SectionCard
+        title="Fitness Profile"
+        subtitle="Tap to edit"
+        onEdit={() => setEditSection("fitness")}
+      >
+        <TappableRow
+          label="Goal"
+          value={goalLabels[profile.goal]}
+          onPress={() => setEditSection("fitness")}
+        />
+        <TappableRow
+          label="Level"
+          value={levelLabels[profile.fitnessLevel]}
+          onPress={() => setEditSection("fitness")}
+        />
+        <TappableRow
+          label="Activity"
+          value={activityLabels[profile.activityLevel]}
+          onPress={() => setEditSection("fitness")}
+        />
+        <TappableRow
+          label="Workout Days"
+          value={`${profile.workoutDaysPerWeek} days/week`}
+          onPress={() => setEditField("workoutDaysPerWeek")}
+        />
+        <TappableRow
+          label="Session Length"
+          value={`${profile.workoutDurationMins} min`}
+          onPress={() => setEditField("workoutDurationMins")}
+        />
+        <TappableRow
+          label="Preference"
+          value={prefLabels[profile.workoutPreference]}
+          onPress={() => setEditSection("fitness")}
+        />
       </SectionCard>
 
-      <SectionCard title="Diet Profile" subtitle="Tap to edit" onEdit={() => setEditSection("diet")}>
-        <TappableRow label="Food Type" value={foodPrefLabels[profile.foodPreference]} onPress={() => setEditSection("diet")} />
-        <TappableRow label="Restrictions" value={profile.dietaryRestrictions || "None"} onPress={() => setEditSection("diet")} />
-        <TappableRow label="Dislikes" value={profile.dislikedFoods || "None"} onPress={() => setEditSection("diet")} />
-        <TappableRow label="Medical Notes" value={profile.medicalNotes || "None"} onPress={() => setEditSection("diet")} />
+      <SectionCard
+        title="Diet Profile"
+        subtitle="Tap to edit"
+        onEdit={() => setEditSection("diet")}
+      >
+        <TappableRow
+          label="Food Type"
+          value={foodPrefLabels[profile.foodPreference]}
+          onPress={() => setEditSection("diet")}
+        />
+        <TappableRow
+          label="Restrictions"
+          value={profile.dietaryRestrictions || "None"}
+          onPress={() => setEditSection("diet")}
+        />
+        <TappableRow
+          label="Dislikes"
+          value={profile.dislikedFoods || "None"}
+          onPress={() => setEditSection("diet")}
+        />
+        <TappableRow
+          label="Medical Notes"
+          value={profile.medicalNotes || "None"}
+          onPress={() => setEditSection("diet")}
+        />
       </SectionCard>
 
-      <SectionCard title="Equipment" subtitle="Tap to edit" onEdit={() => setEditSection("equipment")}>
-        <TouchableOpacity onPress={() => setEditSection("equipment")} activeOpacity={0.7}>
+      <SectionCard
+        title="Equipment"
+        subtitle="Tap to edit"
+        onEdit={() => setEditSection("equipment")}
+      >
+        <TouchableOpacity
+          onPress={() => setEditSection("equipment")}
+          activeOpacity={0.7}
+        >
           <View style={styles.equipmentList}>
             {profile.equipment.map((eq) => (
-              <View key={eq} style={[styles.equipTag, { backgroundColor: Colors.primary + "20" }]}>
-                <Text style={[styles.equipTagText, { color: Colors.primary }]}>{eq.replace(/_/g, " ")}</Text>
+              <View
+                key={eq}
+                style={[
+                  styles.equipTag,
+                  { backgroundColor: Colors.primary + "20" },
+                ]}
+              >
+                <Text style={[styles.equipTagText, { color: Colors.primary }]}>
+                  {eq.replace(/_/g, " ")}
+                </Text>
               </View>
             ))}
             <View
@@ -459,30 +774,90 @@ export default function ProfileScreen() {
               ]}
             >
               <Ionicons name="pencil" size={10} color={Colors.primary} />
-              <Text style={[styles.equipTagText, { color: Colors.primary }]}>Edit</Text>
+              <Text style={[styles.equipTagText, { color: Colors.primary }]}>
+                Edit
+              </Text>
             </View>
           </View>
         </TouchableOpacity>
       </SectionCard>
 
       <SectionCard title="Health Habits" subtitle="Tap to edit">
-        <TappableRow label="Sleep" value={`${profile.sleepHours} hours/night`} onPress={() => setEditField("sleepHours")} />
-        <TappableRow label="Water Goal" value={`${profile.waterIntakeLiters} L/day`} onPress={() => setEditField("waterIntakeLiters")} />
+        <TappableRow
+          label="Sleep"
+          value={`${profile.sleepHours} hours/night`}
+          onPress={() => setEditField("sleepHours")}
+        />
+        <TappableRow
+          label="Water Goal"
+          value={`${profile.waterIntakeLiters} L/day`}
+          onPress={() => setEditField("waterIntakeLiters")}
+        />
       </SectionCard>
 
       {/* Everything built on top of the core tabs lives here rather than
           crowding the bottom nav, which Material caps at five items. */}
       <SectionCard title="More" subtitle="Tools & tracking">
-        <NavRow icon="library-outline" label="Training programmes" hint="Curated plans, free on every tier" onPress={() => router.push("/plans")} />
-        <NavRow icon="navigate-outline" label="Record a run" hint="GPS tracking with splits" onPress={() => router.push("/run")} />
-        <NavRow icon="water-outline" label="Hydration" hint="Track water and set a daily goal" onPress={() => router.push("/hydration")} />
-        <NavRow icon="medkit-outline" label="Supplements & medication" hint="Reminders and training context" onPress={() => router.push("/supplements")} />
-        <NavRow icon="videocam-outline" label="1-on-1 coaching" hint="Work with a real coach" onPress={() => router.push("/coaching")} />
-        <NavRow icon="chatbubbles-outline" label="Ask your coach" hint="Training and nutrition questions" onPress={() => router.push("/coach")} />
-        <NavRow icon="barcode-outline" label="Scan a barcode" hint="Look up packaged food" onPress={() => router.push("/scan")} />
-        <NavRow icon="people-outline" label="Community" hint="Friends, feed and challenges" onPress={() => router.push("/social")} />
-        <NavRow icon="trophy-outline" label="Achievements" hint="Level, streaks and badges" onPress={() => router.push("/achievements")} />
-        <NavRow icon="location-outline" label="My places" hint="Start a session when you reach the gym" onPress={() => router.push("/places")} />
+        <NavRow
+          icon="library-outline"
+          label="Training programmes"
+          hint="Curated plans, free on every tier"
+          onPress={() => router.push("/plans")}
+        />
+        <NavRow
+          icon="navigate-outline"
+          label="Record a run"
+          hint="GPS tracking with splits"
+          onPress={() => router.push("/run")}
+        />
+        <NavRow
+          icon="water-outline"
+          label="Hydration"
+          hint="Track water and set a daily goal"
+          onPress={() => router.push("/hydration")}
+        />
+        <NavRow
+          icon="medkit-outline"
+          label="Supplements & medication"
+          hint="Reminders and training context"
+          onPress={() => router.push("/supplements")}
+        />
+        <NavRow
+          icon="videocam-outline"
+          label="1-on-1 coaching"
+          hint="Work with a real coach"
+          onPress={() => router.push("/coaching")}
+        />
+        <NavRow
+          icon="chatbubbles-outline"
+          label="Ask your coach"
+          hint="Training and nutrition questions"
+          onPress={() => router.push("/coach")}
+        />
+        <NavRow
+          icon="barcode-outline"
+          label="Scan a barcode"
+          hint="Look up packaged food"
+          onPress={() => router.push("/scan")}
+        />
+        <NavRow
+          icon="people-outline"
+          label="Community"
+          hint="Friends, feed and challenges"
+          onPress={() => router.push("/social")}
+        />
+        <NavRow
+          icon="trophy-outline"
+          label="Achievements"
+          hint="Level, streaks and badges"
+          onPress={() => router.push("/achievements")}
+        />
+        <NavRow
+          icon="location-outline"
+          label="My places"
+          hint="Start a session when you reach the gym"
+          onPress={() => router.push("/places")}
+        />
       </SectionCard>
 
       <SectionCard title="Health Data Sync" subtitle="Connect devices & apps">
@@ -539,21 +914,37 @@ export default function ProfileScreen() {
             switch that silently does nothing. */}
         {healthStatus?.platform?.requiresDevBuild && (
           <View style={[styles.healthNotice, { borderTopColor: theme.border }]}>
-            <Ionicons name="information-circle-outline" size={16} color={theme.textMuted} />
+            <Ionicons
+              name="information-circle-outline"
+              size={16}
+              color={theme.textMuted}
+            />
             <Text style={[styles.healthNoticeText, { color: theme.textMuted }]}>
-              {Platform.OS === "ios" ? "Apple Health" : "Health Connect"} needs the full app build. Step tracking works here; workouts, sleep and heart data need the installed app.
+              {Platform.OS === "ios" ? "Apple Health" : "Health Connect"} needs
+              the full app build. Step tracking works here; workouts, sleep and
+              heart data need the installed app.
             </Text>
           </View>
         )}
 
         {healthStatus?.hasAnySource && (
           <View style={[styles.healthNotice, { borderTopColor: theme.border }]}>
-            <Ionicons name="pulse-outline" size={16} color={Colors.accentGreen} />
-            <Text style={[styles.healthNoticeText, { color: theme.textSecondary }]}>
+            <Ionicons
+              name="pulse-outline"
+              size={16}
+              color={Colors.accentGreen}
+            />
+            <Text
+              style={[styles.healthNoticeText, { color: theme.textSecondary }]}
+            >
               Reading from {backendName}
-              {healthData?.lastSynced ? ` · updated ${new Date(healthData.lastSynced).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : ""}
+              {healthData?.lastSynced
+                ? ` · updated ${new Date(healthData.lastSynced).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+                : ""}
             </Text>
-            {isSyncing && <ActivityIndicator size="small" color={Colors.primary} />}
+            {isSyncing && (
+              <ActivityIndicator size="small" color={Colors.primary} />
+            )}
           </View>
         )}
 
@@ -567,7 +958,9 @@ export default function ProfileScreen() {
             activeOpacity={0.85}
           >
             <Ionicons name="link-outline" size={16} color={Colors.primary} />
-            <Text style={[styles.connectHealthText, { color: Colors.primary }]}>Connect health data</Text>
+            <Text style={[styles.connectHealthText, { color: Colors.primary }]}>
+              Connect health data
+            </Text>
           </TouchableOpacity>
         )}
 
@@ -575,10 +968,19 @@ export default function ProfileScreen() {
           <View style={[styles.stepsRow, { borderTopColor: theme.border }]}>
             <Ionicons name="footsteps" size={18} color={Colors.accentGreen} />
             <View style={{ flex: 1 }}>
-              <Text style={[styles.stepsValue, { color: theme.text }]}>{healthData.todaySteps.toLocaleString()} steps today</Text>
-              <Text style={[styles.stepsGoal, { color: theme.textSecondary }]}>Goal: 10,000 steps</Text>
+              <Text style={[styles.stepsValue, { color: theme.text }]}>
+                {healthData.todaySteps.toLocaleString()} steps today
+              </Text>
+              <Text style={[styles.stepsGoal, { color: theme.textSecondary }]}>
+                Goal: 10,000 steps
+              </Text>
             </View>
-            <View style={[styles.stepsProgress, { backgroundColor: Colors.dark.card }]}>
+            <View
+              style={[
+                styles.stepsProgress,
+                { backgroundColor: Colors.dark.card },
+              ]}
+            >
               <View
                 style={[
                   styles.stepsProgressFill,
@@ -596,10 +998,25 @@ export default function ProfileScreen() {
           <View style={[styles.recentRunRow, { borderTopColor: theme.border }]}>
             <Ionicons name="walk-outline" size={18} color={Colors.accent} />
             <View style={{ flex: 1 }}>
-              <Text style={[styles.runLabel, { color: theme.text }]}>Last Run</Text>
+              <Text style={[styles.runLabel, { color: theme.text }]}>
+                Last Run
+              </Text>
               <Text style={[styles.runMeta, { color: theme.textSecondary }]}>
-                {healthData.runSessions[healthData.runSessions.length - 1].distanceKm} km · {healthData.runSessions[healthData.runSessions.length - 1].durationMins} min ·{" "}
-                {healthData.runSessions[healthData.runSessions.length - 1].caloriesBurned} kcal
+                {
+                  healthData.runSessions[healthData.runSessions.length - 1]
+                    .distanceKm
+                }{" "}
+                km ·{" "}
+                {
+                  healthData.runSessions[healthData.runSessions.length - 1]
+                    .durationMins
+                }{" "}
+                min ·{" "}
+                {
+                  healthData.runSessions[healthData.runSessions.length - 1]
+                    .caloriesBurned
+                }{" "}
+                kcal
               </Text>
             </View>
           </View>
@@ -615,11 +1032,18 @@ export default function ProfileScreen() {
               },
             ]}
           >
-            <View style={[styles.runPulse, { backgroundColor: Colors.accentGreen }]} />
+            <View
+              style={[styles.runPulse, { backgroundColor: Colors.accentGreen }]}
+            />
             <View style={{ flex: 1 }}>
-              <Text style={[styles.activeRunTitle, { color: Colors.accentGreen }]}>Run in Progress</Text>
+              <Text
+                style={[styles.activeRunTitle, { color: Colors.accentGreen }]}
+              >
+                Run in Progress
+              </Text>
               <Text style={[styles.activeRunMeta, { color: theme.text }]}>
-                {currentRun.distanceKm.toFixed(2)} km · {currentRun.route.length} GPS points
+                {currentRun.distanceKm.toFixed(2)} km ·{" "}
+                {currentRun.route.length} GPS points
               </Text>
             </View>
             <TouchableOpacity
@@ -627,9 +1051,14 @@ export default function ProfileScreen() {
               onPress={() => {
                 const session = stopRunTracking();
                 if (session) {
-                  Alert.alert("Run Complete", `${session.distanceKm} km in ${session.durationMins} min\n${session.caloriesBurned} calories burned`);
+                  Alert.alert(
+                    "Run Complete",
+                    `${session.distanceKm} km in ${session.durationMins} min\n${session.caloriesBurned} calories burned`,
+                  );
                 }
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                Haptics.notificationAsync(
+                  Haptics.NotificationFeedbackType.Success,
+                );
               }}
               activeOpacity={0.8}
             >
@@ -651,13 +1080,22 @@ export default function ProfileScreen() {
               ]}
               onPress={() => {
                 startRunTracking();
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                Alert.alert("Run Started", "GPS tracking is active. Go for your run! Come back here to stop and save.");
+                Haptics.notificationAsync(
+                  Haptics.NotificationFeedbackType.Success,
+                );
+                Alert.alert(
+                  "Run Started",
+                  "GPS tracking is active. Go for your run! Come back here to stop and save.",
+                );
               }}
               activeOpacity={0.8}
             >
               <Ionicons name="walk" size={16} color={Colors.accentGreen} />
-              <Text style={[styles.healthActionText, { color: Colors.accentGreen }]}>Start Run</Text>
+              <Text
+                style={[styles.healthActionText, { color: Colors.accentGreen }]}
+              >
+                Start Run
+              </Text>
             </TouchableOpacity>
           )}
           <TouchableOpacity
@@ -675,20 +1113,37 @@ export default function ProfileScreen() {
             activeOpacity={0.8}
           >
             <Ionicons name="sync" size={16} color={Colors.primary} />
-            <Text style={[styles.healthActionText, { color: Colors.primary }]}>Sync Now</Text>
+            <Text style={[styles.healthActionText, { color: Colors.primary }]}>
+              Sync Now
+            </Text>
           </TouchableOpacity>
         </View>
 
-        {healthData.lastSynced && <Text style={[styles.lastSynced, { color: theme.textMuted }]}>Last synced: {new Date(healthData.lastSynced).toLocaleString()}</Text>}
+        {healthData.lastSynced && (
+          <Text style={[styles.lastSynced, { color: theme.textMuted }]}>
+            Last synced: {new Date(healthData.lastSynced).toLocaleString()}
+          </Text>
+        )}
       </SectionCard>
 
-      <SectionCard title="Subscription" subtitle={isTrialActive ? `Premium Trial · ${daysRemaining} days left` : isPremium ? "Premium" : "Free Plan"}>
+      <SectionCard
+        title="Subscription"
+        subtitle={
+          isTrialActive
+            ? `Premium Trial · ${daysRemaining} days left`
+            : isPremium
+              ? "Premium"
+              : "Free Plan"
+        }
+      >
         <View style={{ gap: 12 }}>
           <View
             style={[
               styles.planStatusRow,
               {
-                backgroundColor: isPremium ? Colors.primary + "12" : theme.cardElevated,
+                backgroundColor: isPremium
+                  ? Colors.primary + "12"
+                  : theme.cardElevated,
               },
             ]}
           >
@@ -696,17 +1151,37 @@ export default function ProfileScreen() {
               style={[
                 styles.planStatusIcon,
                 {
-                  backgroundColor: isPremium ? Colors.primary + "20" : theme.border,
+                  backgroundColor: isPremium
+                    ? Colors.primary + "20"
+                    : theme.border,
                 },
               ]}
             >
-              <Ionicons name={isPremium ? "diamond" : "person-outline"} size={18} color={isPremium ? Colors.primary : theme.textSecondary} />
+              <Ionicons
+                name={isPremium ? "diamond" : "person-outline"}
+                size={18}
+                color={isPremium ? Colors.primary : theme.textSecondary}
+              />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={[styles.planStatusLabel, { color: theme.text }]}>{isTrialActive ? "Premium Trial" : isPremium ? "Premium" : "Free Plan"}</Text>
-              {isTrialActive && trialEndDate && <Text style={[styles.planStatusSub, { color: theme.textSecondary }]}>Trial ends {trialEndDate}</Text>}
+              <Text style={[styles.planStatusLabel, { color: theme.text }]}>
+                {isTrialActive
+                  ? "Premium Trial"
+                  : isPremium
+                    ? "Premium"
+                    : "Free Plan"}
+              </Text>
+              {isTrialActive && trialEndDate && (
+                <Text
+                  style={[styles.planStatusSub, { color: theme.textSecondary }]}
+                >
+                  Trial ends {trialEndDate}
+                </Text>
+              )}
               {subState.status === "active" && subState.renewalDate && (
-                <Text style={[styles.planStatusSub, { color: theme.textSecondary }]}>
+                <Text
+                  style={[styles.planStatusSub, { color: theme.textSecondary }]}
+                >
                   Renews{" "}
                   {new Date(subState.renewalDate).toLocaleDateString("en-IN", {
                     day: "numeric",
@@ -754,27 +1229,66 @@ export default function ProfileScreen() {
             }}
             activeOpacity={0.7}
           >
-            <Text style={[styles.planStatusSub, { color: Colors.primary, textAlign: "center" }]}>Restore Purchases</Text>
+            <Text
+              style={[
+                styles.planStatusSub,
+                { color: Colors.primary, textAlign: "center" },
+              ]}
+            >
+              Restore Purchases
+            </Text>
           </TouchableOpacity>
         </View>
       </SectionCard>
 
-      <SectionCard title="Account" subtitle={isAuthenticated ? user?.email || "Signed in" : "Sign in to save your data"}>
+      <SectionCard
+        title="Account"
+        subtitle={
+          isAuthenticated
+            ? user?.email || "Signed in"
+            : "Sign in to save your data"
+        }
+      >
         {isAuthenticated ? (
           <View style={{ gap: 10 }}>
             <View style={styles.accountUserRow}>
               {user?.profileImageUrl ? (
-                <View style={[styles.accountAvatar, { backgroundColor: Colors.primary + "20" }]}>
-                  <Text style={{ fontSize: 18 }}>{user.firstName?.[0] || "U"}</Text>
+                <View
+                  style={[
+                    styles.accountAvatar,
+                    { backgroundColor: Colors.primary + "20" },
+                  ]}
+                >
+                  <Text style={{ fontSize: 18 }}>
+                    {user.firstName?.[0] || "U"}
+                  </Text>
                 </View>
               ) : (
-                <View style={[styles.accountAvatar, { backgroundColor: Colors.primary + "20" }]}>
+                <View
+                  style={[
+                    styles.accountAvatar,
+                    { backgroundColor: Colors.primary + "20" },
+                  ]}
+                >
                   <Ionicons name="person" size={20} color={Colors.primary} />
                 </View>
               )}
               <View style={{ flex: 1 }}>
-                <Text style={[styles.accountName, { color: theme.text }]}>{[user?.firstName, user?.lastName].filter(Boolean).join(" ") || "User"}</Text>
-                {user?.email && <Text style={[styles.accountEmail, { color: theme.textSecondary }]}>{user.email}</Text>}
+                <Text style={[styles.accountName, { color: theme.text }]}>
+                  {[user?.firstName, user?.lastName]
+                    .filter(Boolean)
+                    .join(" ") || "User"}
+                </Text>
+                {user?.email && (
+                  <Text
+                    style={[
+                      styles.accountEmail,
+                      { color: theme.textSecondary },
+                    ]}
+                  >
+                    {user.email}
+                  </Text>
+                )}
               </View>
             </View>
 
@@ -791,8 +1305,19 @@ export default function ProfileScreen() {
                 disabled={syncing}
                 activeOpacity={0.8}
               >
-                <Ionicons name="cloud-upload-outline" size={16} color={Colors.accentGreen} />
-                <Text style={[styles.accountActionText, { color: Colors.accentGreen }]}>{syncing ? "Syncing..." : "Backup"}</Text>
+                <Ionicons
+                  name="cloud-upload-outline"
+                  size={16}
+                  color={Colors.accentGreen}
+                />
+                <Text
+                  style={[
+                    styles.accountActionText,
+                    { color: Colors.accentGreen },
+                  ]}
+                >
+                  {syncing ? "Syncing..." : "Backup"}
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
@@ -806,13 +1331,24 @@ export default function ProfileScreen() {
                 disabled={syncing}
                 activeOpacity={0.8}
               >
-                <Ionicons name="cloud-download-outline" size={16} color={Colors.primary} />
-                <Text style={[styles.accountActionText, { color: Colors.primary }]}>{syncing ? "Syncing..." : "Restore"}</Text>
+                <Ionicons
+                  name="cloud-download-outline"
+                  size={16}
+                  color={Colors.primary}
+                />
+                <Text
+                  style={[styles.accountActionText, { color: Colors.primary }]}
+                >
+                  {syncing ? "Syncing..." : "Restore"}
+                </Text>
               </TouchableOpacity>
             </View>
 
             <TouchableOpacity
-              style={[styles.logoutBtn, { borderColor: Colors.accentRed + "40" }]}
+              style={[
+                styles.logoutBtn,
+                { borderColor: Colors.accentRed + "40" },
+              ]}
               onPress={() => {
                 Alert.alert("Sign Out", "Are you sure you want to sign out?", [
                   { text: "Cancel", style: "cancel" },
@@ -825,8 +1361,14 @@ export default function ProfileScreen() {
               }}
               activeOpacity={0.8}
             >
-              <Ionicons name="log-out-outline" size={16} color={Colors.accentRed} />
-              <Text style={[styles.logoutBtnText, { color: Colors.accentRed }]}>Sign Out</Text>
+              <Ionicons
+                name="log-out-outline"
+                size={16}
+                color={Colors.accentRed}
+              />
+              <Text style={[styles.logoutBtnText, { color: Colors.accentRed }]}>
+                Sign Out
+              </Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -865,7 +1407,9 @@ export default function ProfileScreen() {
         activeOpacity={0.8}
       >
         <Ionicons name="create-outline" size={18} color={Colors.primary} />
-        <Text style={[styles.actionBtnText, { color: Colors.primary }]}>Update Profile</Text>
+        <Text style={[styles.actionBtnText, { color: Colors.primary }]}>
+          Update Profile
+        </Text>
       </TouchableOpacity>
 
       <TouchableOpacity
@@ -880,7 +1424,9 @@ export default function ProfileScreen() {
         activeOpacity={0.8}
       >
         <Ionicons name="trash-outline" size={18} color={Colors.accentRed} />
-        <Text style={[styles.actionBtnText, { color: Colors.accentRed }]}>Reset All Data</Text>
+        <Text style={[styles.actionBtnText, { color: Colors.accentRed }]}>
+          Reset All Data
+        </Text>
       </TouchableOpacity>
 
       {currentEditConfig && (
@@ -897,13 +1443,28 @@ export default function ProfileScreen() {
         />
       )}
 
-      <Modal visible={macroModalVisible} transparent animationType="fade" onRequestClose={() => setMacroModalVisible(false)}>
+      <Modal
+        visible={macroModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMacroModalVisible(false)}
+      >
         <View style={styles.macroOverlay}>
-          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setMacroModalVisible(false)} />
+          <TouchableOpacity
+            style={StyleSheet.absoluteFill}
+            activeOpacity={1}
+            onPress={() => setMacroModalVisible(false)}
+          />
           <View style={[styles.macroSheet, { backgroundColor: theme.surface }]}>
             <View style={styles.macroHandle} />
-            <Text style={[styles.macroTitle, { color: theme.text }]}>Custom Macro Targets</Text>
-            <Text style={[styles.macroSubtitle, { color: theme.textSecondary }]}>Override the calculated values with your own targets</Text>
+            <Text style={[styles.macroTitle, { color: theme.text }]}>
+              Custom Macro Targets
+            </Text>
+            <Text
+              style={[styles.macroSubtitle, { color: theme.textSecondary }]}
+            >
+              Override the calculated values with your own targets
+            </Text>
             <MacroInput
               label="Calories"
               unit="kcal"
@@ -912,14 +1473,52 @@ export default function ProfileScreen() {
               theme={theme}
               color={Colors.accentYellow}
             />
-            <MacroInput label="Protein" unit="g" value={macroForm.protein} onChange={(v) => setMacroForm((p) => ({ ...p, protein: v }))} theme={theme} color={Colors.primary} />
-            <MacroInput label="Carbs" unit="g" value={macroForm.carbs} onChange={(v) => setMacroForm((p) => ({ ...p, carbs: v }))} theme={theme} color={Colors.accent} />
-            <MacroInput label="Fats" unit="g" value={macroForm.fats} onChange={(v) => setMacroForm((p) => ({ ...p, fats: v }))} theme={theme} color={Colors.accentGreen} />
+            <MacroInput
+              label="Protein"
+              unit="g"
+              value={macroForm.protein}
+              onChange={(v) => setMacroForm((p) => ({ ...p, protein: v }))}
+              theme={theme}
+              color={Colors.primary}
+            />
+            <MacroInput
+              label="Carbs"
+              unit="g"
+              value={macroForm.carbs}
+              onChange={(v) => setMacroForm((p) => ({ ...p, carbs: v }))}
+              theme={theme}
+              color={Colors.accent}
+            />
+            <MacroInput
+              label="Fats"
+              unit="g"
+              value={macroForm.fats}
+              onChange={(v) => setMacroForm((p) => ({ ...p, fats: v }))}
+              theme={theme}
+              color={Colors.accentGreen}
+            />
             <View style={styles.macroActions}>
-              <TouchableOpacity style={[styles.macroCancelBtn, { borderColor: theme.border }]} onPress={() => setMacroModalVisible(false)}>
-                <Text style={[styles.macroCancelText, { color: theme.textSecondary }]}>Cancel</Text>
+              <TouchableOpacity
+                style={[styles.macroCancelBtn, { borderColor: theme.border }]}
+                onPress={() => setMacroModalVisible(false)}
+              >
+                <Text
+                  style={[
+                    styles.macroCancelText,
+                    { color: theme.textSecondary },
+                  ]}
+                >
+                  Cancel
+                </Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.macroSaveBtn, { backgroundColor: Colors.primary }]} onPress={handleSaveMacros} activeOpacity={0.8}>
+              <TouchableOpacity
+                style={[
+                  styles.macroSaveBtn,
+                  { backgroundColor: Colors.primary },
+                ]}
+                onPress={handleSaveMacros}
+                activeOpacity={0.8}
+              >
                 <Text style={styles.macroSaveText}>Save Macros</Text>
               </TouchableOpacity>
             </View>
@@ -985,11 +1584,20 @@ interface MacroInputProps {
   color: string;
 }
 
-function MacroInput({ label, unit, value, onChange, theme, color }: MacroInputProps) {
+function MacroInput({
+  label,
+  unit,
+  value,
+  onChange,
+  theme,
+  color,
+}: MacroInputProps) {
   return (
     <View style={styles.macroInputRow}>
       <View style={[styles.macroColorDot, { backgroundColor: color }]} />
-      <Text style={[styles.macroInputLabel, { color: theme.textSecondary }]}>{label}</Text>
+      <Text style={[styles.macroInputLabel, { color: theme.textSecondary }]}>
+        {label}
+      </Text>
       <TextInput
         style={[
           styles.macroInputField,
@@ -1004,16 +1612,19 @@ function MacroInput({ label, unit, value, onChange, theme, color }: MacroInputPr
         keyboardType="numeric"
         selectTextOnFocus
       />
-      <Text style={[styles.macroInputUnit, { color: theme.textMuted }]}>{unit}</Text>
+      <Text style={[styles.macroInputUnit, { color: theme.textMuted }]}>
+        {unit}
+      </Text>
     </View>
   );
 }
 
-
-
-
-
-function FitnessEditModal({ visible, onClose, profile, updateProfileField }: ProfileEditModalProps) {
+function FitnessEditModal({
+  visible,
+  onClose,
+  profile,
+  updateProfileField,
+}: ProfileEditModalProps) {
   const { isDark, theme } = useTheme();
   const [goal, setGoal] = useState(profile.goal);
   const [level, setLevel] = useState(profile.fitnessLevel);
@@ -1039,28 +1650,38 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField }: Pro
   };
 
   return (
-    <ModalSheet visible={visible} onClose={onClose} title="Edit Fitness Profile">
+    <ModalSheet
+      visible={visible}
+      onClose={onClose}
+      title="Edit Fitness Profile"
+    >
       <OptionPicker
         label="Primary Goal"
-        options={(Object.entries(goalLabels) as [typeof goal, string][]).map(([value, label]) => ({
-          value,
-          label,
-        }))}
+        options={(Object.entries(goalLabels) as [typeof goal, string][]).map(
+          ([value, label]) => ({
+            value,
+            label,
+          }),
+        )}
         selected={goal}
         onSelect={setGoal}
       />
       <OptionPicker
         label="Fitness Level"
-        options={(Object.entries(levelLabels) as [typeof level, string][]).map(([value, label]) => ({
-          value,
-          label,
-        }))}
+        options={(Object.entries(levelLabels) as [typeof level, string][]).map(
+          ([value, label]) => ({
+            value,
+            label,
+          }),
+        )}
         selected={level}
         onSelect={setLevel}
       />
       <OptionPicker
         label="Activity Level"
-        options={(Object.entries(activityLabels) as [typeof activity, string][]).map(([value, label]) => ({
+        options={(
+          Object.entries(activityLabels) as [typeof activity, string][]
+        ).map(([value, label]) => ({
           value,
           label,
         }))}
@@ -1069,18 +1690,31 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField }: Pro
       />
       <OptionPicker
         label="Workout Preference"
-        options={(Object.entries(prefLabels) as [typeof pref, string][]).map(([value, label]) => ({
-          value,
-          label,
-        }))}
+        options={(Object.entries(prefLabels) as [typeof pref, string][]).map(
+          ([value, label]) => ({
+            value,
+            label,
+          }),
+        )}
         selected={pref}
         onSelect={setPref}
       />
       <View style={styles.macroActions}>
-        <TouchableOpacity style={[styles.macroCancelBtn, { borderColor: theme.border }]} onPress={onClose}>
-          <Text style={[styles.macroCancelText, { color: theme.textSecondary }]}>Cancel</Text>
+        <TouchableOpacity
+          style={[styles.macroCancelBtn, { borderColor: theme.border }]}
+          onPress={onClose}
+        >
+          <Text
+            style={[styles.macroCancelText, { color: theme.textSecondary }]}
+          >
+            Cancel
+          </Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.macroSaveBtn, { backgroundColor: Colors.primary }]} onPress={handleSave} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={[styles.macroSaveBtn, { backgroundColor: Colors.primary }]}
+          onPress={handleSave}
+          activeOpacity={0.8}
+        >
           <Text style={styles.macroSaveText}>Save</Text>
         </TouchableOpacity>
       </View>
@@ -1088,10 +1722,17 @@ function FitnessEditModal({ visible, onClose, profile, updateProfileField }: Pro
   );
 }
 
-function DietEditModal({ visible, onClose, profile, updateProfileField }: ProfileEditModalProps) {
+function DietEditModal({
+  visible,
+  onClose,
+  profile,
+  updateProfileField,
+}: ProfileEditModalProps) {
   const { isDark, theme } = useTheme();
   const [foodPref, setFoodPref] = useState(profile.foodPreference);
-  const [restrictions, setRestrictions] = useState(profile.dietaryRestrictions || "");
+  const [restrictions, setRestrictions] = useState(
+    profile.dietaryRestrictions || "",
+  );
   const [dislikes, setDislikes] = useState(profile.dislikedFoods || "");
   const [medicalNotes, setMedicalNotes] = useState(profile.medicalNotes || "");
 
@@ -1117,7 +1758,9 @@ function DietEditModal({ visible, onClose, profile, updateProfileField }: Profil
     <ModalSheet visible={visible} onClose={onClose} title="Edit Diet Profile">
       <OptionPicker
         label="Food Preference"
-        options={(Object.entries(foodPrefLabels) as [typeof foodPref, string][]).map(([value, label]) => ({
+        options={(
+          Object.entries(foodPrefLabels) as [typeof foodPref, string][]
+        ).map(([value, label]) => ({
           value,
           label,
         }))}
@@ -1125,7 +1768,9 @@ function DietEditModal({ visible, onClose, profile, updateProfileField }: Profil
         onSelect={setFoodPref}
       />
       <View style={{ gap: 6 }}>
-        <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Restrictions / Allergies</Text>
+        <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>
+          Restrictions / Allergies
+        </Text>
         <TextInput
           style={[
             styles.editTextInput,
@@ -1143,7 +1788,9 @@ function DietEditModal({ visible, onClose, profile, updateProfileField }: Profil
         />
       </View>
       <View style={{ gap: 6 }}>
-        <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Disliked Foods</Text>
+        <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>
+          Disliked Foods
+        </Text>
         <TextInput
           style={[
             styles.editTextInput,
@@ -1161,7 +1808,9 @@ function DietEditModal({ visible, onClose, profile, updateProfileField }: Profil
         />
       </View>
       <View style={{ gap: 6 }}>
-        <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Medical Notes</Text>
+        <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>
+          Medical Notes
+        </Text>
         <TextInput
           style={[
             styles.editTextInput,
@@ -1179,10 +1828,21 @@ function DietEditModal({ visible, onClose, profile, updateProfileField }: Profil
         />
       </View>
       <View style={styles.macroActions}>
-        <TouchableOpacity style={[styles.macroCancelBtn, { borderColor: theme.border }]} onPress={onClose}>
-          <Text style={[styles.macroCancelText, { color: theme.textSecondary }]}>Cancel</Text>
+        <TouchableOpacity
+          style={[styles.macroCancelBtn, { borderColor: theme.border }]}
+          onPress={onClose}
+        >
+          <Text
+            style={[styles.macroCancelText, { color: theme.textSecondary }]}
+          >
+            Cancel
+          </Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.macroSaveBtn, { backgroundColor: Colors.primary }]} onPress={handleSave} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={[styles.macroSaveBtn, { backgroundColor: Colors.primary }]}
+          onPress={handleSave}
+          activeOpacity={0.8}
+        >
           <Text style={styles.macroSaveText}>Save</Text>
         </TouchableOpacity>
       </View>
@@ -1190,9 +1850,16 @@ function DietEditModal({ visible, onClose, profile, updateProfileField }: Profil
   );
 }
 
-function EquipmentEditModal({ visible, onClose, profile, updateProfileField }: ProfileEditModalProps) {
+function EquipmentEditModal({
+  visible,
+  onClose,
+  profile,
+  updateProfileField,
+}: ProfileEditModalProps) {
   const { isDark, theme } = useTheme();
-  const [selected, setSelected] = useState<Equipment[]>(profile.equipment || []);
+  const [selected, setSelected] = useState<Equipment[]>(
+    profile.equipment || [],
+  );
 
   React.useEffect(() => {
     if (visible) {
@@ -1201,7 +1868,9 @@ function EquipmentEditModal({ visible, onClose, profile, updateProfileField }: P
   }, [visible]);
 
   const toggle = (eq: Equipment) => {
-    setSelected((prev) => (prev.includes(eq) ? prev.filter((e) => e !== eq) : [...prev, eq]));
+    setSelected((prev) =>
+      prev.includes(eq) ? prev.filter((e) => e !== eq) : [...prev, eq],
+    );
     Haptics.selectionAsync();
   };
 
@@ -1229,17 +1898,41 @@ function EquipmentEditModal({ visible, onClose, profile, updateProfileField }: P
               onPress={() => toggle(eq.value)}
               activeOpacity={0.8}
             >
-              {active && <Ionicons name="checkmark-circle" size={14} color={Colors.primary} />}
-              <Text style={[styles.optionChipText, { color: active ? Colors.primary : theme.text }]}>{eq.label}</Text>
+              {active && (
+                <Ionicons
+                  name="checkmark-circle"
+                  size={14}
+                  color={Colors.primary}
+                />
+              )}
+              <Text
+                style={[
+                  styles.optionChipText,
+                  { color: active ? Colors.primary : theme.text },
+                ]}
+              >
+                {eq.label}
+              </Text>
             </TouchableOpacity>
           );
         })}
       </View>
       <View style={styles.macroActions}>
-        <TouchableOpacity style={[styles.macroCancelBtn, { borderColor: theme.border }]} onPress={onClose}>
-          <Text style={[styles.macroCancelText, { color: theme.textSecondary }]}>Cancel</Text>
+        <TouchableOpacity
+          style={[styles.macroCancelBtn, { borderColor: theme.border }]}
+          onPress={onClose}
+        >
+          <Text
+            style={[styles.macroCancelText, { color: theme.textSecondary }]}
+          >
+            Cancel
+          </Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.macroSaveBtn, { backgroundColor: Colors.primary }]} onPress={handleSave} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={[styles.macroSaveBtn, { backgroundColor: Colors.primary }]}
+          onPress={handleSave}
+          activeOpacity={0.8}
+        >
           <Text style={styles.macroSaveText}>Save</Text>
         </TouchableOpacity>
       </View>
@@ -1247,7 +1940,12 @@ function EquipmentEditModal({ visible, onClose, profile, updateProfileField }: P
   );
 }
 
-function NameGenderEditModal({ visible, onClose, profile, updateProfileField }: ProfileEditModalProps) {
+function NameGenderEditModal({
+  visible,
+  onClose,
+  profile,
+  updateProfileField,
+}: ProfileEditModalProps) {
   const { isDark, theme } = useTheme();
   const [name, setName] = useState(profile.name || "");
 
@@ -1266,7 +1964,9 @@ function NameGenderEditModal({ visible, onClose, profile, updateProfileField }: 
   return (
     <ModalSheet visible={visible} onClose={onClose} title="Edit Name & Gender">
       <View style={{ gap: 6 }}>
-        <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>Name</Text>
+        <Text style={[styles.editSectionLabel, { color: theme.textSecondary }]}>
+          Name
+        </Text>
         <TextInput
           style={[
             styles.editTextInput,
@@ -1294,18 +1994,27 @@ function NameGenderEditModal({ visible, onClose, profile, updateProfileField }: 
         onSelect={(v: string) => updateProfileField("gender", v)}
       />
       <View style={styles.macroActions}>
-        <TouchableOpacity style={[styles.macroCancelBtn, { borderColor: theme.border }]} onPress={onClose}>
-          <Text style={[styles.macroCancelText, { color: theme.textSecondary }]}>Cancel</Text>
+        <TouchableOpacity
+          style={[styles.macroCancelBtn, { borderColor: theme.border }]}
+          onPress={onClose}
+        >
+          <Text
+            style={[styles.macroCancelText, { color: theme.textSecondary }]}
+          >
+            Cancel
+          </Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.macroSaveBtn, { backgroundColor: Colors.primary }]} onPress={handleSave} activeOpacity={0.8}>
+        <TouchableOpacity
+          style={[styles.macroSaveBtn, { backgroundColor: Colors.primary }]}
+          onPress={handleSave}
+          activeOpacity={0.8}
+        >
           <Text style={styles.macroSaveText}>Save</Text>
         </TouchableOpacity>
       </View>
     </ModalSheet>
   );
 }
-
-
 
 interface HealthSyncCardProps {
   icon: React.ComponentProps<typeof Ionicons>["name"];
@@ -1315,7 +2024,13 @@ interface HealthSyncCardProps {
   color: string;
 }
 
-function HealthSyncCard({ icon, label, connected, onToggle, color }: HealthSyncCardProps) {
+function HealthSyncCard({
+  icon,
+  label,
+  connected,
+  onToggle,
+  color,
+}: HealthSyncCardProps) {
   const { theme } = useTheme();
   return (
     <TouchableOpacity
@@ -1329,17 +2044,38 @@ function HealthSyncCard({ icon, label, connected, onToggle, color }: HealthSyncC
       onPress={onToggle}
       activeOpacity={0.7}
     >
-      <Ionicons name={icon} size={22} color={connected ? color : theme.textMuted} />
-      <Text style={[styles.healthCardLabel, { color: connected ? color : theme.textSecondary }]} numberOfLines={1}>
+      <Ionicons
+        name={icon}
+        size={22}
+        color={connected ? color : theme.textMuted}
+      />
+      <Text
+        style={[
+          styles.healthCardLabel,
+          { color: connected ? color : theme.textSecondary },
+        ]}
+        numberOfLines={1}
+      >
         {label}
       </Text>
-      <View style={[styles.healthCardStatus, { backgroundColor: connected ? color : theme.border }]}>
-        <Text style={[styles.healthCardStatusText, { color: connected ? "#FFF" : theme.textMuted }]}>{connected ? "On" : "Off"}</Text>
+      <View
+        style={[
+          styles.healthCardStatus,
+          { backgroundColor: connected ? color : theme.border },
+        ]}
+      >
+        <Text
+          style={[
+            styles.healthCardStatusText,
+            { color: connected ? "#FFF" : theme.textMuted },
+          ]}
+        >
+          {connected ? "On" : "Off"}
+        </Text>
       </View>
     </TouchableOpacity>
   );
 }
-
 
 const styles = StyleSheet.create({
   navRow: {

@@ -7,6 +7,7 @@ export type TelemetryEvent =
   | "paywall_viewed"
   | "workout_feedback_submitted"
   | "client_error"
+  | "cloud_sync_failed"
   | "account_exported"
   | "account_deleted";
 

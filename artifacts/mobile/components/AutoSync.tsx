@@ -1,81 +1,92 @@
 import { useEffect, useRef } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { useAuth } from "@/lib/auth";
-import { backupToCloud, restoreFromCloud, migrateLegacyFirebaseData } from "@/lib/cloudSync";
+import {
+  backupToCloud,
+  beginCloudSyncSession,
+  isCloudSyncConflictBlocked,
+  migrateLegacyFirebaseData,
+  restoreFromCloud,
+} from "@/lib/cloudSync";
+import { canUploadAfterRestore } from "@/lib/cloudSyncContract";
 import { emitDataRestored } from "@/lib/syncEvents";
+import { trackEvent } from "@/lib/telemetry";
 
 const AUTO_BACKUP_INTERVAL = 5 * 60 * 1000;
 const MIN_BACKUP_GAP = 30 * 1000;
 
+function reportAutomaticBackupFailure(
+  status: "conflict" | "offline" | "server",
+): void {
+  void trackEvent("cloud_sync_failed", { direction: "backup", status });
+}
+
 /**
- * Background cloud sync.
- *
- * Ordering on sign-in matters and is the whole point of the guards below:
- *
- *   1. Restore from the API (Postgres).
- *   2. If the server has nothing, try a one-time migration from the legacy
- *      Realtime Database so long-standing accounts are not stranded.
- *   3. Only once one of those has settled is uploading permitted.
- *
- * Step 3 is what the previous implementation got wrong. It cleared its
- * in-progress flag in a `finally`, including on failure, after which the next
- * backgrounding uploaded an empty device over a populated account using a
- * destructive whole-node write.
+ * Restores before allowing upload and keeps failures distinct from a confirmed
+ * empty account. Optimistic-concurrency conflicts pause automatic backup until
+ * the user restores or starts a new authenticated session.
  */
 export function AutoSync() {
   const { user, isAuthenticated } = useAuth();
 
-  const prevAuthRef = useRef(false);
+  const activeUserIdRef = useRef<string | null>(null);
   const backupTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const backupInFlightRef = useRef(false);
   const lastBackupRef = useRef(0);
   const sessionIdRef = useRef(0);
-
-  /**
-   * Uploading is blocked until a restore attempt has definitively completed
-   * for THIS signed-in session. Unlike the old flag, a failed restore leaves
-   * this false, so a network error can never open the door to an empty upload.
-   */
   const restoreSettledRef = useRef(false);
 
   useEffect(() => {
-    if (isAuthenticated && !prevAuthRef.current && user) {
+    const currentUserId = isAuthenticated && user ? user.id : null;
+
+    if (currentUserId && currentUserId !== activeUserIdRef.current) {
       const session = ++sessionIdRef.current;
+      activeUserIdRef.current = currentUserId;
       restoreSettledRef.current = false;
+      beginCloudSyncSession(currentUserId);
 
       void (async () => {
-        try {
-          const restored = await restoreFromCloud();
-          if (session !== sessionIdRef.current) return;
+        const outcome = await restoreFromCloud();
+        if (session !== sessionIdRef.current) return;
+        if (!canUploadAfterRestore(outcome)) return;
 
-          if (restored) {
-            emitDataRestored();
-            restoreSettledRef.current = true;
-            return;
-          }
-
-          // Server had nothing. Check the legacy store before concluding this
-          // is a genuinely new account.
-          const migrated = await migrateLegacyFirebaseData(user.id);
-          if (session !== sessionIdRef.current) return;
-
-          if (migrated) emitDataRestored();
-
-          // Reaching here means we know what the server holds, so local data
-          // is now safe to upload.
+        if (outcome.status === "restored") {
+          emitDataRestored();
           restoreSettledRef.current = true;
-        } catch {
-          // Deliberately leave restoreSettledRef false: we do not know what the
-          // server holds, so uploading could destroy it.
+          return;
+        }
+
+        // Legacy RTDB is consulted only after the API definitively confirms
+        // that this account has no Postgres snapshot.
+        const migration = await migrateLegacyFirebaseData(currentUserId);
+        if (session !== sessionIdRef.current) return;
+
+        if (migration.status === "empty") {
+          restoreSettledRef.current = true;
+          return;
+        }
+
+        if (migration.status === "migrated") {
+          emitDataRestored();
+          const backupStatus = migration.cloudBackup.status;
+          if (backupStatus === "saved") {
+            restoreSettledRef.current = true;
+          } else if (
+            backupStatus === "conflict" ||
+            backupStatus === "offline" ||
+            backupStatus === "server"
+          ) {
+            reportAutomaticBackupFailure(backupStatus);
+          }
         }
       })();
     }
 
-    if (!isAuthenticated && prevAuthRef.current) {
+    if (!currentUserId && activeUserIdRef.current) {
       sessionIdRef.current++;
+      activeUserIdRef.current = null;
       restoreSettledRef.current = false;
     }
-
-    prevAuthRef.current = isAuthenticated;
   }, [isAuthenticated, user]);
 
   useEffect(() => {
@@ -87,22 +98,44 @@ export function AutoSync() {
       return;
     }
 
-    const doBackup = () => {
-      if (!restoreSettledRef.current) return;
+    const userId = user.id;
+    const doBackup = async () => {
+      if (
+        !restoreSettledRef.current ||
+        backupInFlightRef.current ||
+        isCloudSyncConflictBlocked(userId)
+      ) {
+        return;
+      }
 
       const now = Date.now();
       if (now - lastBackupRef.current < MIN_BACKUP_GAP) return;
       lastBackupRef.current = now;
+      backupInFlightRef.current = true;
+      const session = sessionIdRef.current;
 
-      // backupToCloud independently refuses to upload an empty payload, so
-      // this is defence in depth rather than the only guard.
-      void backupToCloud();
+      try {
+        const outcome = await backupToCloud();
+        if (session !== sessionIdRef.current) return;
+        if (
+          outcome.status === "conflict" ||
+          outcome.status === "offline" ||
+          outcome.status === "server"
+        ) {
+          reportAutomaticBackupFailure(outcome.status);
+        }
+      } finally {
+        backupInFlightRef.current = false;
+      }
     };
 
-    backupTimerRef.current = setInterval(doBackup, AUTO_BACKUP_INTERVAL);
+    backupTimerRef.current = setInterval(
+      () => void doBackup(),
+      AUTO_BACKUP_INTERVAL,
+    );
 
     const sub = AppState.addEventListener("change", (next: AppStateStatus) => {
-      if (next === "background" || next === "inactive") doBackup();
+      if (next === "background" || next === "inactive") void doBackup();
     });
 
     return () => {
