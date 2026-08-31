@@ -54,6 +54,14 @@ const expectedApplicationTables = [
   "user_data",
   "users",
 ];
+const syncIntegrityColumns = [
+  "active_session",
+  "places",
+  "reminder_prefs",
+  "revision",
+  "water_goal",
+  "wellness_data",
+];
 const baselineMigrationUrl = new URL(
   "../../lib/db/migrations/0000_baseline.sql",
   import.meta.url,
@@ -127,6 +135,79 @@ async function applicationTables(pool) {
   return result.rows.map((row) => row.table_name);
 }
 
+async function provisionLegacySchema(pool, targetSchema = "public") {
+  const baselineSql = await readFile(baselineMigrationUrl, "utf8");
+  const scopedBaselineSql = baselineSql.replaceAll(
+    '"public".',
+    `${quotedIdentifier(targetSchema)}.`,
+  );
+  await pool.query(scopedBaselineSql);
+  await pool.query(`
+    ALTER TABLE user_data DROP CONSTRAINT user_data_revision_safe;
+    ALTER TABLE user_data
+      DROP COLUMN revision,
+      DROP COLUMN active_session,
+      DROP COLUMN wellness_data,
+      DROP COLUMN water_goal,
+      DROP COLUMN reminder_prefs,
+      DROP COLUMN places;
+  `);
+}
+
+async function assertNoMigrationRecords(pool) {
+  const migrationTable = await pool.query(
+    "SELECT to_regclass('public._elovia_schema_migrations')::text AS migration_table",
+  );
+  assert.equal(migrationTable.rows[0].migration_table, null);
+
+  const verifierSchemas = await pool.query(`
+    SELECT count(*)::integer AS verifier_count
+    FROM pg_namespace
+    WHERE nspname LIKE '\\_elovia\\_verify\\_%' ESCAPE '\\'
+  `);
+  assert.equal(verifierSchemas.rows[0].verifier_count, 0);
+}
+
+async function existingSyncIntegrityColumns(pool) {
+  const result = await pool.query(
+    `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'user_data'
+        AND column_name = ANY($1::text[])
+      ORDER BY column_name
+    `,
+    [syncIntegrityColumns],
+  );
+  return result.rows.map((row) => row.column_name);
+}
+
+async function assertAdoptionRefused({ mutate, verify }) {
+  await withTemporaryDatabase(async (databaseUrl) => {
+    const setupPool = new Pool({ connectionString: databaseUrl });
+    try {
+      await provisionLegacySchema(setupPool);
+      await mutate(setupPool);
+    } finally {
+      await setupPool.end();
+    }
+
+    await assert.rejects(
+      runMigrations(databaseUrl),
+      /cannot adopt 0000_baseline\.sql/i,
+    );
+
+    const verificationPool = new Pool({ connectionString: databaseUrl });
+    try {
+      await assertNoMigrationRecords(verificationPool);
+      await verify(verificationPool);
+    } finally {
+      await verificationPool.end();
+    }
+  });
+}
+
 async function withTimeout(promise, message, timeoutMs = 1_000) {
   let timeoutId;
   const timeout = new Promise((_, reject) => {
@@ -156,22 +237,7 @@ if (testDatabaseUrl) {
 
     const databaseUrl = scopedDatabaseUrl(testDatabaseUrl);
     scopedPool = new Pool({ connectionString: databaseUrl });
-    const baselineSql = await readFile(baselineMigrationUrl, "utf8");
-    const scopedBaselineSql = baselineSql.replaceAll(
-      '"public".',
-      `${quotedIdentifier(schemaName)}.`,
-    );
-    await scopedPool.query(scopedBaselineSql);
-    await scopedPool.query(`
-      ALTER TABLE user_data DROP CONSTRAINT user_data_revision_safe;
-      ALTER TABLE user_data
-        DROP COLUMN revision,
-        DROP COLUMN active_session,
-        DROP COLUMN wellness_data,
-        DROP COLUMN water_goal,
-        DROP COLUMN reminder_prefs,
-        DROP COLUMN places;
-    `);
+    await provisionLegacySchema(scopedPool, schemaName);
 
     ({ runMigrations } = await import("../../lib/db/scripts/migrate.mjs"));
     await runMigrations(databaseUrl);
@@ -373,6 +439,128 @@ integrationTest(
     } finally {
       await rm(migrationsDirectory, { recursive: true, force: true });
     }
+  },
+);
+
+integrationTest(
+  "baseline adoption rejects a sync column with wrong type, nullability, and default",
+  async () => {
+    await assertAdoptionRefused({
+      mutate: (pool) =>
+        pool.query(
+          "ALTER TABLE user_data ADD COLUMN revision integer DEFAULT 2",
+        ),
+      verify: async (pool) => {
+        const column = await pool.query(`
+          SELECT data_type, is_nullable, column_default
+          FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'user_data'
+            AND column_name = 'revision'
+        `);
+        assert.deepEqual(column.rows[0], {
+          data_type: "integer",
+          is_nullable: "YES",
+          column_default: "2",
+        });
+        assert.deepEqual(await existingSyncIntegrityColumns(pool), [
+          "revision",
+        ]);
+      },
+    });
+  },
+);
+
+integrationTest(
+  "baseline adoption rejects a same-named but incompatible revision check",
+  async () => {
+    await assertAdoptionRefused({
+      mutate: (pool) =>
+        pool.query(`
+          ALTER TABLE user_data ADD COLUMN revision bigint NOT NULL DEFAULT 1;
+          ALTER TABLE user_data
+            ADD CONSTRAINT user_data_revision_safe
+            CHECK (revision >= 0 AND revision <= 9007199254740991);
+        `),
+      verify: async (pool) => {
+        const constraint = await pool.query(`
+          SELECT pg_get_constraintdef(oid, true) AS definition
+          FROM pg_constraint
+          WHERE conname = 'user_data_revision_safe'
+            AND conrelid = 'public.user_data'::regclass
+        `);
+        assert.match(constraint.rows[0].definition, /revision >= 0/);
+        assert.deepEqual(await existingSyncIntegrityColumns(pool), [
+          "revision",
+        ]);
+      },
+    });
+  },
+);
+
+integrationTest(
+  "baseline adoption rejects an index with the right name and wrong key",
+  async () => {
+    await assertAdoptionRefused({
+      mutate: (pool) =>
+        pool.query(`
+          DROP INDEX "IDX_ai_usage_day";
+          CREATE INDEX "IDX_ai_usage_day" ON ai_usage (provider);
+        `),
+      verify: async (pool) => {
+        const index = await pool.query(`
+          SELECT indexdef
+          FROM pg_indexes
+          WHERE schemaname = 'public'
+            AND indexname = 'IDX_ai_usage_day'
+        `);
+        assert.match(index.rows[0].indexdef, /\(provider\)/);
+        assert.deepEqual(await existingSyncIntegrityColumns(pool), []);
+      },
+    });
+  },
+);
+
+integrationTest(
+  "baseline adoption rejects a primary key with incompatible column order",
+  async () => {
+    await assertAdoptionRefused({
+      mutate: (pool) =>
+        pool.query(`
+          ALTER TABLE ai_usage DROP CONSTRAINT ai_usage_pkey;
+          ALTER TABLE ai_usage
+            ADD CONSTRAINT ai_usage_pkey PRIMARY KEY (user_id, id);
+        `),
+      verify: async (pool) => {
+        const primaryKey = await pool.query(`
+          SELECT pg_get_constraintdef(oid, true) AS definition
+          FROM pg_constraint
+          WHERE conname = 'ai_usage_pkey'
+            AND conrelid = 'public.ai_usage'::regclass
+        `);
+        assert.equal(
+          primaryKey.rows[0].definition,
+          "PRIMARY KEY (user_id, id)",
+        );
+        assert.deepEqual(await existingSyncIntegrityColumns(pool), []);
+      },
+    });
+  },
+);
+
+integrationTest(
+  "baseline adoption rejects a missing required table without partial migration state",
+  async () => {
+    await assertAdoptionRefused({
+      mutate: (pool) => pool.query("DROP TABLE supplements CASCADE"),
+      verify: async (pool) => {
+        const missingTable = await pool.query(
+          "SELECT to_regclass('public.supplements')::text AS table_name",
+        );
+        assert.equal(missingTable.rows[0].table_name, null);
+        assert.deepEqual(await existingSyncIntegrityColumns(pool), []);
+      },
+    });
   },
 );
 
