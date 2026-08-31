@@ -14,6 +14,10 @@ export type SaveUserDataResult =
   | { kind: "saved"; revision: number }
   | { kind: "conflict"; currentRevision: number | null };
 
+export type SaveUserDataHooks = {
+  afterRevisionRead?: () => void | Promise<void>;
+};
+
 export class SyncRevisionLimitError extends Error {
   readonly currentRevision: number;
 
@@ -57,6 +61,7 @@ export async function saveUserData(
   database: UserDataDatabase,
   userId: string,
   input: UserDataWrite,
+  hooks: SaveUserDataHooks = {},
 ): Promise<SaveUserDataResult> {
   const patch = buildUserDataPatch(input);
 
@@ -71,6 +76,8 @@ export async function saveUserData(
       if (currentRevision !== null) {
         assertSafeRevision(currentRevision);
       }
+
+      await hooks.afterRevisionRead?.();
 
       if (!revisionMatches(currentRevision, input.baseRevision)) {
         return { kind: "conflict", currentRevision };

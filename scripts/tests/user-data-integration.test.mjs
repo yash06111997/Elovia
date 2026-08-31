@@ -63,6 +63,19 @@ function scopedDatabaseUrl(databaseUrl) {
   return url.toString();
 }
 
+async function withTimeout(promise, message, timeoutMs = 1_000) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 if (testDatabaseUrl) {
   before(async () => {
     const databaseName = new URL(testDatabaseUrl).pathname.slice(1);
@@ -313,6 +326,59 @@ integrationTest(
       results.find((result) => result.kind === "conflict").currentRevision,
       2,
     );
+  },
+);
+
+integrationTest(
+  "deletion after the revision read reports a null current revision",
+  async () => {
+    await scopedPool.query("INSERT INTO users (id) VALUES ('deleted-user')");
+    await saveUserData(db, "deleted-user", {
+      baseRevision: null,
+      appState: { initial: true },
+    });
+
+    let notifyRevisionRead;
+    let resumeUpdate;
+    const revisionRead = new Promise((resolve) => {
+      notifyRevisionRead = resolve;
+    });
+    const updateMayResume = new Promise((resolve) => {
+      resumeUpdate = resolve;
+    });
+
+    const save = saveUserData(
+      db,
+      "deleted-user",
+      { baseRevision: 1, sessions: [{ id: "never-written" }] },
+      {
+        afterRevisionRead: async () => {
+          notifyRevisionRead();
+          await updateMayResume;
+        },
+      },
+    );
+
+    await withTimeout(
+      revisionRead,
+      "saveUserData did not expose its deterministic post-read test hook",
+    );
+    try {
+      await scopedPool.query(
+        "DELETE FROM user_data WHERE user_id = 'deleted-user'",
+      );
+    } finally {
+      resumeUpdate();
+    }
+
+    assert.deepEqual(await save, {
+      kind: "conflict",
+      currentRevision: null,
+    });
+    const remaining = await scopedPool.query(
+      "SELECT revision FROM user_data WHERE user_id = 'deleted-user'",
+    );
+    assert.equal(remaining.rowCount, 0);
   },
 );
 
