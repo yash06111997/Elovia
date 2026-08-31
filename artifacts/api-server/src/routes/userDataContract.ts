@@ -21,9 +21,11 @@ export const USER_DATA_FIELDS = [
   "places",
 ] as const;
 
+export type UserDataField = (typeof USER_DATA_FIELDS)[number];
+
 const synchronizedFields = Object.fromEntries(
   USER_DATA_FIELDS.map((field) => [field, z.unknown().optional()]),
-) as Record<(typeof USER_DATA_FIELDS)[number], z.ZodOptional<z.ZodUnknown>>;
+) as Record<UserDataField, z.ZodOptional<z.ZodUnknown>>;
 
 const userDataWriteSchema = z
   .object({
@@ -31,25 +33,51 @@ const userDataWriteSchema = z
     ...synchronizedFields,
   })
   .strict()
-  .refine(
-    (value) => USER_DATA_FIELDS.some((field) => Object.hasOwn(value, field)),
-    "At least one synchronized field is required",
-  );
+  .superRefine((value, context) => {
+    let hasSynchronizedField = false;
+
+    for (const field of USER_DATA_FIELDS) {
+      if (!Object.hasOwn(value, field)) {
+        continue;
+      }
+
+      hasSynchronizedField = true;
+      if (value[field] === undefined) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Synchronized fields cannot be undefined",
+          path: [field],
+        });
+      }
+    }
+
+    if (!hasSynchronizedField) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "At least one synchronized field is required",
+      });
+    }
+  });
 
 export type UserDataWrite = z.infer<typeof userDataWriteSchema>;
 
 export function parseUserDataWrite(input: unknown): UserDataWrite {
-  return userDataWriteSchema.parse(input);
+  const ownInput =
+    input !== null && typeof input === "object" && !Array.isArray(input)
+      ? Object.fromEntries(Object.entries(input))
+      : input;
+
+  return userDataWriteSchema.parse(ownInput);
 }
 
 export function buildUserDataPatch(
   input: UserDataWrite,
-): Record<string, unknown> {
+): Partial<Record<UserDataField, unknown>> {
   return Object.fromEntries(
     USER_DATA_FIELDS.filter((field) => Object.hasOwn(input, field)).map(
       (field) => [field, input[field]],
     ),
-  );
+  ) as Partial<Record<UserDataField, unknown>>;
 }
 
 export function revisionMatches(

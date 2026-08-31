@@ -34,12 +34,49 @@ test("sync writes expose the complete synchronized field list", () => {
 });
 
 test("sync writes reject unknown fields and require a base revision", () => {
-  assert.throws(() => parseUserDataWrite({ appState: {}, unexpected: true }));
+  assert.throws(() =>
+    parseUserDataWrite({
+      baseRevision: null,
+      appState: {},
+      unexpected: true,
+    }),
+  );
   assert.throws(() => parseUserDataWrite({ appState: {} }));
+});
+
+test("sync writes do not accept prototype-inherited contract fields", () => {
+  const inheritedRevision = Object.create({ baseRevision: 7 });
+  inheritedRevision.appState = { onboardingCompleted: true };
+
+  assert.throws(() =>
+    buildUserDataPatch(parseUserDataWrite(inheritedRevision)),
+  );
+
+  const inheritedSnapshotField = Object.create({
+    healthData: { steps: 1_000 },
+  });
+  inheritedSnapshotField.baseRevision = 7;
+
+  assert.throws(() =>
+    buildUserDataPatch(parseUserDataWrite(inheritedSnapshotField)),
+  );
 });
 
 test("sync writes require at least one own-present synchronized field", () => {
   assert.throws(() => parseUserDataWrite({ baseRevision: null }));
+});
+
+test("sync writes reject explicit undefined synchronized values", () => {
+  assert.throws(() =>
+    parseUserDataWrite({ baseRevision: null, appState: undefined }),
+  );
+  assert.throws(() =>
+    parseUserDataWrite({
+      baseRevision: null,
+      appState: undefined,
+      sessions: [],
+    }),
+  );
 });
 
 test("sync writes reject invalid revisions without coercing them", () => {
