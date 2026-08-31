@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -32,6 +35,29 @@ const expectedUserDataFields = [
   "reminderPrefs",
   "places",
 ];
+const expectedApplicationTables = [
+  "activity_comments",
+  "ai_usage",
+  "challenge_participants",
+  "challenges",
+  "coach_availability",
+  "coach_profiles",
+  "coaching_sessions",
+  "friendships",
+  "kudos",
+  "push_tokens",
+  "sessions",
+  "shared_activities",
+  "social_profiles",
+  "subscriptions",
+  "supplements",
+  "user_data",
+  "users",
+];
+const baselineMigrationUrl = new URL(
+  "../../lib/db/migrations/0000_baseline.sql",
+  import.meta.url,
+);
 const requireFromDatabasePackage = createRequire(
   new URL("../../lib/db/package.json", import.meta.url),
 );
@@ -43,6 +69,7 @@ const requireFromApiPackage = createRequire(
 );
 
 let adminPool;
+let Pool;
 let scopedPool;
 let workspacePool;
 let db;
@@ -52,6 +79,7 @@ let runMigrations;
 let unregisterTsx;
 let routeServer;
 let routeBaseUrl;
+let temporaryDatabaseCounter = 0;
 
 function quotedIdentifier(identifier) {
   return `"${identifier.replaceAll('"', '""')}"`;
@@ -61,6 +89,42 @@ function scopedDatabaseUrl(databaseUrl) {
   const url = new URL(databaseUrl);
   url.searchParams.set("options", `-c search_path=${schemaName}`);
   return url.toString();
+}
+
+function databaseUrlFor(databaseUrl, databaseName) {
+  const url = new URL(databaseUrl);
+  url.pathname = `/${databaseName}`;
+  url.searchParams.delete("options");
+  return url.toString();
+}
+
+async function withTemporaryDatabase(callback) {
+  temporaryDatabaseCounter += 1;
+  const databaseName = `elovia_migration_test_${process.pid}_${temporaryDatabaseCounter}`;
+  assert.match(databaseName, /^elovia_migration_test_[0-9_]+$/);
+
+  await adminPool.query(`CREATE DATABASE ${quotedIdentifier(databaseName)}`);
+  try {
+    return await callback(databaseUrlFor(testDatabaseUrl, databaseName));
+  } finally {
+    await adminPool.query(
+      "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+      [databaseName],
+    );
+    await adminPool.query(`DROP DATABASE ${quotedIdentifier(databaseName)}`);
+  }
+}
+
+async function applicationTables(pool) {
+  const result = await pool.query(`
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_type = 'BASE TABLE'
+      AND table_name <> '_elovia_schema_migrations'
+    ORDER BY table_name
+  `);
+  return result.rows.map((row) => row.table_name);
 }
 
 async function withTimeout(promise, message, timeoutMs = 1_000) {
@@ -86,39 +150,27 @@ if (testDatabaseUrl) {
     );
 
     const pg = requireFromDatabasePackage("pg");
-    const { Pool } = pg;
+    ({ Pool } = pg);
     adminPool = new Pool({ connectionString: testDatabaseUrl });
     await adminPool.query(`CREATE SCHEMA ${quotedIdentifier(schemaName)}`);
 
     const databaseUrl = scopedDatabaseUrl(testDatabaseUrl);
     scopedPool = new Pool({ connectionString: databaseUrl });
+    const baselineSql = await readFile(baselineMigrationUrl, "utf8");
+    const scopedBaselineSql = baselineSql.replaceAll(
+      '"public".',
+      `${quotedIdentifier(schemaName)}.`,
+    );
+    await scopedPool.query(scopedBaselineSql);
     await scopedPool.query(`
-      CREATE TABLE users (
-        id varchar PRIMARY KEY,
-        email varchar UNIQUE,
-        first_name varchar,
-        last_name varchar,
-        profile_image_url varchar,
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now()
-      );
-      CREATE TABLE user_data (
-        user_id varchar PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-        app_state jsonb,
-        workout_plan jsonb,
-        custom_plans jsonb,
-        active_plan_type varchar,
-        active_custom_plan_id varchar,
-        sessions jsonb,
-        personal_records jsonb,
-        meal_plan jsonb,
-        food_log jsonb,
-        custom_meal_plans jsonb,
-        active_meal_plan_type varchar,
-        active_custom_meal_plan_id varchar,
-        health_data jsonb,
-        updated_at timestamptz NOT NULL DEFAULT now()
-      );
+      ALTER TABLE user_data DROP CONSTRAINT user_data_revision_safe;
+      ALTER TABLE user_data
+        DROP COLUMN revision,
+        DROP COLUMN active_session,
+        DROP COLUMN wellness_data,
+        DROP COLUMN water_goal,
+        DROP COLUMN reminder_prefs,
+        DROP COLUMN places;
     `);
 
     ({ runMigrations } = await import("../../lib/db/scripts/migrate.mjs"));
@@ -172,6 +224,157 @@ if (testDatabaseUrl) {
     await adminPool?.end();
   });
 }
+
+integrationTest(
+  "a blank database bootstraps the complete generated schema",
+  async () => {
+    await withTemporaryDatabase(async (databaseUrl) => {
+      assert.deepEqual(await runMigrations(databaseUrl), [
+        "0000_baseline.sql",
+        "0001_user_data_sync_integrity.sql",
+      ]);
+
+      const pool = new Pool({ connectionString: databaseUrl });
+      try {
+        assert.deepEqual(
+          await applicationTables(pool),
+          expectedApplicationTables,
+        );
+        const applied = await pool.query(`
+          SELECT name, count(*)::integer AS application_count
+          FROM _elovia_schema_migrations
+          GROUP BY name
+          ORDER BY name
+        `);
+        assert.deepEqual(applied.rows, [
+          { name: "0000_baseline.sql", application_count: 1 },
+          {
+            name: "0001_user_data_sync_integrity.sql",
+            application_count: 1,
+          },
+        ]);
+        await pool.query(`
+          INSERT INTO users (id) VALUES ('bootstrap-ready-user');
+          INSERT INTO user_data (user_id) VALUES ('bootstrap-ready-user');
+        `);
+        const ready = await pool.query(
+          "SELECT revision FROM user_data WHERE user_id = 'bootstrap-ready-user'",
+        );
+        assert.equal(ready.rows[0].revision, "1");
+      } finally {
+        await pool.end();
+      }
+    });
+  },
+);
+
+integrationTest(
+  "concurrent migration runners serialize every version exactly once",
+  async () => {
+    await withTemporaryDatabase(async (databaseUrl) => {
+      const results = await Promise.all([
+        runMigrations(databaseUrl),
+        runMigrations(databaseUrl),
+      ]);
+      assert.deepEqual(results.flat().sort(), [
+        "0000_baseline.sql",
+        "0001_user_data_sync_integrity.sql",
+      ]);
+
+      const pool = new Pool({ connectionString: databaseUrl });
+      try {
+        const applied = await pool.query(`
+          SELECT name, count(*)::integer AS application_count
+          FROM _elovia_schema_migrations
+          GROUP BY name
+          ORDER BY name
+        `);
+        assert.deepEqual(applied.rows, [
+          { name: "0000_baseline.sql", application_count: 1 },
+          {
+            name: "0001_user_data_sync_integrity.sql",
+            application_count: 1,
+          },
+        ]);
+      } finally {
+        await pool.end();
+      }
+    });
+  },
+);
+
+integrationTest(
+  "line-ending normalization tolerates CRLF but rejects checksum tampering atomically",
+  async () => {
+    const migrationsDirectory = await mkdtemp(
+      join(tmpdir(), "elovia-migrations-"),
+    );
+    const migrationNames = [
+      "0000_baseline.sql",
+      "0001_user_data_sync_integrity.sql",
+    ];
+
+    try {
+      for (const name of migrationNames) {
+        const source = await readFile(
+          new URL(name, baselineMigrationUrl),
+          "utf8",
+        );
+        await writeFile(
+          join(migrationsDirectory, name),
+          source.replace(/\r\n?|\n/g, "\r\n"),
+          "utf8",
+        );
+      }
+
+      await withTemporaryDatabase(async (databaseUrl) => {
+        await runMigrations(databaseUrl);
+        assert.deepEqual(
+          await runMigrations(databaseUrl, { migrationsDirectory }),
+          [],
+        );
+
+        const changedMigration = join(
+          migrationsDirectory,
+          "0001_user_data_sync_integrity.sql",
+        );
+        await writeFile(
+          changedMigration,
+          `${await readFile(changedMigration, "utf8")}\r\n-- checksum tampering\r\n`,
+          "utf8",
+        );
+        await writeFile(
+          join(migrationsDirectory, "0000z_partial_state.sql"),
+          'CREATE TABLE "migration_partial_state" ("id" integer PRIMARY KEY);\r\n',
+          "utf8",
+        );
+
+        await assert.rejects(
+          runMigrations(databaseUrl, { migrationsDirectory }),
+          /modified after it was applied/i,
+        );
+
+        const pool = new Pool({ connectionString: databaseUrl });
+        try {
+          const state = await pool.query(`
+            SELECT
+              to_regclass('public.migration_partial_state') AS partial_table,
+              count(*)::integer AS migration_count
+            FROM _elovia_schema_migrations
+          `);
+          assert.deepEqual(state.rows[0], {
+            partial_table: null,
+            migration_count: 2,
+          });
+        } finally {
+          await pool.end();
+        }
+      });
+    } finally {
+      await rm(migrationsDirectory, { recursive: true, force: true });
+    }
+  },
+);
 
 integrationTest(
   "the HTTP contract accepts string/null identifiers and rejects objects/numbers",
@@ -250,8 +453,31 @@ integrationTest(
 );
 
 integrationTest(
-  "old user-data schemas gain every sync-integrity column",
+  "a pre-provisioned schema adopts the baseline and gains sync columns",
   async () => {
+    const tables = await scopedPool.query(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = current_schema()
+        AND table_type = 'BASE TABLE'
+        AND table_name <> '_elovia_schema_migrations'
+      ORDER BY table_name
+    `);
+    assert.deepEqual(
+      tables.rows.map((row) => row.table_name),
+      expectedApplicationTables,
+    );
+
+    const applied = await scopedPool.query(`
+      SELECT name
+      FROM _elovia_schema_migrations
+      ORDER BY name
+    `);
+    assert.deepEqual(
+      applied.rows.map((row) => row.name),
+      ["0000_baseline.sql", "0001_user_data_sync_integrity.sql"],
+    );
+
     const result = await scopedPool.query(`
     SELECT column_name, data_type
     FROM information_schema.columns

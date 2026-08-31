@@ -215,7 +215,8 @@ test("production startup runs ordered migrations and CI exercises PostgreSQL int
     apiPackage,
     railwayConfig,
     migrationRunner,
-    migrationSql,
+    baselineSql,
+    syncMigrationSql,
     errorHandler,
     ci,
   ] = await Promise.all([
@@ -227,6 +228,10 @@ test("production startup runs ordered migrations and CI exercises PostgreSQL int
     readFile(new URL("../../railway.json", import.meta.url), "utf8"),
     readFile(
       new URL("../../lib/db/scripts/migrate.mjs", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../../lib/db/migrations/0000_baseline.sql", import.meta.url),
       "utf8",
     ),
     readFile(
@@ -270,7 +275,11 @@ test("production startup runs ordered migrations and CI exercises PostgreSQL int
   assert.match(migrationRunner, /BEGIN/);
   assert.match(migrationRunner, /COMMIT/);
   assert.match(migrationRunner, /pg_advisory_xact_lock/);
-  assert.match(migrationSql, /"revision" bigint/);
+  assert.match(migrationRunner, /replace\(\/\\r\\n\?\/g,\s*["']\\n["']\)/);
+  assert.match(migrationRunner, /verifyBaselineAdoption/);
+  assert.equal((baselineSql.match(/CREATE TABLE /g) ?? []).length, 17);
+  assert.match(baselineSql, /CREATE TABLE "coaching_sessions"/);
+  assert.match(syncMigrationSql, /"revision" bigint/);
   assert.match(errorHandler, /VALIDATION_ERROR/);
   assert.match(errorHandler, /PAYLOAD_TOO_LARGE/);
   assert.match(ci, /services:\s*[\s\S]*postgres:/);
