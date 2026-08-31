@@ -268,6 +268,13 @@ export default function ProfileScreen() {
           Alert.alert("Sign-in required", "Sign in again before restoring your older data.");
           return;
         }
+        if (migration.status === "offline") {
+          Alert.alert(
+            "You're offline",
+            "Connect to the internet before checking your older backup.",
+          );
+          return;
+        }
         if (migration.status === "server") {
           Alert.alert("Legacy restore unavailable", "Elovia could not check your older backup right now.");
           return;

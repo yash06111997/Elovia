@@ -23,10 +23,11 @@ import { trackEvent } from "@/lib/telemetry";
 const AUTO_BACKUP_INTERVAL = 5 * 60 * 1000;
 const MIN_BACKUP_GAP = 30 * 1000;
 
-function reportAutomaticBackupFailure(
+function reportAutomaticSyncFailure(
+  direction: "backup" | "restore",
   status: "conflict" | "offline" | "server",
 ): void {
-  void trackEvent("cloud_sync_failed", { direction: "backup", status });
+  void trackEvent("cloud_sync_failed", { direction, status });
 }
 
 /**
@@ -39,7 +40,7 @@ export function AutoSync() {
 
   const activeSessionRef = useRef<CloudSyncSessionToken | null>(null);
   const backupTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const backupInFlightRef = useRef(false);
+  const backupInFlightRef = useRef(new WeakSet<CloudSyncSessionToken>());
   const lastBackupRef = useRef(0);
   const sessionIdRef = useRef(0);
   const restoreSettledRef = useRef(false);
@@ -53,7 +54,7 @@ export function AutoSync() {
       activeSessionRef.current !== sessionToken ||
       !isCloudSyncSessionCurrent(sessionToken) ||
       !restoreSettledRef.current ||
-      backupInFlightRef.current ||
+      backupInFlightRef.current.has(sessionToken) ||
       isCloudSyncConflictBlocked(userId)
     ) {
       return;
@@ -64,7 +65,7 @@ export function AutoSync() {
       return;
     }
     lastBackupRef.current = now;
-    backupInFlightRef.current = true;
+    backupInFlightRef.current.add(sessionToken);
     const session = sessionIdRef.current;
 
     try {
@@ -81,10 +82,10 @@ export function AutoSync() {
         outcome.status === "offline" ||
         outcome.status === "server"
       ) {
-        reportAutomaticBackupFailure(outcome.status);
+        reportAutomaticSyncFailure("backup", outcome.status);
       }
     } finally {
-      backupInFlightRef.current = false;
+      backupInFlightRef.current.delete(sessionToken);
     }
   };
 
@@ -135,6 +136,11 @@ export function AutoSync() {
         const migration = await migrateLegacyFirebaseData(sessionToken);
         if (!(await sessionIsCurrent())) return;
 
+        if (migration.status === "offline" || migration.status === "server") {
+          reportAutomaticSyncFailure("restore", migration.status);
+          return;
+        }
+
         if (migration.status === "empty") {
           restoreSettledRef.current = true;
           return;
@@ -151,7 +157,7 @@ export function AutoSync() {
             backupStatus === "offline" ||
             backupStatus === "server"
           ) {
-            reportAutomaticBackupFailure(backupStatus);
+            reportAutomaticSyncFailure("backup", backupStatus);
           }
         }
       })();

@@ -26,11 +26,17 @@ import {
 } from "./cloudSyncStorage";
 import { createCloudSyncNetworkOrchestrator } from "./cloudSyncOrchestrator";
 import {
+  shouldFinalizeLegacyMigration,
+  type LegacySnapshotOutcome,
+} from "./legacySnapshot";
+import {
   beginCloudSyncSession as beginSessionToken,
+  cloudSyncFetch,
   cloudSyncSessionGeneration,
   cloudSyncSessionUid,
   endCloudSyncSession,
   getCurrentCloudSyncSession,
+  isCloudSyncDeadlineError,
   isCloudSyncSessionCurrent,
   type CloudSyncSessionToken,
 } from "./cloudSyncSession";
@@ -101,6 +107,7 @@ export type LocalSyncOwnerOutcome =
 export type LegacyMigrationOutcome =
   | { status: "migrated"; cloudBackup: BackupOutcome }
   | { status: "empty" }
+  | { status: "offline" }
   | { status: "unauthorized" }
   | { status: "server" };
 
@@ -155,6 +162,46 @@ function currentUserForSession(
 const networkOrchestrator = createCloudSyncNetworkOrchestrator(
   sessionMatchesFirebase,
 );
+
+function classifyNetworkFailure(
+  error: unknown,
+  sessionToken: CloudSyncSessionToken,
+): "offline" | "unauthorized" {
+  return isCloudSyncDeadlineError(error, "session") ||
+    !isCloudSyncSessionCurrent(sessionToken)
+    ? "unauthorized"
+    : "offline";
+}
+
+interface BufferedCloudResponse {
+  status: number;
+  ok: boolean;
+  body: unknown;
+  bodyFailure?: "offline" | "server";
+}
+
+async function bufferCloudResponse(
+  response: Response,
+  shouldReadBody: boolean,
+): Promise<BufferedCloudResponse> {
+  if (!shouldReadBody) {
+    return { status: response.status, ok: response.ok, body: null };
+  }
+  try {
+    return {
+      status: response.status,
+      ok: response.ok,
+      body: await response.json(),
+    };
+  } catch (error) {
+    return {
+      status: response.status,
+      ok: response.ok,
+      body: null,
+      bodyFailure: classifyResponseBodyFailure(error),
+    };
+  }
+}
 
 function sessionStorageGeneration(sessionToken: CloudSyncSessionToken): string {
   return `cloud-generation-${cloudSyncSessionGeneration(sessionToken)}`;
@@ -319,30 +366,32 @@ async function backupToCloudUnlocked(
     guardedResponse = await networkOrchestrator.execute(
       sessionToken,
       () =>
-        fetch(`${getBaseUrl()}/api/user-data`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${identity.token}`,
+        cloudSyncFetch(
+          sessionToken,
+          `${getBaseUrl()}/api/user-data`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${identity.token}`,
+            },
+            body: requestBody,
           },
-          body: requestBody,
-        }),
+          (response) =>
+            bufferCloudResponse(
+              response,
+              response.ok || response.status === 409,
+            ),
+        ),
       async (response) => response,
     );
-  } catch {
-    return { status: "offline" };
+  } catch (error) {
+    return { status: classifyNetworkFailure(error, sessionToken) };
   }
   if (guardedResponse.status === "stale") return { status: "unauthorized" };
   const response = guardedResponse.value;
-
-  let body: unknown = null;
-  if (response.ok || response.status === 409) {
-    try {
-      body = await response.json();
-    } catch (error) {
-      return { status: classifyResponseBodyFailure(error) };
-    }
-  }
+  if (response.bodyFailure) return { status: response.bodyFailure };
+  const body = response.body;
   if (!(await sessionMatchesFirebase(sessionToken))) {
     return { status: "unauthorized" };
   }
@@ -434,13 +483,18 @@ async function restoreFromCloudUnlocked(
     guardedResponse = await networkOrchestrator.execute(
       sessionToken,
       () =>
-        fetch(`${getBaseUrl()}/api/user-data`, {
-          headers: { Authorization: `Bearer ${identity.token}` },
-        }),
+        cloudSyncFetch(
+          sessionToken,
+          `${getBaseUrl()}/api/user-data`,
+          {
+            headers: { Authorization: `Bearer ${identity.token}` },
+          },
+          (response) => bufferCloudResponse(response, response.ok),
+        ),
       async (response) => response,
     );
-  } catch {
-    return { status: "offline" };
+  } catch (error) {
+    return { status: classifyNetworkFailure(error, sessionToken) };
   }
   if (guardedResponse.status === "stale") return { status: "unauthorized" };
   const response = guardedResponse.value;
@@ -450,12 +504,8 @@ async function restoreFromCloudUnlocked(
   }
   if (!response.ok) return { status: "server" };
 
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch (error) {
-    return { status: classifyResponseBodyFailure(error) };
-  }
+  if (response.bodyFailure) return { status: response.bodyFailure };
+  const body = response.body;
   if (!(await sessionMatchesFirebase(sessionToken))) {
     return { status: "unauthorized" };
   }
@@ -598,30 +648,33 @@ async function resetCurrentAccountDataUnlocked(
     guardedResponse = await networkOrchestrator.execute(
       sessionToken,
       () =>
-        fetch(`${getBaseUrl()}/api/user-data`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
+        cloudSyncFetch(
+          sessionToken,
+          `${getBaseUrl()}/api/user-data`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: requestBody,
           },
-          body: requestBody,
-        }),
+          (response) =>
+            bufferCloudResponse(
+              response,
+              response.ok || response.status === 409,
+            ),
+        ),
       async (response) => response,
     );
-  } catch {
-    return { status: "offline" };
+  } catch (error) {
+    return { status: classifyNetworkFailure(error, sessionToken) };
   }
   if (guardedResponse.status === "stale") return { status: "unauthorized" };
   const response = guardedResponse.value;
 
-  let body: unknown = null;
-  if (response.ok || response.status === 409) {
-    try {
-      body = await response.json();
-    } catch (error) {
-      return { status: classifyResponseBodyFailure(error) };
-    }
-  }
+  if (response.bodyFailure) return { status: response.bodyFailure };
+  const body = response.body;
   if (!(await sessionMatchesFirebase(sessionToken))) {
     return { status: "unauthorized" };
   }
@@ -689,6 +742,7 @@ async function migrateLegacyFirebaseDataUnlocked(
   if (owner.status === "server") return { status: "server" };
 
   const migrationKey = `${MIGRATION_FLAG}:${encodeURIComponent(expectedUserId)}`;
+  let legacyStatus: LegacySnapshotOutcome["status"] = "unavailable";
   try {
     const flag = await syncStorage.readOwned(expectedUserId, currentUser, [
       migrationKey,
@@ -698,12 +752,19 @@ async function migrateLegacyFirebaseDataUnlocked(
 
     // Network I/O deliberately happens outside the storage coordinator mutex.
     const { fetchLegacySnapshot } = await import("./firebaseSync");
-    const legacySnapshot = await fetchLegacySnapshot(expectedUserId);
+    const legacyRead = await fetchLegacySnapshot(expectedUserId, sessionToken);
+    legacyStatus = legacyRead.status;
     if (!(await sessionMatchesFirebase(sessionToken))) {
       return { status: "unauthorized" };
     }
 
-    if (legacySnapshot === null) {
+    if (legacyRead.status === "unavailable") return { status: "server" };
+    if (legacyRead.status === "offline") return { status: "offline" };
+
+    if (legacyRead.status === "empty") {
+      if (!shouldFinalizeLegacyMigration(legacyRead.status)) {
+        return { status: "server" };
+      }
       const flagged = await syncStorage.commitOwned(
         expectedUserId,
         currentUser,
@@ -722,7 +783,7 @@ async function migrateLegacyFirebaseDataUnlocked(
     }
 
     const serialized = serializeRestoreFields(
-      legacySnapshot,
+      legacyRead.data,
       RESTORE_FIELD_KINDS,
     );
     if (serialized.status === "invalid") return { status: "server" };
@@ -736,17 +797,7 @@ async function migrateLegacyFirebaseDataUnlocked(
       else pairs.push([key, value]);
     }
     if (pairs.length === 0 && removals.length === 0) {
-      const flagged = await syncStorage.commitOwned(
-        expectedUserId,
-        currentUser,
-        [[migrationKey, new Date().toISOString()]],
-        [],
-        [],
-        sessionStorageGeneration(sessionToken),
-      );
-      return flagged.status === "stale"
-        ? { status: "unauthorized" }
-        : { status: "empty" };
+      return { status: "server" };
     }
 
     const committed = await syncStorage.commitLocalChangeOwned(
@@ -767,7 +818,7 @@ async function migrateLegacyFirebaseDataUnlocked(
   if (!(await sessionMatchesFirebase(sessionToken))) {
     return { status: "unauthorized" };
   }
-  if (cloudBackup.status === "saved") {
+  if (shouldFinalizeLegacyMigration(legacyStatus, cloudBackup.status)) {
     try {
       const flagged = await syncStorage.commitOwned(
         expectedUserId,

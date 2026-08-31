@@ -926,8 +926,32 @@ test("legacy migration fetches outside storage and applies a validated journaled
       "utf8",
     ),
   ]);
-  assert.match(syncSource, /fetchLegacySnapshot\(expectedUserId\)/);
-  assert.match(syncSource, /serializeRestoreFields\([\s\S]*legacySnapshot/);
+  assert.match(
+    syncSource,
+    /fetchLegacySnapshot\(expectedUserId, sessionToken\)/,
+  );
+  assert.match(syncSource, /serializeRestoreFields\([\s\S]*legacyRead\.data/);
+  assert.match(syncSource, /legacyRead\.status === "unavailable"/);
+  assert.match(syncSource, /legacyRead\.status === "offline"/);
+  assert.match(
+    syncSource,
+    /readOwned\([\s\S]*migrationKey[\s\S]*flag\.value\[0\]\?\.\[1\][\s\S]*fetchLegacySnapshot/,
+  );
+  const unavailableReturn = syncSource.indexOf(
+    'legacyRead.status === "unavailable"',
+  );
+  const offlineReturn = syncSource.indexOf('legacyRead.status === "offline"');
+  const definitiveEmpty = syncSource.indexOf('legacyRead.status === "empty"');
+  const firstMigrationFlagWrite = syncSource.indexOf(
+    "[[migrationKey, new Date().toISOString()]]",
+  );
+  assert.ok(unavailableReturn < firstMigrationFlagWrite);
+  assert.ok(offlineReturn < firstMigrationFlagWrite);
+  assert.ok(definitiveEmpty < firstMigrationFlagWrite);
+  assert.match(
+    syncSource,
+    /shouldFinalizeLegacyMigration\(legacyStatus, cloudBackup\.status\)/,
+  );
   assert.doesNotMatch(syncSource, /runOwnedMutation/);
   assert.doesNotMatch(syncSource, /restoreFromFirestore/);
   assert.match(firebaseSource, /fetchLegacySnapshot/);
