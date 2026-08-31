@@ -50,35 +50,41 @@ test("context reloads reset missing synchronized values to defaults", async () =
   ]);
 
   assert.match(app, /setState\(defaultState\)/);
-  assert.match(workout, /setPlanState\(p \? JSON\.parse\(p\) : null\)/);
-  assert.match(workout, /setSessions\(s \? JSON\.parse\(s\) : \[\]\)/);
-  assert.match(workout, /setPersonalRecords\(pr \? JSON\.parse\(pr\) : \[\]\)/);
+  assert.match(workout, /setPlanState\(p \? parseStoredJson[\s\S]*: null\)/);
+  assert.match(workout, /setSessions\(s \? parseStoredJson[\s\S]*: \[\]\)/);
   assert.match(
     workout,
-    /setActiveSession\(active \? JSON\.parse\(active\) : null\)/,
+    /setPersonalRecords\(pr \? parseStoredJson[\s\S]*: \[\]\)/,
   );
   assert.match(
     workout,
-    /setActivePlanType\(apt \? JSON\.parse\(apt\) : "ai"\)/,
+    /setActiveSession\(active \? parseStoredJson[\s\S]*: null\)/,
   );
-  assert.match(workout, /setCustomPlans\(cp \? JSON\.parse\(cp\) : \[\]\)/);
   assert.match(
     workout,
-    /setActiveCustomPlanId\(acpid \? JSON\.parse\(acpid\) : null\)/,
+    /setActivePlanType\(apt \? parseStoredJson[\s\S]*: "ai"\)/,
   );
-  assert.match(nutrition, /setMealPlanState\(mp \? JSON\.parse\(mp\) : null\)/);
-  assert.match(nutrition, /setFoodLog\(fl \? JSON\.parse\(fl\) : \[\]\)/);
+  assert.match(workout, /setCustomPlans\(cp \? parseStoredJson[\s\S]*: \[\]\)/);
   assert.match(
-    nutrition,
-    /setCustomMealPlans\(cmp \? JSON\.parse\(cmp\) : \[\]\)/,
+    workout,
+    /setActiveCustomPlanId\(acpid \? parseStoredJson[\s\S]*: null\)/,
   );
   assert.match(
     nutrition,
-    /setActiveMealPlanType\(ampt \? JSON\.parse\(ampt\) : "ai"\)/,
+    /setMealPlanState\(mp \? parseStoredJson[\s\S]*: null\)/,
+  );
+  assert.match(nutrition, /setFoodLog\(fl \? parseStoredJson[\s\S]*: \[\]\)/);
+  assert.match(
+    nutrition,
+    /setCustomMealPlans\(cmp \? parseStoredJson[\s\S]*: \[\]\)/,
   );
   assert.match(
     nutrition,
-    /setActiveCustomMealPlanId\(acmpid \? JSON\.parse\(acmpid\) : null\)/,
+    /setActiveMealPlanType\(ampt \? parseStoredJson[\s\S]*: "ai"\)/,
+  );
+  assert.match(
+    nutrition,
+    /setActiveCustomMealPlanId\(acmpid \? parseStoredJson[\s\S]*: null\)/,
   );
   assert.match(health, /setHealthData\(defaultHealthData\)/);
   assert.match(wellness, /setState\(DEFAULT_STATE\)/);
@@ -140,6 +146,35 @@ test("restore events await all listeners and report aggregate failure", async ()
   }
 });
 
+test("provider reload helper resets defaults and still propagates storage or parse failures", async () => {
+  const { runProviderReload } =
+    await import("../../artifacts/mobile/lib/providerReload.ts");
+  const events = [];
+
+  await assert.rejects(
+    runProviderReload(
+      () => events.push("defaults"),
+      async () => {
+        events.push("load");
+        JSON.parse("{");
+      },
+    ),
+    SyntaxError,
+  );
+  assert.deepEqual(events, ["load", "defaults"]);
+
+  await assert.rejects(
+    runProviderReload(
+      () => events.push("storage-defaults"),
+      async () => {
+        throw new Error("storage failed");
+      },
+    ),
+    /storage failed/,
+  );
+  assert.equal(events.at(-1), "storage-defaults");
+});
+
 test("automatic and manual restores await provider reloads before success", async () => {
   const [auto, profile] = await Promise.all([
     source("components/AutoSync.tsx"),
@@ -149,4 +184,37 @@ test("automatic and manual restores await provider reloads before success", asyn
   assert.match(auto, /reload\.status === "failed"/);
   assert.match(profile, /await emitDataRestored\(\)/);
   assert.match(profile, /reload\.status === "failed"/);
+});
+
+test("provider startup catches safely while restore listeners return rejecting reload promises", async () => {
+  const contextPaths = [
+    "context/AppContext.tsx",
+    "context/WorkoutContext.tsx",
+    "context/NutritionContext.tsx",
+    "context/HealthContext.tsx",
+    "context/WellnessContext.tsx",
+  ];
+
+  for (const path of contextPaths) {
+    const text = await source(path);
+    assert.match(text, /runProviderReload/);
+    assert.match(text, /\.catch\(\(\) => \{\}\)/);
+    assert.match(
+      text,
+      /onDataRestored\(\(\) => (?:load|loadState|loadData)\(\)\)/,
+    );
+  }
+});
+
+test("reset surface supports guests without deleting authenticated caches", async () => {
+  const [facade, profile] = await Promise.all([
+    source("lib/accountSyncStorage.ts"),
+    source("app/(tabs)/profile.tsx"),
+  ]);
+  assert.match(facade, /resetCurrentAccountStorage/);
+  assert.match(profile, /resetCurrentAccountStorage/);
+  assert.match(
+    profile,
+    /if \(!isAuthenticated \|\| !user\)[\s\S]*resetCurrentAccountStorage/,
+  );
 });

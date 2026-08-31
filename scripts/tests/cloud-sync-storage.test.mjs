@@ -613,6 +613,77 @@ test("scoped reset clears only A globals/cache and preserves B and guest caches"
   );
 });
 
+test("guest reset clears guest globals/cache and preserves every authenticated cache", async () => {
+  const storage = new MemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, LOCAL_SYNC_GUEST_OWNER],
+    ["state", "guest-global"],
+    [scopedSyncCacheKey(LOCAL_SYNC_GUEST_OWNER, "state"), "guest-cache"],
+    [scopedSyncCacheKey(storedSyncUserOwner("A"), "state"), "a-cache"],
+    [scopedSyncCacheKey(storedSyncUserOwner("B"), "state"), "b-cache"],
+  ]);
+  const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
+
+  assert.deepEqual(
+    await coordinator.resetOwned(
+      null,
+      async () => null,
+      [],
+      "guest-generation-4",
+    ),
+    { status: "ready", value: undefined },
+  );
+  assert.equal(await storage.getItem("state"), null);
+  assert.equal(
+    await storage.getItem(scopedSyncCacheKey(LOCAL_SYNC_GUEST_OWNER, "state")),
+    null,
+  );
+  assert.equal(
+    await storage.getItem(
+      scopedSyncCacheKey(storedSyncUserOwner("A"), "state"),
+    ),
+    "a-cache",
+  );
+  assert.equal(
+    await storage.getItem(
+      scopedSyncCacheKey(storedSyncUserOwner("B"), "state"),
+    ),
+    "b-cache",
+  );
+});
+
+test("cloud-saved reset revision survives mutation failure and restart recovery", async () => {
+  const revisionKey = "revision:A";
+  const storage = new FailingMemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
+    ["state", "a-original"],
+    [revisionKey, "7"],
+  ]);
+  const coordinator = new SyncStorageCoordinator(storage, SYNC_KEYS);
+  storage.setFailure(4);
+
+  await assert.rejects(
+    coordinator.resetOwned(
+      "A",
+      async () => "A",
+      [revisionKey],
+      "cloud-generation-15",
+      [[revisionKey, "8"]],
+      [[revisionKey, "8"]],
+    ),
+    /Injected storage failure/,
+  );
+
+  storage.clearFailure();
+  const restarted = new SyncStorageCoordinator(storage, SYNC_KEYS);
+  assert.deepEqual(await restarted.prepareOwner("A", async () => "A"), {
+    status: "ready",
+    changed: false,
+  });
+  assert.equal(await storage.getItem("state"), "a-original");
+  assert.equal(await storage.getItem(revisionKey), "8");
+  assert.equal(await storage.getItem(LOCAL_SYNC_JOURNAL_KEY), null);
+});
+
 test("a queued owner transition excludes a rolled-back previous-owner commit from B", async () => {
   const storage = new BlockingMemoryStorage([
     [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],

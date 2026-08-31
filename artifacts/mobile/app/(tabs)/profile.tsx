@@ -10,6 +10,7 @@ import { useHealth } from "@/context/HealthContext";
 import { useAuth } from "@/lib/auth";
 import { useSubscription } from "@/context/SubscriptionContext";
 import { backupToCloud, restoreFromCloud, migrateLegacyFirebaseData, getCurrentCloudSyncUserId, getCurrentCloudSyncSession, isCloudSyncSessionCurrent, prepareLocalSyncOwner, resetCurrentAccountData } from "@/lib/cloudSync";
+import { resetCurrentAccountStorage } from "@/lib/accountSyncStorage";
 import { emitDataRestored } from "@/lib/syncEvents";
 import { NumberEditModal } from "@/components/NumberEditModal";
 import { Colors } from "@/constants/colors";
@@ -314,7 +315,17 @@ export default function ProfileScreen() {
         style: "destructive",
         onPress: async () => {
           if (!isAuthenticated || !user) {
-            Alert.alert("Sign-in required", "Sign in again before resetting this account's local data.");
+            const guestReset = await resetCurrentAccountStorage();
+            if (guestReset.status !== "reset") {
+              Alert.alert("Reset unavailable", "Elovia could not safely reset guest data. Please try again.");
+              return;
+            }
+            const reload = await emitDataRestored();
+            if (reload.status === "failed") {
+              Alert.alert("Reset incomplete", "Guest data was cleared, but Elovia could not reload every screen. Please reopen the app.");
+              return;
+            }
+            router.replace("/onboarding");
             return;
           }
           const sessionToken = getCurrentCloudSyncSession(user.id);
@@ -327,8 +338,20 @@ export default function ProfileScreen() {
             Alert.alert("Sign-in changed", "Your account changed before reset completed. No other account data was cleared.");
             return;
           }
+          if (outcome.status === "offline") {
+            Alert.alert("You're offline", "Connect to the internet before resetting. Your local data was not cleared.");
+            return;
+          }
+          if (outcome.status === "conflict") {
+            Alert.alert("Newer cloud data found", "Restore the latest cloud data before resetting. Your local data was not cleared.");
+            return;
+          }
           if (outcome.status === "server") {
-            Alert.alert("Reset unavailable", "Elovia could not safely reset this account's local data. Please try again.");
+            Alert.alert("Reset unavailable", "Elovia could not clear your cloud data, so local data was left unchanged. Please try again.");
+            return;
+          }
+          if (outcome.status === "local") {
+            Alert.alert("Reset incomplete", "Cloud data was cleared, but local reset could not finish. Restore cloud data and try again.");
             return;
           }
           const reload = await emitDataRestored();

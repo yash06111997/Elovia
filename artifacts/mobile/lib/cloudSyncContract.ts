@@ -30,6 +30,12 @@ export type StoredSyncPayload =
   | { status: "invalid" };
 
 export type AuthTokenFailureStatus = "offline" | "unauthorized";
+export type ResponseBodyFailureStatus = "offline" | "server";
+export type CloudResetOutcome =
+  | { status: "reset"; revision: number }
+  | { status: "local"; revision: number }
+  | { status: "offline" | "unauthorized" | "server" }
+  | { status: "conflict"; currentRevision: number | null };
 
 function isRevision(value: unknown): value is number {
   return Number.isSafeInteger(value) && typeof value === "number" && value >= 1;
@@ -100,6 +106,58 @@ export function classifyAuthTokenFailure(
     return "offline";
   }
   return "unauthorized";
+}
+
+/** Classify response stream failures without retaining or logging error data. */
+export function classifyResponseBodyFailure(
+  error: unknown,
+): ResponseBodyFailureStatus {
+  if (!error || typeof error !== "object") return "server";
+  const name =
+    typeof (error as { name?: unknown }).name === "string"
+      ? (error as { name: string }).name.toLowerCase()
+      : "";
+  if (
+    name === "aborterror" ||
+    name === "timeouterror" ||
+    name === "typeerror"
+  ) {
+    return "offline";
+  }
+  return "server";
+}
+
+/** A reset is a complete server patch: every known field is a tombstone. */
+export function buildCloudResetPayload(
+  fieldKinds: Readonly<Record<string, RestoreFieldKind>>,
+  baseRevision: number | null,
+): Record<string, number | null> {
+  return {
+    baseRevision,
+    ...Object.fromEntries(
+      Object.keys(fieldKinds).map((field) => [field, null]),
+    ),
+  };
+}
+
+/** Keep local data intact unless the cloud reset was definitively saved. */
+export async function runCloudFirstReset(
+  saveCloud: () => Promise<BackupOutcome>,
+  clearLocal: (revision: number) => Promise<void>,
+): Promise<CloudResetOutcome> {
+  const cloud = await saveCloud();
+  if (cloud.status === "empty") return { status: "server" };
+  if (cloud.status === "offline") return { status: "offline" };
+  if (cloud.status === "unauthorized") return { status: "unauthorized" };
+  if (cloud.status === "server") return { status: "server" };
+  if (cloud.status === "conflict") return cloud;
+  if (!("revision" in cloud)) return { status: "server" };
+  try {
+    await clearLocal(cloud.revision);
+    return { status: "reset", revision: cloud.revision };
+  } catch {
+    return { status: "local", revision: cloud.revision };
+  }
 }
 
 function isJsonCompatible(value: unknown, ancestors: Set<object>): boolean {

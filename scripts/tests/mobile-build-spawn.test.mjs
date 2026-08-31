@@ -5,6 +5,7 @@ import test from "node:test";
 const require = createRequire(import.meta.url);
 const {
   resolvePnpmInvocation,
+  runWithMetroCleanup,
   stopChildProcessTree,
 } = require("../../artifacts/mobile/scripts/build.js");
 
@@ -53,4 +54,22 @@ test("mobile build terminates the complete Metro process tree on Windows", () =>
       { stdio: "ignore", windowsHide: true },
     ],
   ]);
+});
+
+test("mobile build awaits Metro cleanup when its operation times out", async () => {
+  const events = [];
+  await assert.rejects(
+    runWithMetroCleanup(
+      async () => {
+        events.push("operation");
+        throw new Error("Metro timeout");
+      },
+      async () => {
+        await Promise.resolve();
+        events.push("cleanup");
+      },
+    ),
+    /Metro timeout/,
+  );
+  assert.deepEqual(events, ["operation", "cleanup"]);
 });

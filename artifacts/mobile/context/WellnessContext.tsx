@@ -10,6 +10,7 @@ import { Platform } from "react-native";
 import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
 import { getFirebaseAuth } from "@/lib/firebase";
 import { onDataRestored } from "@/lib/syncEvents";
+import { isPlainRecord, runProviderReload } from "@/lib/providerReload";
 import { toLocalDateKey } from "@/lib/health";
 
 /**
@@ -165,38 +166,52 @@ export function WellnessProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const load = useCallback(async () => {
-    setState(DEFAULT_STATE);
-    setWaterGoalMlState(2500);
     try {
-      const [raw, goal] = await accountStorage.multiGet([STORAGE_KEY, "@elovia_water_goal"]);
+      await runProviderReload(() => {
+        setState(DEFAULT_STATE);
+        setWaterGoalMlState(2500);
+      }, async () => {
+        const [raw, goal] = await accountStorage.multiGet([STORAGE_KEY, "@elovia_water_goal"]);
 
-      if (raw[1]) {
-        const parsed = JSON.parse(raw[1]);
+        if (raw[1]) {
+          const parsed: unknown = JSON.parse(raw[1]);
+          if (
+            !isPlainRecord(parsed) ||
+            !Array.isArray(parsed.water) ||
+            !Array.isArray(parsed.supplementLogs) ||
+            !Array.isArray(parsed.activeDays)
+          ) {
+            throw new TypeError("Stored wellness data is malformed.");
+          }
         // Keep 60 days: enough for streaks and the weekly chart without letting
         // the blob grow unbounded on a long-lived install.
-        const cutoff = toLocalDateKey(new Date(Date.now() - 60 * 86_400_000));
-        setState({
-          water: (parsed.water ?? []).filter((w: WaterEntry) => w.date >= cutoff),
-          supplementLogs: (parsed.supplementLogs ?? []).filter(
-            (l: SupplementLog) => l.date >= cutoff,
-          ),
-          activeDays: (parsed.activeDays ?? []).filter((d: string) => d >= cutoff),
-        });
-      }
+          const cutoff = toLocalDateKey(new Date(Date.now() - 60 * 86_400_000));
+          setState({
+            water: parsed.water.filter((w) => isPlainRecord(w) && typeof w.date === "string" && w.date >= cutoff) as unknown as WaterEntry[],
+            supplementLogs: parsed.supplementLogs.filter((log) => isPlainRecord(log) && typeof log.date === "string" && log.date >= cutoff) as unknown as SupplementLog[],
+            activeDays: parsed.activeDays.filter((day): day is string => typeof day === "string" && day >= cutoff),
+          });
+        } else {
+          setState(DEFAULT_STATE);
+        }
 
-      if (goal[1]) {
-        const parsedGoal = Number(goal[1]);
-        if (Number.isFinite(parsedGoal) && parsedGoal > 0) setWaterGoalMlState(parsedGoal);
-      }
-    } catch {
-      // Corrupt cache falls back to defaults.
+        if (goal[1]) {
+          const parsedGoal = Number(goal[1]);
+          if (!Number.isFinite(parsedGoal) || parsedGoal <= 0) {
+            throw new TypeError("Stored water goal is malformed.");
+          }
+          setWaterGoalMlState(parsedGoal);
+        } else {
+          setWaterGoalMlState(2500);
+        }
+      });
     } finally {
       setIsLoaded(true);
     }
   }, []);
 
   useEffect(() => {
-    void load();
+    void load().catch(() => {});
   }, [load]);
 
   useEffect(() => onDataRestored(() => load()), [load]);

@@ -77,7 +77,7 @@ interface OwnerTransitionJournal {
 }
 
 interface OwnedMutationJournal {
-  version: 2;
+  version: 2 | 3;
   kind: "mutation";
   stableOwner: string | null;
   sessionGeneration: string;
@@ -85,6 +85,7 @@ interface OwnedMutationJournal {
   sets: StoredEntry[];
   removals: string[];
   finalSets: StoredEntry[];
+  recoveryFinalSets?: StoredEntry[];
 }
 
 type SyncStorageJournal = OwnerTransitionJournal | OwnedMutationJournal;
@@ -166,7 +167,7 @@ function parseJournal(raw: string): SyncStorageJournal {
     input &&
     typeof input === "object" &&
     !Array.isArray(input) &&
-    (input as { version?: unknown }).version === 2 &&
+    [2, 3].includes((input as { version?: number }).version ?? -1) &&
     (input as { kind?: unknown }).kind === "mutation" &&
     (typeof (input as { stableOwner?: unknown }).stableOwner === "string" ||
       (input as { stableOwner?: unknown }).stableOwner === null) &&
@@ -175,7 +176,11 @@ function parseJournal(raw: string): SyncStorageJournal {
     isStoredEntries((input as { originals?: unknown }).originals) &&
     isStoredEntries((input as { sets?: unknown }).sets) &&
     isStringArray((input as { removals?: unknown }).removals) &&
-    isStoredEntries((input as { finalSets?: unknown }).finalSets)
+    isStoredEntries((input as { finalSets?: unknown }).finalSets) &&
+    ((input as { version?: unknown }).version === 2 ||
+      isStoredEntries(
+        (input as { recoveryFinalSets?: unknown }).recoveryFinalSets,
+      ))
   ) {
     return input as OwnedMutationJournal;
   }
@@ -285,6 +290,9 @@ export class SyncStorageCoordinator {
       );
       if (journal.kind === "mutation") {
         await this.writeExactEntries(journal.originals);
+        if (journal.recoveryFinalSets?.length) {
+          await this.writeExactEntries(journal.recoveryFinalSets);
+        }
         if (journal.stableOwner === null) {
           await this.storage.removeItem(LOCAL_SYNC_OWNER_KEY);
         } else {
@@ -496,6 +504,7 @@ export class SyncStorageCoordinator {
     removals: readonly string[],
     finalSets: readonly (readonly [string, string])[] = [],
     sessionGeneration = "unspecified",
+    recoveryFinalSets: readonly (readonly [string, string])[] = [],
   ): Promise<OwnedStorageOutcome<void>> {
     return this.exclusive(async () => {
       await this.recoverIfNeeded();
@@ -511,6 +520,7 @@ export class SyncStorageCoordinator {
           ...sets.map(([key]) => key),
           ...removals,
           ...finalSets.map(([key]) => key),
+          ...recoveryFinalSets.map(([key]) => key),
         ]),
       ];
       const originals = await this.storage.multiGet(touchedKeys);
@@ -520,7 +530,7 @@ export class SyncStorageCoordinator {
       }
 
       const journal: OwnedMutationJournal = {
-        version: 2,
+        version: recoveryFinalSets.length > 0 ? 3 : 2,
         kind: "mutation",
         stableOwner: owner,
         sessionGeneration,
@@ -528,6 +538,14 @@ export class SyncStorageCoordinator {
         sets: sets.map(([key, value]) => [key, value]),
         removals: [...removals],
         finalSets: finalSets.map(([key, value]) => [key, value]),
+        ...(recoveryFinalSets.length > 0
+          ? {
+              recoveryFinalSets: recoveryFinalSets.map(([key, value]) => [
+                key,
+                value,
+              ]),
+            }
+          : {}),
       };
 
       await this.storage.setItem(
@@ -546,6 +564,9 @@ export class SyncStorageCoordinator {
       if (!currentUserMatches(await currentUserId(), expectedUserId)) {
         try {
           await this.writeExactEntries(originals);
+          if (recoveryFinalSets.length > 0) {
+            await this.writeExactEntries(recoveryFinalSets);
+          }
           if (owner === null)
             await this.storage.removeItem(LOCAL_SYNC_OWNER_KEY);
           else await this.storage.setItem(LOCAL_SYNC_OWNER_KEY, owner);
@@ -568,6 +589,8 @@ export class SyncStorageCoordinator {
     currentUserId: CurrentUserId,
     additionalKeys: readonly string[] = [],
     sessionGeneration = "unspecified",
+    finalSets: readonly (readonly [string, string])[] = [],
+    recoveryFinalSets: readonly (readonly [string, string])[] = [],
   ): Promise<OwnedStorageOutcome<void>> {
     const cacheOwner =
       expectedUserId === null
@@ -581,8 +604,9 @@ export class SyncStorageCoordinator {
       currentUserId,
       [],
       [...this.syncKeys, ...cacheKeys, ...additionalKeys],
-      [],
+      finalSets,
       sessionGeneration,
+      recoveryFinalSets,
     );
   }
 }

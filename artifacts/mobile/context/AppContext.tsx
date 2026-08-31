@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
 import { onDataRestored } from "@/lib/syncEvents";
+import { isPlainRecord, runProviderReload } from "@/lib/providerReload";
 
 export type FitnessGoal = "fat_loss" | "muscle_gain" | "maintenance" | "general_fitness" | "strength" | "endurance";
 export type FitnessLevel = "beginner" | "intermediate" | "advanced";
@@ -116,28 +117,38 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [accountStorage] = useState(captureAccountStorageSession);
 
   useEffect(() => {
-    loadState();
+    void loadState().catch(() => {});
   }, []);
 
   useEffect(() => {
-    return onDataRestored(() => {
-      return loadState();
-    });
+    return onDataRestored(() => loadState());
   }, []);
 
   const loadState = async () => {
     try {
-      const saved = await accountStorage.getItem("@elovia_state");
-      if (saved) {
-        const parsed = JSON.parse(saved) as AppState;
-        setState({
-          ...defaultState,
-          ...parsed,
-          healthMetrics: parsed.healthMetrics ?? [],
-        });
-      } else setState(defaultState);
-    } catch (e) {
-      setState(defaultState);
+      await runProviderReload(
+        () => setState(defaultState),
+        async () => {
+          const saved = await accountStorage.getItem("@elovia_state");
+          if (!saved) {
+            setState(defaultState);
+            return;
+          }
+          const parsed: unknown = JSON.parse(saved);
+          if (
+            !isPlainRecord(parsed) ||
+            (parsed.healthMetrics !== undefined &&
+              !Array.isArray(parsed.healthMetrics))
+          ) {
+            throw new TypeError("Stored app state is malformed.");
+          }
+          setState({
+            ...defaultState,
+            ...(parsed as Partial<AppState>),
+            healthMetrics: (parsed.healthMetrics as HealthMetric[] | undefined) ?? [],
+          });
+        },
+      );
     } finally {
       setLoaded(true);
     }

@@ -1,6 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
 import { onDataRestored } from "@/lib/syncEvents";
+import {
+  isNullablePlainRecord,
+  isUnknownArray,
+  parseStoredJson,
+  runProviderReload,
+} from "@/lib/providerReload";
 import { recommendTrainingAdjustment, type TrainingAdjustment, type WorkoutFeedback } from "@/lib/trainingAdaptation";
 
 export type { TrainingAdjustment, WorkoutFeedback } from "@/lib/trainingAdaptation";
@@ -124,7 +130,15 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   const [accountStorage] = useState(captureAccountStorageSession);
 
   const load = async () => {
-    try {
+    await runProviderReload(() => {
+      setPlanState(null);
+      setSessions([]);
+      setPersonalRecords([]);
+      setActiveSession(null);
+      setCustomPlans([]);
+      setActivePlanType("ai");
+      setActiveCustomPlanId(null);
+    }, async () => {
       const values = new Map(await accountStorage.multiGet([
         "@elovia_plan",
         "@elovia_sessions",
@@ -141,32 +155,22 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
       const cp = values.get("@elovia_custom_plans") ?? null;
       const apt = values.get("@elovia_active_plan_type") ?? null;
       const acpid = values.get("@elovia_active_custom_plan_id") ?? null;
-      setPlanState(p ? JSON.parse(p) : null);
-      setSessions(s ? JSON.parse(s) : []);
-      setPersonalRecords(pr ? JSON.parse(pr) : []);
-      setActiveSession(active ? JSON.parse(active) : null);
-      setCustomPlans(cp ? JSON.parse(cp) : []);
-      setActivePlanType(apt ? JSON.parse(apt) : "ai");
-      setActiveCustomPlanId(acpid ? JSON.parse(acpid) : null);
-    } catch (e) {
-      setPlanState(null);
-      setSessions([]);
-      setPersonalRecords([]);
-      setActiveSession(null);
-      setCustomPlans([]);
-      setActivePlanType("ai");
-      setActiveCustomPlanId(null);
-    }
+      setPlanState(p ? parseStoredJson(p, isNullablePlainRecord) as WorkoutPlan | null : null);
+      setSessions(s ? parseStoredJson(s, isUnknownArray) as WorkoutSession[] : []);
+      setPersonalRecords(pr ? parseStoredJson(pr, isUnknownArray) as PersonalRecord[] : []);
+      setActiveSession(active ? parseStoredJson(active, isNullablePlainRecord) as WorkoutSession | null : null);
+      setCustomPlans(cp ? parseStoredJson(cp, isUnknownArray) as CustomWorkoutPlan[] : []);
+      setActivePlanType(apt ? parseStoredJson(apt, (value): value is ActivePlanType => value === "ai" || value === "custom") : "ai");
+      setActiveCustomPlanId(acpid ? parseStoredJson(acpid, (value): value is string | null => value === null || typeof value === "string") : null);
+    });
   };
 
   useEffect(() => {
-    load();
+    void load().catch(() => {});
   }, []);
 
   useEffect(() => {
-    return onDataRestored(() => {
-      return load();
-    });
+    return onDataRestored(() => load());
   }, []);
 
   const setPlan = useCallback((p: WorkoutPlan) => {

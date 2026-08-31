@@ -3,12 +3,15 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   buildStoredSyncPayload,
+  buildCloudResetPayload,
   canSettleAfterLegacyCommit,
   canUploadAfterRestore,
   classifyAuthTokenFailure,
   classifyBackupResponse,
+  classifyResponseBodyFailure,
   classifyRestoreResponse,
   revisionStorageKey,
+  runCloudFirstReset,
   serializeRestoreFields,
 } from "../../artifacts/mobile/lib/cloudSyncContract.ts";
 
@@ -130,6 +133,22 @@ test("token refresh failures distinguish offline from unauthorized", () => {
   }
 });
 
+test("response body transport failures stay distinct from malformed JSON", () => {
+  assert.equal(
+    classifyResponseBodyFailure(new TypeError("network stream failed")),
+    "offline",
+  );
+  assert.equal(classifyResponseBodyFailure({ name: "AbortError" }), "offline");
+  assert.equal(
+    classifyResponseBodyFailure(new SyntaxError("Unexpected token")),
+    "server",
+  );
+  assert.equal(
+    classifyResponseBodyFailure(new Error("unknown parser failure")),
+    "server",
+  );
+});
+
 const RESTORE_FIELD_KINDS = {
   activePlanType: "string",
   activeCustomPlanId: "string",
@@ -148,6 +167,69 @@ const RESTORE_FIELD_KINDS = {
   wellnessData: "plain-object",
   waterGoal: "positive-number",
 };
+
+test("cloud reset materializes every synchronized field as a null tombstone", () => {
+  const payload = buildCloudResetPayload(RESTORE_FIELD_KINDS, 12);
+  assert.deepEqual(payload, {
+    baseRevision: 12,
+    ...Object.fromEntries(
+      Object.keys(RESTORE_FIELD_KINDS).map((field) => [field, null]),
+    ),
+  });
+
+  const restored = serializeRestoreFields(payload, RESTORE_FIELD_KINDS);
+  assert.equal(restored.status, "valid");
+  assert.equal(
+    restored.changes.length,
+    Object.keys(RESTORE_FIELD_KINDS).length,
+  );
+  assert.equal(
+    restored.changes.every(([, value]) => value === null),
+    true,
+  );
+});
+
+test("cloud-first reset never clears local data unless cloud save succeeds", async () => {
+  let localClears = 0;
+  const clearLocal = async () => {
+    localClears += 1;
+  };
+
+  assert.deepEqual(
+    await runCloudFirstReset(
+      async () => ({ status: "conflict", currentRevision: 8 }),
+      clearLocal,
+    ),
+    { status: "conflict", currentRevision: 8 },
+  );
+  assert.deepEqual(
+    await runCloudFirstReset(async () => ({ status: "offline" }), clearLocal),
+    { status: "offline" },
+  );
+  assert.equal(localClears, 0);
+
+  assert.deepEqual(
+    await runCloudFirstReset(
+      async () => ({ status: "saved", revision: 13 }),
+      async (revision) => {
+        assert.equal(revision, 13);
+        localClears += 1;
+      },
+    ),
+    { status: "reset", revision: 13 },
+  );
+  assert.equal(localClears, 1);
+
+  assert.deepEqual(
+    await runCloudFirstReset(
+      async () => ({ status: "saved", revision: 14 }),
+      async () => {
+        throw new Error("local storage unavailable");
+      },
+    ),
+    { status: "local", revision: 14 },
+  );
+});
 
 test("restore scalar fields accept only strings or explicit null", () => {
   assert.deepEqual(

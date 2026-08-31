@@ -5,13 +5,17 @@ import {
   syncStorageCoordinator as syncStorage,
 } from "./accountSyncStorage";
 import {
+  buildCloudResetPayload,
   buildStoredSyncPayload,
   classifyBackupResponse,
   classifyAuthTokenFailure,
+  classifyResponseBodyFailure,
   classifyRestoreResponse,
   revisionStorageKey,
+  runCloudFirstReset,
   serializeRestoreFields,
   type BackupOutcome,
+  type CloudResetOutcome,
   type RestoreFieldKind,
   type RestoreOutcome,
 } from "./cloudSyncContract";
@@ -100,9 +104,7 @@ export type LegacyMigrationOutcome =
   | { status: "unauthorized" }
   | { status: "server" };
 
-export type LocalResetOutcome =
-  | { status: "reset" }
-  | { status: "unauthorized" | "server" };
+export type LocalResetOutcome = CloudResetOutcome;
 
 const conflictBlockedUsers = new Set<string>();
 function getBaseUrl(): string {
@@ -331,8 +333,8 @@ async function backupToCloudUnlocked(
   if (response.ok || response.status === 409) {
     try {
       body = await response.json();
-    } catch {
-      return { status: "server" };
+    } catch (error) {
+      return { status: classifyResponseBodyFailure(error) };
     }
   }
   if (!(await sessionMatchesFirebase(sessionToken))) {
@@ -425,8 +427,8 @@ async function restoreFromCloudUnlocked(
   let body: unknown;
   try {
     body = await response.json();
-  } catch {
-    return { status: "server" };
+  } catch (error) {
+    return { status: classifyResponseBodyFailure(error) };
   }
   if (!(await sessionMatchesFirebase(sessionToken))) {
     return { status: "unauthorized" };
@@ -524,34 +526,104 @@ const MIGRATION_FLAG = "@elovia_rtdb_migrated";
 async function resetCurrentAccountDataUnlocked(
   sessionToken: CloudSyncSessionToken,
 ): Promise<LocalResetOutcome> {
-  if (!(await sessionMatchesFirebase(sessionToken))) {
-    return { status: "unauthorized" };
-  }
-  const expectedUserId = cloudSyncSessionUid(sessionToken);
+  const auth = await getAuthIdentity(sessionToken);
+  if (auth.status !== "ready") return { status: auth.status };
+  const { uid: expectedUserId, token } = auth.identity;
   const owner = await prepareLocalSyncOwner(sessionToken);
   if (owner.status === "stale") return { status: "unauthorized" };
   if (owner.status === "server") return { status: "server" };
 
   const revisionKey = revisionStorageKey(expectedUserId);
   const migrationKey = `${MIGRATION_FLAG}:${encodeURIComponent(expectedUserId)}`;
+  let baseRevision: number | null;
   try {
-    const reset = await syncStorage.resetOwned(
+    const revisionRead = await syncStorage.readOwned(
       expectedUserId,
       currentUserForSession(sessionToken),
-      [revisionKey, migrationKey],
-      sessionStorageGeneration(sessionToken),
+      [revisionKey],
     );
-    if (
-      reset.status === "stale" ||
-      !(await sessionMatchesFirebase(sessionToken))
-    ) {
-      return { status: "unauthorized" };
-    }
-    conflictBlockedUsers.delete(expectedUserId);
-    return { status: "reset" };
+    if (revisionRead.status === "stale") return { status: "unauthorized" };
+    const parsed = parseStoredRevision(revisionRead.value[0]?.[1] ?? null);
+    baseRevision = parsed === "corrupt" ? null : parsed;
   } catch {
     return { status: "server" };
   }
+
+  if (!(await sessionMatchesFirebase(sessionToken))) {
+    return { status: "unauthorized" };
+  }
+
+  const requestBody = JSON.stringify(
+    buildCloudResetPayload(RESTORE_FIELD_KINDS, baseRevision),
+  );
+  let guardedResponse;
+  try {
+    guardedResponse = await networkOrchestrator.execute(
+      sessionToken,
+      () =>
+        fetch(`${getBaseUrl()}/api/user-data`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: requestBody,
+        }),
+      async (response) => response,
+    );
+  } catch {
+    return { status: "offline" };
+  }
+  if (guardedResponse.status === "stale") return { status: "unauthorized" };
+  const response = guardedResponse.value;
+
+  let body: unknown = null;
+  if (response.ok || response.status === 409) {
+    try {
+      body = await response.json();
+    } catch (error) {
+      return { status: classifyResponseBodyFailure(error) };
+    }
+  }
+  if (!(await sessionMatchesFirebase(sessionToken))) {
+    return { status: "unauthorized" };
+  }
+
+  const envelope =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  const cloud = classifyBackupResponse(
+    response.status,
+    envelope.revision,
+    Object.hasOwn(envelope, "currentRevision")
+      ? envelope.currentRevision
+      : undefined,
+  );
+  if (cloud.status === "conflict") conflictBlockedUsers.add(expectedUserId);
+
+  const outcome = await runCloudFirstReset(
+    async () => cloud,
+    async (revision) => {
+      const revisionSet = [[revisionKey, String(revision)]] as const;
+      const reset = await syncStorage.resetOwned(
+        expectedUserId,
+        currentUserForSession(sessionToken),
+        [migrationKey],
+        sessionStorageGeneration(sessionToken),
+        revisionSet,
+        revisionSet,
+      );
+      if (reset.status === "stale") {
+        throw new Error("Cloud sync session changed during reset.");
+      }
+      if (!(await sessionMatchesFirebase(sessionToken))) {
+        throw new Error("Cloud sync session changed during reset.");
+      }
+    },
+  );
+  if (outcome.status === "reset") conflictBlockedUsers.delete(expectedUserId);
+  return outcome;
 }
 
 export async function resetCurrentAccountData(

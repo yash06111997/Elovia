@@ -3,6 +3,7 @@ import { Platform, Alert, AppState, type AppStateStatus } from "react-native";
 import * as Location from "expo-location";
 import { onDataRestored } from "@/lib/syncEvents";
 import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
+import { isPlainRecord, runProviderReload } from "@/lib/providerReload";
 import {
   backendLabel,
   getHealthStatus,
@@ -136,22 +137,36 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const loadData = useCallback(async () => {
-    try {
+    await runProviderReload(() => setHealthData(defaultHealthData), async () => {
       const stored = await accountStorage.getItem(STORAGE_KEY);
       if (stored) {
-        const parsed = JSON.parse(stored);
+        const parsed: unknown = JSON.parse(stored);
+        if (!isPlainRecord(parsed)) {
+          throw new TypeError("Stored health data is malformed.");
+        }
+        for (const key of [
+          "weeklySteps",
+          "runSessions",
+          "importedWorkouts",
+          "sleep",
+          "restingHeartRate",
+          "heartRateVariability",
+          "activeEnergyKcal",
+          "bodyMassKg",
+        ]) {
+          if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
+            throw new TypeError("Stored health data is malformed.");
+          }
+        }
         // Merge onto defaults so data persisted by older builds, which lacked
         // the sleep/vitals fields, does not yield undefined arrays.
-        setHealthData({ ...defaultHealthData, ...parsed });
+        setHealthData({ ...defaultHealthData, ...(parsed as Partial<HealthData>) });
       } else setHealthData(defaultHealthData);
-    } catch {
-      // Corrupt cache is not worth failing startup over.
-      setHealthData(defaultHealthData);
-    }
+    });
   }, []);
 
   useEffect(() => {
-    loadData();
+    void loadData().catch(() => {});
   }, [loadData]);
 
   useEffect(() => onDataRestored(() => loadData()), [loadData]);

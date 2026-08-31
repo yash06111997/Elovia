@@ -49,6 +49,10 @@ export interface AccountStorageSession {
   multiSet(entries: readonly (readonly [SyncKey, string])[]): Promise<void>;
 }
 
+export type AccountStorageResetOutcome =
+  | { status: "reset" }
+  | { status: "stale" | "server" };
+
 export class StaleAccountStorageSessionError extends Error {
   constructor() {
     super("The account storage session is no longer active.");
@@ -184,4 +188,29 @@ export function captureAccountStorageSession(): AccountStorageSession {
       await ensureCommitted(entries, []);
     },
   };
+}
+
+/** Reset only the currently mounted account/guest namespace. */
+export async function resetCurrentAccountStorage(): Promise<AccountStorageResetOutcome> {
+  if (!authScope.ready) return { status: "stale" };
+  const ownerToken: AccountStorageOwnerToken = Object.freeze({
+    uid: authScope.uid,
+    generation: authScope.generation,
+  });
+  const currentOwner = currentOwnerForToken(ownerToken);
+
+  try {
+    await prepareSession(ownerToken, currentOwner);
+    const reset = await syncStorageCoordinator.resetOwned(
+      ownerToken.uid,
+      currentOwner,
+      [],
+      `account-generation-${ownerToken.generation}`,
+    );
+    return reset.status === "stale" ? { status: "stale" } : { status: "reset" };
+  } catch (error) {
+    return error instanceof StaleAccountStorageSessionError
+      ? { status: "stale" }
+      : { status: "server" };
+  }
 }

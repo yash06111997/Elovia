@@ -1,6 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
 import { onDataRestored } from "@/lib/syncEvents";
+import {
+  isNullablePlainRecord,
+  isUnknownArray,
+  parseStoredJson,
+  runProviderReload,
+} from "@/lib/providerReload";
 
 export interface Meal {
   id: string;
@@ -87,7 +93,13 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
   const [accountStorage] = useState(captureAccountStorageSession);
 
   const load = async () => {
-    try {
+    await runProviderReload(() => {
+      setMealPlanState(null);
+      setFoodLog([]);
+      setCustomMealPlans([]);
+      setActiveMealPlanType("ai");
+      setActiveCustomMealPlanId(null);
+    }, async () => {
       const values = new Map(await accountStorage.multiGet([
         "@elovia_meal_plan",
         "@elovia_food_log",
@@ -100,28 +112,20 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
       const cmp = values.get("@elovia_custom_meal_plans") ?? null;
       const ampt = values.get("@elovia_active_meal_plan_type") ?? null;
       const acmpid = values.get("@elovia_active_custom_meal_plan_id") ?? null;
-      setMealPlanState(mp ? JSON.parse(mp) : null);
-      setFoodLog(fl ? JSON.parse(fl) : []);
-      setCustomMealPlans(cmp ? JSON.parse(cmp) : []);
-      setActiveMealPlanType(ampt ? JSON.parse(ampt) : "ai");
-      setActiveCustomMealPlanId(acmpid ? JSON.parse(acmpid) : null);
-    } catch (e) {
-      setMealPlanState(null);
-      setFoodLog([]);
-      setCustomMealPlans([]);
-      setActiveMealPlanType("ai");
-      setActiveCustomMealPlanId(null);
-    }
+      setMealPlanState(mp ? parseStoredJson(mp, isNullablePlainRecord) as MealPlan | null : null);
+      setFoodLog(fl ? parseStoredJson(fl, isUnknownArray) as FoodLogEntry[] : []);
+      setCustomMealPlans(cmp ? parseStoredJson(cmp, isUnknownArray) as CustomMealPlan[] : []);
+      setActiveMealPlanType(ampt ? parseStoredJson(ampt, (value): value is ActiveMealPlanType => value === "ai" || value === "custom") : "ai");
+      setActiveCustomMealPlanId(acmpid ? parseStoredJson(acmpid, (value): value is string | null => value === null || typeof value === "string") : null);
+    });
   };
 
   useEffect(() => {
-    load();
+    void load().catch(() => {});
   }, []);
 
   useEffect(() => {
-    return onDataRestored(() => {
-      return load();
-    });
+    return onDataRestored(() => load());
   }, []);
 
   const setMealPlan = useCallback((plan: MealPlan) => {
