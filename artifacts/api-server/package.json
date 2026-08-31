@@ -18,7 +18,8 @@
     "express": "^5",
     "firebase-admin": "^14.3.0",
     "pino": "^9",
-    "pino-http": "^10"
+    "pino-http": "^10",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
