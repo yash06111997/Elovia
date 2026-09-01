@@ -48,9 +48,7 @@ function retryAfter(result: RevenueCatProcessorResult): string | undefined {
     Number.isFinite(result.retryAfterSeconds)
       ? Math.floor(result.retryAfterSeconds)
       : 1;
-  return String(
-    Math.max(1, Math.min(RETRY_AFTER_MAX_SECONDS, requested)),
-  );
+  return String(Math.max(1, Math.min(RETRY_AFTER_MAX_SECONDS, requested)));
 }
 
 const webhookJsonErrorHandler: ErrorRequestHandler = (
@@ -127,7 +125,7 @@ export function createRevenueCatWebhookRouter(
         );
         response.status(outcome.status).json({
           received: outcome.status === 200,
-          applied: outcome.disposition === "applied",
+          applied: outcome.applied === true,
           disposition: outcome.disposition,
         });
       } catch {

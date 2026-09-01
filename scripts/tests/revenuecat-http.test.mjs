@@ -92,7 +92,7 @@ test("missing and incorrect webhook authorization stop before Firebase", async (
       webhookSecret: "exact webhook secret",
       processor: async () => {
         processorCalls += 1;
-        return { status: 200, disposition: "applied" };
+        return { status: 200, disposition: "applied", applied: true };
       },
     }),
     authenticatedRouter: express.Router(),
@@ -131,7 +131,7 @@ test("an authenticated webhook over 256 KiB is rejected before parsing or proces
     testApp({
       processor: async () => {
         processorCalls += 1;
-        return { status: 200, disposition: "applied" };
+        return { status: 200, disposition: "applied", applied: true };
       },
       authMiddlewareImpl(_request, _response, next) {
         firebaseCalls += 1;
@@ -164,7 +164,7 @@ test("malformed JSON and malformed event contracts are typed 400 responses", asy
       processor: async (result) => {
         parsed.push(result);
         return result.ok
-          ? { status: 200, disposition: "applied" }
+          ? { status: 200, disposition: "applied", applied: true }
           : { status: 400, disposition: "malformed_event" };
       },
     }),
@@ -212,7 +212,7 @@ test("malformed JSON and malformed event contracts are typed 400 responses", asy
   }
 });
 
-test("terminal and ignored processor dispositions are exact non-applied 200 responses", async () => {
+test("only a newly applied result is applied while its terminal duplicate is not", async () => {
   const dispositions = [
     "stale",
     "ignored_unknown",
@@ -223,11 +223,15 @@ test("terminal and ignored processor dispositions are exact non-applied 200 resp
     "unsupported_redemption_shape",
     "ignored_deleted",
   ];
-  let nextDisposition = "applied";
+  let nextOutcome = {
+    status: 200,
+    disposition: "applied",
+    applied: true,
+  };
   let firebaseCalls = 0;
   const server = await listen(
     testApp({
-      processor: async () => ({ status: 200, disposition: nextDisposition }),
+      processor: async () => nextOutcome,
       authMiddlewareImpl(_request, _response, next) {
         firebaseCalls += 1;
         next();
@@ -235,8 +239,12 @@ test("terminal and ignored processor dispositions are exact non-applied 200 resp
     }),
   );
   try {
-    for (const disposition of ["applied", ...dispositions]) {
-      nextDisposition = disposition;
+    for (const outcome of [
+      { status: 200, disposition: "applied", applied: true },
+      { status: 200, disposition: "applied", applied: false },
+      ...dispositions.map((disposition) => ({ status: 200, disposition })),
+    ]) {
+      nextOutcome = outcome;
       const response = await fetch(`${server.origin}/api/webhooks/revenuecat`, {
         method: "POST",
         headers: {
@@ -248,8 +256,8 @@ test("terminal and ignored processor dispositions are exact non-applied 200 resp
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), {
         received: true,
-        applied: disposition === "applied",
-        disposition,
+        applied: outcome.applied === true,
+        disposition: outcome.disposition,
       });
     }
     assert.equal(firebaseCalls, 0);
@@ -304,31 +312,97 @@ test("collisions are 400 and retryable failures are 503 with bounded Retry-After
   }
 });
 
-test("authorization is exact and rejects supplied values over 1,024 bytes", async () => {
+test("authorization accepts exactly 1,024 bytes and rejects 1,025 for ASCII and multibyte secrets", async () => {
+  const express = requireFromApiPackage("express");
   let calls = 0;
-  const server = await listen(
+  const processor = async () => {
+    calls += 1;
+    return { status: 200, disposition: "applied", applied: true };
+  };
+  const makeBoundaryApp = (webhookSecret) =>
+    createApp({
+      revenueCatRouter: createRevenueCatWebhookRouter({
+        webhookSecret,
+        processor,
+      }),
+      authenticatedRouter: express.Router(),
+      authMiddlewareImpl(_request, _response, next) {
+        next();
+      },
+    });
+  const asciiSecret = "a".repeat(1_024);
+  const multibyteSecret = "é".repeat(512);
+  assert.equal(Buffer.byteLength(asciiSecret, "utf8"), 1_024);
+  assert.equal(Buffer.byteLength(multibyteSecret, "utf8"), 1_024);
+  for (const secret of [asciiSecret, multibyteSecret]) {
+    const server = await listen(makeBoundaryApp(secret));
+    try {
+      const accepted = await fetch(`${server.origin}/api/webhooks/revenuecat`, {
+        method: "POST",
+        headers: { authorization: secret, "content-type": "application/json" },
+        body: JSON.stringify(validBody()),
+      });
+      assert.equal(accepted.status, 200);
+      assert.equal((await accepted.json()).applied, true);
+
+      const overLimit = `${secret}x`;
+      assert.equal(Buffer.byteLength(overLimit, "utf8"), 1_025);
+      const rejected = await fetch(`${server.origin}/api/webhooks/revenuecat`, {
+        method: "POST",
+        headers: {
+          authorization: overLimit,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(validBody()),
+      });
+      assert.equal(rejected.status, 401);
+
+      const sameLengthMismatch =
+        secret === asciiSecret
+          ? `${secret.slice(0, -1)}b`
+          : `${secret.slice(0, -1)}ê`;
+      assert.equal(Buffer.byteLength(sameLengthMismatch, "utf8"), 1_024);
+      const mismatched = await fetch(
+        `${server.origin}/api/webhooks/revenuecat`,
+        {
+          method: "POST",
+          headers: {
+            authorization: sameLengthMismatch,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(validBody()),
+        },
+      );
+      assert.equal(mismatched.status, 401);
+    } finally {
+      await server.close();
+    }
+  }
+
+  const ordinaryServer = await listen(
     testApp({
       processor: async () => {
         calls += 1;
-        return { status: 200, disposition: "applied" };
+        return { status: 200, disposition: "applied", applied: true };
       },
     }),
   );
   try {
-    for (const authorization of [
-      "Exact webhook secret",
-      `exact webhook secret${"x".repeat(1_024)}`,
-    ]) {
-      const response = await fetch(`${server.origin}/api/webhooks/revenuecat`, {
+    const response = await fetch(
+      `${ordinaryServer.origin}/api/webhooks/revenuecat`,
+      {
         method: "POST",
-        headers: { authorization, "content-type": "application/json" },
+        headers: {
+          authorization: "Exact webhook secret",
+          "content-type": "application/json",
+        },
         body: JSON.stringify(validBody()),
-      });
-      assert.equal(response.status, 401);
-    }
-    assert.equal(calls, 0);
+      },
+    );
+    assert.equal(response.status, 401);
+    assert.equal(calls, 2);
   } finally {
-    await server.close();
+    await ordinaryServer.close();
   }
 });
 
@@ -352,7 +426,10 @@ test("webhook logs use only bounded request, event, type, and disposition labels
     "/api",
     createRevenueCatWebhookRouter({
       webhookSecret: "private-webhook-secret",
-      processor: async () => ({ status: 200, disposition: "ignored_unmapped" }),
+      processor: async () => ({
+        status: 200,
+        disposition: "ignored_unmapped",
+      }),
     }),
   );
   const server = await listen(app);

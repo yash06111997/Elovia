@@ -674,6 +674,7 @@ if (testDatabaseUrl) {
       request.log = { error() {}, warn() {}, info() {} };
       const testUser = request.get("x-elovia-test-user");
       if (testUser) request.user = { id: testUser };
+      request.isAuthenticated = () => Boolean(testUser && request.user?.id);
       next();
     });
     apiApp.use(express.json({ limit: "20mb" }));
@@ -724,6 +725,14 @@ integrationTest(
     assert.equal(
       results.every((result) => result.status === 200),
       true,
+    );
+    assert.equal(
+      results.filter((result) => result.applied === true).length,
+      1,
+    );
+    assert.equal(
+      results.filter((result) => result.applied === false).length,
+      19,
     );
     const persisted = await scopedPool.query(
       `SELECT disposition,attempt_count,identity_applied_at IS NOT NULL AS identity_done,
@@ -1043,7 +1052,7 @@ integrationTest(
         config: processorConfig,
         client,
       }),
-      { status: 200, disposition: "applied" },
+      { status: 200, disposition: "applied", applied: true },
     );
     assert.deepEqual(new Set(calls), new Set([source, destination]));
     const moved = await scopedPool.query(
@@ -1154,7 +1163,7 @@ integrationTest(
         config: processorConfig,
         client: fakeClient(null, duplicateCalls),
       }),
-      { status: 200, disposition: "applied" },
+      { status: 200, disposition: "applied", applied: false },
     );
     assert.equal(duplicateCalls.length, 0);
     const pruned = await scopedPool.query(
@@ -1232,7 +1241,7 @@ integrationTest(
           );
         },
       }),
-      { status: 200, disposition: "applied" },
+      { status: 200, disposition: "applied", applied: false },
     );
     assert.equal(parentReadHooks, 1);
     assert.deepEqual(duplicateCalls, []);
@@ -6614,11 +6623,20 @@ integrationTest(
     const origin = `http://127.0.0.1:${address.port}`;
     const getJson = async (path, userId) => {
       const response = await fetch(`${origin}${path}`, {
-        headers: { "x-elovia-test-user": userId },
+        headers: userId ? { "x-elovia-test-user": userId } : {},
       });
       return { status: response.status, body: await response.json() };
     };
     try {
+      for (const path of ["/api/privacy/export", "/api/diagnostics"]) {
+        assert.deepEqual(await getJson(path), {
+          status: 401,
+          body: {
+            error: "Authentication required",
+            code: "unauthenticated",
+          },
+        });
+      }
       const baseline = (
         await getJson("/api/diagnostics", `probe-${suffix}`)
       ).body.revenueCat;

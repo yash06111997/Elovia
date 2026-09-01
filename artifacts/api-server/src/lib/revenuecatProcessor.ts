@@ -63,6 +63,8 @@ export type RevenueCatProcessorDisposition =
 export type RevenueCatProcessorResult = Readonly<{
   status: 200 | 400 | 503;
   disposition: RevenueCatProcessorDisposition;
+  /** Additive transport signal: true only for the delivery that advanced state. */
+  applied?: boolean;
   retryAfterSeconds?: number;
 }>;
 
@@ -240,10 +242,14 @@ function result(
   status: 200 | 400 | 503,
   disposition: RevenueCatProcessorDisposition,
   retryAfterSeconds?: number,
+  applied?: boolean,
 ): RevenueCatProcessorResult {
-  return retryAfterSeconds === undefined
-    ? { status, disposition }
-    : { status, disposition, retryAfterSeconds };
+  return {
+    status,
+    disposition,
+    ...(applied === undefined ? {} : { applied }),
+    ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+  };
 }
 
 async function loadEvent(
@@ -285,7 +291,7 @@ async function loadEvent(
 
 function terminalResult(event: StoredEvent): RevenueCatProcessorResult {
   if (event.disposition === "pending") return result(503, "processing", 1);
-  return result(200, event.disposition);
+  return result(200, event.disposition, undefined, false);
 }
 
 function envelopeMatches(
@@ -1330,7 +1336,12 @@ async function finalizeClaimTransaction(
       if (completed.rows.length !== 1) {
         throw new RevenueCatFinalizationFenceLostError();
       }
-      return result(200, disposition);
+      return result(
+        200,
+        disposition,
+        undefined,
+        disposition === "applied" ? true : undefined,
+      );
     },
   );
 }
