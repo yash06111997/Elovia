@@ -1,229 +1,232 @@
 # RevenueCat Entitlement Integrity Implementation Plan
 
-> **For agentic workers:** Use `superpowers:subagent-driven-development` or `superpowers:executing-plans` task by task. Do not begin Task 2 until Task 1A and its review are complete. Each task follows RED → GREEN → full verification → commit.
+> **For agentic workers:** Execute one task at a time in strict RED → GREEN → complete verification → commit order. Task 1 is shipped. Task 1A must pass spec and quality review before Task 2 starts. Task commits are implementation checkpoints, not separately safe production deployments.
 
-**Goal:** Make paid access idempotent, order-safe, multi-entitlement aware, transfer/alias safe, environment safe, and unable to recreate a deleted account.
+**Goal:** Make RevenueCat access canonical-snapshot-driven, idempotent per valid processing lease, order-safe, alias/transfer/redemption safe, independently multi-entitlement aware, recoverable after missed webhooks, and unable to create or resurrect an Elovia account.
 
-**Architecture:** A RevenueCat webhook is a bounded trigger, not authoritative subscription state. Parse ordinary and transfer deliveries separately, deduplicate the event, fetch bounded canonical subscriber snapshots, and project configured entitlements in PostgreSQL under the same advisory-lock namespace used by account deletion. Keep the legacy `subscriptions` row as a temporary compatibility projection, but switch reads only after each legacy subscriber has been canonically reconciled.
+**Architecture:** A webhook is a bounded trigger and audit record, never entitlement truth or a provisioning authority. Resolve presented RevenueCat identities only to already-trusted local users, claim the delivery, fetch a bounded v1 canonical snapshot by trusted local UID, and project configured products under the account-deletion lock. Canonical `request_date_ms` plus a byte-stable operation ID orders entitlement snapshots. A trusted-user reconciliation schedule makes webhook loss recoverable. The existing `subscriptions` row remains a null-raw-payload compatibility projection; no successful P0 read path grants from its legacy paid fields.
 
 **Tech stack:** Node 22, Express 5, TypeScript, Drizzle ORM, PostgreSQL 14/16, RevenueCat REST API v1, Node test runner.
 
-**Implementation base SHA:** `59dba42c61d4ba8e88479c7bf7c608171967181a` is the accepted Task 1 head after spec and quality review. Use this exact SHA for the final implementation diff gate.
-
-**Current RevenueCat behavior used by this plan:** Webhooks are delivered at least once; event ID is the idempotency key; ordinary events contain `app_user_id`; transfer events carry `transferred_from[]` and `transferred_to[]` and must not be forced through the ordinary shape; aliases may include `$RCAnonymousID:*`; canonical customer state comes from `GET https://api.revenuecat.com/v1/subscribers/{app_user_id}`; canonical subscription entries expose expiry, grace, cancellation, billing-issue, refund, store, period, and sandbox information.
+**Implementation base SHA:** `59dba42c61d4ba8e88479c7bf7c608171967181a` is the accepted Task 1 head after spec and quality PASS. Use this exact SHA in the final implementation diff gate.
 
 ---
 
+## Phase 0: Authoritative documentation contract
+
+Implementation must re-read these current official sources before copying fields:
+
+- RevenueCat [Event Types and Fields](https://www.revenuecat.com/docs/integrations/webhooks/event-types-and-fields): ordinary subscriber identity is `app_user_id`, `original_app_user_id`, and `aliases[]`; `TRANSFER` uses `transferred_from[]`/`transferred_to[]`; current reconciling events include `REFUND_REVERSED` and `TEMPORARY_ENTITLEMENT_GRANT`.
+- RevenueCat [Sample Events](https://www.revenuecat.com/docs/integrations/webhooks/sample-events): `PURCHASE_REDEEMED` has `redeemed_from[]`, `redeemed_by[]`, and `redemption_outcome` and can accompany a separate `TRANSFER`.
+- RevenueCat [Customers API v1](https://www.revenuecat.com/docs/api-v1/customers): `GET /subscribers/{app_user_id}` is **Get or Create Customer**, returning `200` when found and `201` when created. It has no documented not-found response.
+- RevenueCat [Customer Info Model](https://www.revenuecat.com/docs/api-v1/customer-info-model): response ordering comes from `request_date_ms`; subscription entries expose refund/billing/grace/pause/cancellation fields, while non-subscription entries expose purchase ID, purchase date, environment, and store but no refund field.
+
+Allowed API behavior is therefore limited to the documented fields above. Do not invent a read-only v1 subscriber endpoint, a v1 `404`, non-subscription refund history, or an authoritative entitlement field not present in the response.
+
 ## File map and ownership
 
-- Already shipped in Task 1:
+- Already shipped Task 1:
   - `artifacts/api-server/src/lib/revenuecatContract.ts`
   - `scripts/tests/revenuecat-contract.test.mjs`
-- Task 1A modifies only those two files to add the transfer discriminated union.
-- Create `lib/db/migrations/0004_revenuecat_entitlement_integrity.sql`.
-- Create `lib/db/src/schema/revenuecat.ts`.
-- Modify `lib/db/src/schema/index.ts`.
-- Modify `lib/db/src/schema/subscriptions.ts` to mirror the permanent null-only `last_event` constraint.
-- Create `artifacts/api-server/src/lib/revenuecatConfig.ts`.
-- Create `artifacts/api-server/src/lib/revenuecatClient.ts`.
-- Create `artifacts/api-server/src/lib/revenuecatProcessor.ts`.
-- Create `artifacts/api-server/src/lib/revenuecatReconciler.ts`.
-- Modify `artifacts/api-server/src/lib/accountDeletion.ts`.
-- Modify `artifacts/api-server/src/lib/entitlements.ts`.
-- Modify `artifacts/api-server/src/routes/webhooks/revenuecat.ts`.
-- Modify `artifacts/api-server/src/routes/index.ts`, `artifacts/api-server/src/app.ts`, and `artifacts/api-server/src/index.ts` to expose injectable router/app seams and mount the webhook before Firebase auth.
-- Modify `artifacts/api-server/src/index.ts` and `artifacts/api-server/src/routes/health.ts` for startup/readiness validation.
-- Modify `artifacts/api-server/src/routes/privacy.ts` and `artifacts/api-server/src/routes/diagnostics.ts`.
-- Modify `.env.example`.
-- Create `scripts/reconcile-revenuecat.mjs`.
-- Create `scripts/tests/revenuecat-integration.test.mjs`.
-- Create `scripts/tests/revenuecat-http.test.mjs`.
-- Modify `scripts/tests/user-data-integration.test.mjs` for the new migration and tables even if its harness is not extracted.
-- Do not edit migrations `0000`–`0003`.
-- Do not change mobile purchase behavior in this plan.
+- Task 1A:
+  - Modify `artifacts/api-server/src/lib/revenuecatContract.ts`.
+  - Modify `scripts/tests/revenuecat-contract.test.mjs`.
+  - Create `artifacts/api-server/src/lib/revenuecatContract.typecheck.ts`.
+- Task 2:
+  - Create `lib/db/migrations/0004_revenuecat_entitlement_integrity.sql`.
+  - Create `lib/db/src/schema/revenuecat.ts`.
+  - Modify `lib/db/src/schema/index.ts` and `lib/db/src/schema/subscriptions.ts`.
+  - Create `scripts/tests/revenuecat-integration.test.mjs`.
+  - Modify `scripts/tests/user-data-integration.test.mjs`.
+- Task 3:
+  - Create `artifacts/api-server/src/lib/revenuecatConfig.ts`.
+  - Create `artifacts/api-server/src/lib/revenuecatClient.ts`.
+  - Create `artifacts/api-server/src/lib/revenuecatSnapshot.ts`.
+  - Modify `.env.example`, `artifacts/api-server/src/index.ts`, and `artifacts/api-server/src/routes/health.ts`.
+  - Modify `scripts/tests/revenuecat-contract.test.mjs`.
+- Task 4:
+  - Modify `artifacts/api-server/src/lib/accountDeletion.ts`.
+  - Create `artifacts/api-server/src/lib/revenuecatProcessor.ts`.
+  - Create `artifacts/api-server/src/lib/revenuecatReconciler.ts` with the shared transactional snapshot projector.
+  - Modify `scripts/tests/revenuecat-integration.test.mjs`.
+- Task 5:
+  - Modify `artifacts/api-server/src/lib/revenuecatReconciler.ts` to add bounded provider fetch orchestration.
+  - Create `artifacts/api-server/src/lib/revenuecatReconciliationWorker.ts`.
+  - Create `scripts/reconcile-revenuecat.mjs`.
+  - Modify `artifacts/api-server/src/middlewares/authMiddleware.ts`.
+  - Modify `artifacts/api-server/src/lib/entitlements.ts`.
+  - Modify `artifacts/api-server/src/routes/entitlement.ts`, `artifacts/api-server/src/routes/health.ts`, and `artifacts/api-server/src/index.ts`.
+  - Modify `scripts/tests/revenuecat-contract.test.mjs` and `scripts/tests/revenuecat-integration.test.mjs`.
+- Task 6:
+  - Modify `artifacts/api-server/src/routes/webhooks/revenuecat.ts`, `artifacts/api-server/src/routes/index.ts`, `artifacts/api-server/src/app.ts`, and `artifacts/api-server/src/index.ts`.
+  - Create `artifacts/api-server/src/lib/revenuecatPresentation.ts`.
+  - Modify `artifacts/api-server/src/routes/privacy.ts` and `artifacts/api-server/src/routes/diagnostics.ts`.
+  - Create `scripts/tests/revenuecat-http.test.mjs` and `scripts/tests/revenuecat-presentation.test.mjs`.
+  - Modify `scripts/tests/revenuecat-integration.test.mjs` for live DB-backed route wiring.
+- Task 7 touches the three RevenueCat test files and `.github/workflows/ci.yml` only if the existing test command does not discover them.
+- Do not modify migrations `0000`–`0003` or mobile purchase behavior.
 
 ## Non-negotiable invariants
 
-1. Unknown event types never grant, revoke, provision, create aliases, fetch canonical state, or update a compatibility projection.
-2. Unknown events are retained as `ignored_unknown` only when at least one already-existing, non-deleted local user is resolved; missing/deleted unknown subjects are acknowledged without persisting an event, alias, subject identifier, or hash.
-3. Malformed deliveries return `400`; authenticated duplicates, stale events, missing anonymous-only subjects, and tombstoned subjects return `200` with an explicit non-applied disposition.
-4. A recognized event is not marked processed until all normalized and legacy projections that advanced commit atomically.
-5. Event ID is the idempotency key. A lease-backed PII-free pending-event claim admits one canonical fetch owner across API replicas; concurrent non-owners wait for the terminal result and never call RevenueCat. Expired/released claims are resumable.
-6. Account deletion and RevenueCat mutation use the same per-UID advisory locks. Multi-user transfers acquire sorted unique UID locks. A tombstone always wins.
-7. `$RCAnonymousID:*` is never provisioned as an Elovia/Firebase user. Alias rows map a keyed subject hash to an existing or explicitly provisionable non-anonymous local UID.
-8. `Elovia Pro` and `Elovia Coaching` coexist as independent rows. Coaching implies Pro feature access but never overwrites the Pro row.
-9. Access is derived only from a canonical production/sandbox snapshot matching configured environment and its effective access deadline. Event expiry and unknown events never directly grant access.
-10. The event ledger is PII-free. Raw webhook payloads, raw app-user IDs, aliases, subscriber attributes, API responses, and secrets are not persisted or logged.
-11. Every local-user-linked subject, alias, customer-state, and entitlement row cascades on account deletion without deleting another user’s shared transfer event or entitlement.
-12. Legacy rows are `legacy_unverified`, inactive in normalized storage, and use the Unix epoch source clock. They cannot block a real event or become authoritative without canonical reconciliation.
-13. `subscriptions.last_event` is scrubbed in migration `0004` and remains null.
-14. Production rejects sandbox/test-store state; sandbox mode rejects production state. Missing or ambiguous configuration fails startup/readiness.
-15. PostgreSQL behavioral/concurrency tests execute in CI against both PostgreSQL 14 and 16.
+1. Only Firebase-authenticated middleware provisions `users`. No webhook, RevenueCat response, alias, transfer, redemption, bootstrap, worker, or on-demand reconciliation creates a local user.
+2. A RevenueCat v1 `201` means RevenueCat created an empty customer. It never authorizes local provisioning or creates a new 15-day trial; that trial derives only from an already-existing local `users.created_at`.
+3. Unknown events, unsupported identity volume, unsupported redemption shapes, deliveries with no trusted local side, ordinary unmapped subjects, and conflicting owners never grant, revoke, provision, move aliases, or call RevenueCat. A valid newer `TRANSFER` may attach a non-tombstoned unmapped source alias to an already-trusted destination, but never fetches by that alias.
+4. Ordinary events resolve the union of `app_user_id`, `original_app_user_id`, and `aliases[]`. More than one trusted local owner fails closed.
+5. `$RCAnonymousID:*` is never provisioned or used in a provider GET. It is usable through an existing ordered mapping, or a valid newer `TRANSFER` may create that mapping only to an already-trusted destination.
+6. Tombstones are checked before provider I/O and authoritatively under the same account lock used by deletion. Tombstoned transfer sides are removed before any v1 GET.
+7. A delivery ID has one fetch owner per unexpired fenced lease. Crash/lease expiry can cause another GET; only the current fence commits. Do not claim globally exactly-once external calls.
+8. Entitlement ordering uses canonical `request_date_ms` and an ASCII operation ID under PostgreSQL `COLLATE "C"`. Webhook time orders alias provenance and remains event audit data, never entitlement truth.
+9. `Elovia Pro` and `Elovia Coaching` are independent rows. Coaching implies Pro feature access but never overwrites the Pro row.
+10. Only configured, unambiguous products in the configured environment can grant. Production rejects sandbox/Test Store; sandbox rejects production.
+11. A durable trusted-UID reconciliation schedule converges after provider failure or a missed retry window. It never stores a raw RevenueCat subject or response.
+12. `per_user` and `strict` never grant from legacy `subscriptions.entitlement_active` or legacy trial dates. Uncanonicalized users receive only the existing account-created trial/free policy and are enqueued.
+13. Legacy normalized data is a fixed inactive `__legacy_unverified__` sentinel at the Unix epoch. Bootstrap uses real canonical observation time, not an artificial epoch.
+14. `subscriptions.last_event` is scrubbed and permanently null. `subscriptions.revenuecat_user_id` is scrubbed to local `user_id` (or null) and constrained accordingly.
+15. Event rows contain no raw subject or response. HMAC subject hashes are pseudonymous personal data, not anonymous or “PII-free” in a regulatory sense; never log or export them.
+16. Account deletion cascades every user-linked subject, alias, state, and entitlement without deleting another user's shared event or entitlement.
+17. Canonical responses and identity collections have explicit size/count/string/date/enum bounds compatible with DB columns.
+18. PostgreSQL behavior, collation ordering, leases, races, migrations, and deletion are tested on PostgreSQL 14 and 16.
 
-## Canonical data definitions
+## Canonical definitions
 
-### Subject hashing and aliases
+### Identity volume and safe non-applied outcomes
 
-Use `HMAC-SHA-256(REVENUECAT_SUBJECT_HASH_KEY, rawRevenueCatUserId)` as lowercase hex. The raw RevenueCat ID exists only in request-local memory for lookup and canonical fetch. Persist only the 64-character keyed hash. The HMAC secret is server-only and must not appear in diagnostics beyond a boolean.
+Each raw identity array is limited to 256 entries, every entry must be well-formed Unicode and 1–256 characters after trimming, and the combined deduplicated identity set for any delivery branch is limited to 256. This supports large real alias histories while bounding HMAC work, DB lookups, locks, and provider calls. A syntactically valid authenticated event that exceeds either cap returns `200` with `ignored_identity_volume`, increments a type/count-only alert metric, and persists no event, identifier, hash, alias, or user link. It must not trigger RevenueCat's five delivery retries. A `PURCHASE_REDEEMED` event with a missing/empty retained redeemer set or missing/unknown outcome similarly returns `200` with `unsupported_redemption_shape` and persists nothing. Malformed scalar/event identity remains `400`.
 
-### Ordering tuple
+### Subject hashing and privacy
 
-Webhook projections use `(event_timestamp_ms, event_id)` lexicographically. SQL compares `(source_event_at, COALESCE(source_event_id, ''))`. Legacy and bootstrap rows use `1970-01-01T00:00:00.000Z` and a null event ID. Bootstrap may replace `legacy_unverified` at that equal minimum tuple exactly once; thereafter a bootstrap row is idempotent. Any real webhook timestamp accepted by the bounded contract is later than the epoch and therefore wins. A distinct recognized event is `stale` only when every targeted configured-entitlement row rejects its ordering tuple. Duplicate means the same event ID and immutable ledger-envelope fields (type, event time, and normalized event environment) already have a terminal row.
+Persist `HMAC-SHA-256(REVENUECAT_SUBJECT_HASH_KEY, rawRevenueCatUserId)` as lowercase hex only in subject/alias tables. Raw IDs exist only in bounded request memory. Hashes remain pseudonymous and user-linked; privacy exports omit them, logs omit them, and deletion cascades their local links.
 
-### Event state machine and idempotency claim
+### Two independent order domains
 
-`pending` is the only nonterminal ledger disposition. `applied`, `stale`, and `ignored_unknown` are terminal. Terminal rows have `processed_at` and no lease; pending rows have no `processed_at` and may have one bounded processing lease.
+- Entitlement snapshots compare `(source_snapshot_at, source_operation_id COLLATE "C")`. `source_snapshot_at` is canonical `request_date_ms`. `source_operation_id` is bounded ASCII: `webhook:<event-id>`, `bootstrap:<uuid>`, `auth:<uuid>`, or `worker:<lease-id>`. PostgreSQL and application tests use byte ordering, never locale ordering.
+- Alias mappings compare `(source_event_at, source_event_id COLLATE "C")`, because alias provenance comes from the delivery. Equal/older tuples cannot reassign an alias.
 
-For a recognized delivery, after the tombstone precheck and before any RevenueCat call, atomically insert or claim the PII-free event row by event ID in a short transaction. First `INSERT ... ON CONFLICT DO NOTHING` with `pending`, attempt 1, and a lease; if it conflicts, read without changing immutable fields, reject a ledger-envelope mismatch, return a terminal duplicate, or use `UPDATE ... WHERE disposition='pending' AND (processing_lease_id IS NULL OR processing_lease_until <= now()) RETURNING` to claim/reclaim and increment the attempt. The claim sets a random 128-character-bounded `processing_lease_id` and `processing_lease_until = database_now + 30 seconds`. An existing unexpired pending claim is not stolen: the non-owner polls the ledger for at most 5.5 seconds without a transaction or advisory lock, returns `duplicate` if it becomes terminal, or returns typed `processing`/`503 Retry-After: 1` so RevenueCat retries. Transfer fetches use at most eight concurrent calls; the owner conditionally renews its 30-second lease before each batch and before finalization, and aborts without mutation if lease ownership was lost.
+The legacy sentinel alone uses epoch plus operation ID `legacy`. Every canonical path—webhook, bootstrap, authenticated on-demand, and worker—uses the same snapshot projector and the real validated `request_date_ms`.
 
-The claim owner performs bounded canonical fetches without a database transaction or account lock. On a retryable upstream/normalization failure it clears only its own lease and returns typed `503`, leaving a resumable PII-free pending row. On final success it enters the account lock transaction, rechecks tombstones, verifies the lease owner, writes subjects/state/projections, transitions the event to a terminal disposition, clears the lease, and commits atomically. If every subject is now deleted/missing and policy says no event may be retained, it deletes its pending row instead. No failed terminal disposition exists.
+Event dispositions are exhaustive. `pending` means canonical work is still durable/retryable and has no `processed_at`; `applied` means the complete intended snapshot batch and alias/subject changes committed; `stale` means the authoritative batch completed but every incoming canonical tuple was older/equal, so no projection advanced; `ignored_unknown` is a terminal identifier-free unknown-event envelope. There is no `reconciliation_failed`: transient failures stay `pending` with `next_attempt_at`; unsupported/unmapped/conflicting/deleted deliveries that persist nothing are HTTP dispositions only. New pending/terminal rows set `retention_until=received_at + interval '90 days'`; terminal transitions clear both lease columns and set `processed_at`.
 
-### Environment
+### Product configuration
 
-Normalize configured environment to `production | sandbox`. For canonical subscription records, `is_sandbox=false` maps to production and `is_sandbox=true` maps to sandbox. Ignore mismatched candidates; if a configured entitlement has only mismatched candidates, project it inactive and log only counts/type, never identifiers. Production must never accept SDK Test Store/sandbox access.
+Configure two nonempty JSON allowlists:
 
-### Deterministic canonical entitlement truth table
+```dotenv
+REVENUECAT_PRO_PRODUCTS_JSON=[{"id":"elovia_pro_monthly","kind":"auto_renewing"},{"id":"elovia_pro_lifetime","kind":"lifetime"}]
+REVENUECAT_COACHING_PRODUCTS_JSON=[{"id":"elovia_coaching_monthly","kind":"auto_renewing"}]
+```
 
-For each configured entitlement, join its canonical `product_identifier` to both `subscriber.subscriptions` and `subscriber.non_subscriptions`. A missing join for an entitlement that claims a product is malformed canonical state and is retryable; do not guess.
+Each list contains 1–64 objects. `id` is 1–256 well-formed Unicode characters after trimming with no NUL/control character. `kind` is exactly `auto_renewing | prepaid | promotional | lifetime | non_renewing`; `non_renewing` alone requires integer `accessDays` from 1–3660 and every other kind forbids it. Entitlement IDs are distinct, 1–128 characters, use the same safe-string rule, and cannot equal `__legacy_unverified__`. Reject duplicate product IDs within or across entitlements. `REVENUECAT_ENVIRONMENT` is exactly `production | sandbox`; `REVENUECAT_NORMALIZED_READS` is exactly `per_user | strict`. This makes product-to-entitlement and duration mapping unambiguous.
 
-First derive every matching product candidate independently with the precedence below. Then choose deterministically: an access-granting candidate beats an inactive candidate; among access-granting candidates, lifetime/non-expiring beats dated access, otherwise the greatest effective access deadline wins; among inactive candidates, the latest known deadline wins. Remaining ties use lexical product ID, then lexical store. This prevents a refunded lifetime purchase from masking a live dated purchase.
+### Bounded canonical snapshot
 
-| Precedence | Canonical condition | active | status | effective `accessEndsAt` | `willRenew` |
+Accept only HTTP `200 | 201`, JSON content type, at most 1,048,576 actual decoded bytes, and a schema with:
+
+- `request_date_ms`: positive safe integer, finite JavaScript date, no earlier than request-start minus 5 minutes and no later than response-receipt plus 5 minutes;
+- at most 64 entitlement pointers, 256 subscription products, 256 non-subscription product keys, 256 purchases per non-subscription product, and 512 total normalized purchase entries;
+- product IDs 1–256; store/period/ownership enums at most 32 characters; ISO date strings at most 64 characters and finite;
+- store enum `app_store | mac_app_store | play_store | amazon | stripe | promotional | rc_billing | paddle | roku | test_store`;
+- period enum `normal | trial | intro | promotional | prepaid`; ownership enum `purchased | family_shared`;
+- purchase/expiry/grace/refund/pause/cancellation dates no earlier than 2000-01-01 and no later than snapshot time plus 10 years.
+
+Allowlist only these candidate fields: subscription `purchase_date`, `original_purchase_date`, `expires_date`, `grace_period_expires_date`, `billing_issues_detected_at`, `unsubscribe_detected_at`, `refunded_at`, `auto_resume_date`, `is_sandbox`, `store`, `ownership_type`, and `period_type`; non-subscription `id`, `purchase_date`, `is_sandbox`, and `store`; entitlement-pointer `product_identifier`, `expires_date`, `grace_period_expires_date`, and `purchase_date`. Ignore subscriber attributes and every other field without traversing or returning them. Invalid UTF-8, JSON, count, field, enum, date, product-pointer, or product-class shape is typed `canonical_response_invalid`, retryable, and writes no projection.
+
+Filter candidates by configured environment before selection. For production, reject `is_sandbox=true` and `test_store`; for sandbox, reject production entries. Discover candidates from configured product allowlists in `subscriptions`/`non_subscriptions`. `subscriber.entitlements[configuredId].product_identifier`, when present, is only a cross-check: a non-allowlisted pointer is `canonical_mapping_mismatch`; an absent pointer does not hide an allowlisted product.
+
+Product class determines the only valid source: `auto_renewing`, `prepaid`, and `promotional` use subscription entries; `lifetime` and `non_renewing` use non-subscription entries. A configured product found only in the wrong collection, a prepaid subscription whose normalized period is not PREPAID, or a promotional subscription whose store/period is not promotional is `canonical_mapping_mismatch`, not a grant.
+
+### Deterministic entitlement derivation
+
+Use snapshot time—not server wall clock—to derive every candidate:
+
+| Candidate | Canonical condition | active | status | access deadline | willRenew |
 |---|---|---:|---|---|---:|
-| 1 | `refunded_at` present | false | `refunded` | refund instant | false |
-| 2 | non-subscription/lifetime candidate with null entitlement expiry and no refund | true | `active` | null | false |
-| 3 | billing issue and matching-environment `grace_period_expires_date > now` | true | `grace` | max(period end, grace end) | false when cancellation or pause metadata exists; true otherwise |
-| 4 | paid period still live and billing issue exists without a later live grace | true | `billing_issue` | period end | false when cancellation or pause metadata exists; true otherwise |
-| 5 | paid period still live and pause/`auto_resume_date` metadata exists | true | `paused` | period end | true only when a future auto-resume exists |
-| 6 | paid period still live and `unsubscribe_detected_at` exists | true | `cancelled` | period end | false |
-| 7 | paid period still live and `period_type` is trial | true | `trial` | period end | true unless cancellation metadata exists |
-| 8 | paid period still live | true | `active` | period end | true for renewing subscriptions; false for non-subscription purchases |
-| 9 | no live period/grace/lifetime candidate | false | `expired` | latest known period/grace end or null | false |
+| subscription refund | documented subscription `refunded_at` present | false | `refunded` | refund instant | false |
+| subscription grace | billing issue and live grace | true | `grace` | later of expiry/grace | auto-renew rule below |
+| live paused | live expiry and `auto_resume_date` present | true | `paused` | expiry | false |
+| live cancelled | live expiry and `unsubscribe_detected_at` present | true | `cancelled` | expiry | false |
+| live billing issue | live expiry and billing issue without later grace | true | `billing_issue` | expiry | auto-renew rule below |
+| live trial | live expiry and `period_type=trial` | true | `trial` | expiry | auto-renew rule below |
+| live intro | live expiry and `period_type=intro` | true | `intro` | expiry | auto-renew rule below |
+| live prepaid | configured `kind=prepaid`, live expiry, canonical `period_type=prepaid` | true | `prepaid` | expiry | false |
+| live promotional | configured `kind=promotional`, live expiry/store or period promotional | true | `promotional` | expiry | false |
+| live auto-renewing | configured `kind=auto_renewing`, live expiry | true | `active` | expiry | auto-renew rule below |
+| lifetime | configured `kind=lifetime` and matching non-subscription purchase exists | true | `active` | null | false |
+| fixed non-renewing | configured `kind=non_renewing`; latest purchase date + `accessDays` is future | true | `active` | computed deadline | false |
+| no live configured candidate | otherwise | false | `expired` | latest known bounded deadline or null | false |
 
-Persist `periodEndsAt`, `graceEndsAt`, and effective `accessEndsAt` separately. Resolver gating uses only `active && (accessEndsAt === null || accessEndsAt > now)`. A cancelled, paused, or billing-issue row can therefore remain active only through its canonical effective deadline.
+The auto-renew rule is true only for `auto_renewing`, `trial`, or `intro` subscription candidates with no refund, unsubscribe, or pause metadata; a billing issue alone does not set it false. PREPAID, promotional, lifetime, and non-renewing are always false. `REFUND_REVERSED` and `TEMPORARY_ENTITLEMENT_GRANT` merely trigger a canonical read; canonical fields decide access. v1 non-subscription entries have no refund field: removal/refund is represented only by canonical absence unless RevenueCat later documents an authoritative field and this plan is revised.
 
-### Absent configured entitlement
+Persist periods exactly: subscription `period_ends_at=expires_date`; `grace_ends_at` is the live bounded `grace_period_expires_date` only for `grace`, otherwise null; `access_ends_at` is the grace deadline for grace, `refunded_at` for refunded, and `expires_date` for every other dated subscription status. Lifetime stores all three null. Fixed non-renewing stores its computed purchase-plus-`accessDays` deadline in both `period_ends_at` and `access_ends_at`. A configured but expired candidate retains its selected product/store/deadline with `active=false,status=expired`; true canonical absence stores null product/store/deadlines. Selection and status precedence are the table order followed by the deterministic cross-candidate rule below.
 
-If Pro or Coaching is absent from a valid matching-environment snapshot, project an explicit row with `active=false`, `status='expired'`, null product/store/period/grace/access dates, `willRenew=false`, and the incoming canonical source tuple. This makes revocation explicit and ordered.
+Choose among candidates deterministically: live beats inactive; live lifetime beats dated; otherwise greatest deadline, then configured product ID under byte order. Project an absent configured entitlement explicitly as inactive/expired with null product/store/deadlines and the incoming snapshot tuple. Resolver access is `active && (accessEndsAt === null || accessEndsAt > now)`. Coaching wins display tier and implies Pro access; both DB rows remain independent.
 
 ### Legacy compatibility projection
 
-Only recompute `subscriptions` when at least one normalized entitlement row advances. Select active Coaching first, then active Pro. Set every compatibility column explicitly:
+Only reproject `subscriptions` when at least one normalized row advances. Select live Coaching, then live Pro, and set every column:
 
-- `user_id`: unchanged local UID.
-- `revenuecat_user_id`: the non-anonymous local UID used for the canonical customer; never an anonymous alias.
-- `entitlement_active`: whether a winner exists.
-- `entitlement_id`: winner ID, otherwise null.
-- `status`: winner status, mapping `trial` to existing `in_trial`; otherwise `expired` when no winner.
-- `tier`: deterministic existing product mapping (`lifetime`, `yearly`, `monthly`, else null); Coaching remains identified by entitlement ID rather than overloading this field.
-- `product_id`, `store`: winner values, otherwise null.
-- `trial_started_at`: null because v1 projection does not preserve a trustworthy start in the current schema.
-- `trial_ends_at`: winner access deadline only for trial, otherwise null.
-- `current_period_ends_at`: winner effective access deadline, otherwise null.
-- `last_event`: always null.
-- `last_event_at`: webhook source time for webhook projection; Unix epoch for bootstrap projection.
-- `updated_at`: database transaction time; preserve `created_at`.
+- keep `user_id`; set `revenuecat_user_id=user_id`;
+- set `entitlement_active`, `entitlement_id`, `status`, `product_id`, and `store` from the winner, otherwise inactive/null/`expired`;
+- set `tier='lifetime'` only for configured lifetime products and null for every other product kind; do not infer monthly/yearly from product-name substrings;
+- set `trial_started_at=null`, `trial_ends_at=accessEndsAt` only for trial, and `current_period_ends_at=accessEndsAt`;
+- set `last_event=null`, `last_event_at=source_snapshot_at`, `updated_at=database now`, and preserve `created_at`.
 
-A stale event does not touch this row.
+Stale snapshots do not touch this row. No entitlement resolver reads its paid/trial flags after Task 5.
 
 ---
 
 ## Task 1: Shipped bounded ordinary-event contract
 
-**Status:** Complete in commits `6ddc3d8`, `17d9155`, `f2db3a1`, `06c6956`, and accepted review head `59dba42` (spec and quality PASS).
+**Status:** Complete in commits `6ddc3d8`, `17d9155`, `f2db3a1`, `06c6956`, and accepted review head `59dba42`.
 
-The shipped contract already:
+Preserve its finite-Date rejection, 16×128 entitlement metadata bound, `userId`/`originalUserId` ordinary fields, exported mutable `Set` runtime API, and public metadata assignability to `Record<string, string | number | string[] | null>`.
 
-- bounds event ID/type/user ID;
-- rejects missing or non-safe timestamps;
-- rejects timestamps outside the JavaScript `Date` range with `Number.isFinite(eventAt.getTime())`;
-- bounds entitlement metadata to 16 strings and 128 characters per string;
-- classifies unknown events as non-reconciling.
+## Task 1A: Model all official identity-bearing delivery shapes
 
-Task 1A deliberately replaces its single-shape subject model; do not revert the shipped date or per-entitlement bounds.
+**Files:** Modify the shipped contract/test and create `revenuecatContract.typecheck.ts`.
 
-## Task 1A: Refactor parsing to ordinary/transfer discriminated unions
+- [ ] **Step 1: Add failing official-shape and compatibility tests**
 
-**Files:**
+Add ordinary fixtures containing `app_user_id`, `original_app_user_id`, and duplicate anonymous/authenticated `aliases[]`. Add real `TRANSFER` without `app_user_id`. Add real `PURCHASE_REDEEMED` without `app_user_id` for each outcome `alias`, `transfer`, and `redeemer_owns` using `redeemed_from[]`/`redeemed_by[]`.
 
-- Modify `artifacts/api-server/src/lib/revenuecatContract.ts`.
-- Modify `scripts/tests/revenuecat-contract.test.mjs`.
+Assert combined first-seen deduplication, 256 identities accepted, 257 or excessive raw array volume returns `ignored_identity_volume`, and unknown/missing outcome or missing/empty `redeemed_by` returns `unsupported_redemption_shape`. These two valid-but-unsupported codes are transport-level `200` dispositions, not `400` parse errors.
 
-- [ ] **Step 1: Add failing real-shape transfer and alias tests**
+Assert `REFUND_REVERSED`, `TEMPORARY_ENTITLEMENT_GRANT`, and `PURCHASE_REDEEMED` are present in the same exported `Set` instance used today. Existing recognized types remain. In `revenuecatContract.typecheck.ts`, compile these assignments:
 
-Use a RevenueCat transfer body without `app_user_id`:
-
-```js
-const transfer = {
-  api_version: "1.0",
-  event: {
-    id: "87654321-4321-4321-4321-210987654321",
-    type: "TRANSFER",
-    event_timestamp_ms: 1_725_000_000_000,
-    transferred_from: ["$RCAnonymousID:old-device", "firebase-user-old", "firebase-user-old"],
-    transferred_to: ["firebase-user-new", "$RCAnonymousID:new-device"],
-    environment: "PRODUCTION",
-  },
-};
-
-const parsed = parseRevenueCatDelivery(transfer);
-assert.equal(parsed.ok, true);
-assert.equal(parsed.value.kind, "transfer");
-assert.deepEqual(parsed.value.transferredFrom, [
-  "$RCAnonymousID:old-device",
-  "firebase-user-old",
-]);
-assert.deepEqual(parsed.value.transferredTo, [
-  "firebase-user-new",
-  "$RCAnonymousID:new-device",
-]);
-assert.equal("userId" in parsed.value, false);
+```ts
+const runtimeSet: Set<string> = RECONCILING_REVENUECAT_EVENTS;
+const legacyMetadata: Record<string, string | number | string[] | null> = delivery.metadata;
+const ordinaryUserId: string = ordinary.userId;
+const ordinaryOriginal: string | null = ordinary.originalUserId;
 ```
-
-Also assert:
-
-- transfer succeeds without `app_user_id`;
-- ordinary recognized and unknown deliveries still require bounded `app_user_id`;
-- each raw transfer array contains 1–32 entries and still contains 1–32 unique strings after deduplication; each entry is trimmed, well-formed Unicode, and 1–256 characters;
-- empty sides, non-strings, overlong aliases, too many aliases, invalid dates, and missing event identity fail;
-- anonymous aliases are preserved request-locally, not rejected;
-- the existing 16×128 entitlement metadata and finite-Date tests continue to pass.
 
 - [ ] **Step 2: Run RED**
 
-Run:
-
 ```powershell
 node --test scripts/tests/revenuecat-contract.test.mjs
+pnpm --filter @workspace/api-server typecheck
 ```
 
-Expected: new transfer tests fail because the shipped parser still requires `app_user_id`.
+Expected: official aliases/redemption/event-set cases fail; compatibility file does not compile until additive types exist.
 
-- [ ] **Step 3: Implement the discriminated union**
+- [ ] **Step 3: Implement an additive discriminated union**
 
-Export:
+Keep metadata declared as the accepted `Record<...>` and export:
 
 ```ts
-export interface RevenueCatEventMetadata {
-  productId: string | null;
-  entitlementIds: string[];
-  store: string | null;
-  environment: string | null;
-}
-
 interface RevenueCatDeliveryBase {
   eventId: string;
   type: string;
   eventAt: Date;
   disposition: "pending" | "ignored_unknown";
   requiresReconciliation: boolean;
-  metadata: RevenueCatEventMetadata;
+  metadata: Record<string, string | number | string[] | null>;
 }
 
 export interface OrdinaryRevenueCatDelivery extends RevenueCatDeliveryBase {
   kind: "ordinary";
   userId: string;
   originalUserId: string | null;
+  aliases: string[];
 }
 
 export interface TransferRevenueCatDelivery extends RevenueCatDeliveryBase {
@@ -233,57 +236,48 @@ export interface TransferRevenueCatDelivery extends RevenueCatDeliveryBase {
   transferredTo: string[];
 }
 
+export interface PurchaseRedeemedRevenueCatDelivery extends RevenueCatDeliveryBase {
+  kind: "purchase_redeemed";
+  type: "PURCHASE_REDEEMED";
+  redeemedFrom: string[];
+  redeemedBy: string[];
+  redemptionOutcome: "alias" | "transfer" | "redeemer_owns";
+}
+
 export type RevenueCatDelivery =
   | OrdinaryRevenueCatDelivery
-  | TransferRevenueCatDelivery;
+  | TransferRevenueCatDelivery
+  | PurchaseRedeemedRevenueCatDelivery;
 ```
 
-Normalize and deduplicate arrays while preserving first-seen order. `TRANSFER` takes only the transfer branch; every other type takes the ordinary branch. Preserve the accepted ordinary `userId`/`originalUserId` public fields while mapping them from bounded `app_user_id`/`original_app_user_id`. Retain the shipped finite-Date and metadata bounds.
+`TRANSFER` and `PURCHASE_REDEEMED` never enter the ordinary branch or require `app_user_id`. Preserve the accepted ordinary public fields and bounds. Add only the two explicit non-applied parse result codes described above; document them in the exported result union.
 
 - [ ] **Step 4: Run GREEN and commit**
-
-Run:
 
 ```powershell
 node --test scripts/tests/revenuecat-contract.test.mjs
 pnpm --filter @workspace/api-server typecheck
 ```
 
-Expected: PASS.
+Expected: PASS, including runtime/source/compile compatibility.
 
-Commit:
+Commit: `fix: model revenuecat identity delivery shapes`
 
-```text
-fix: model revenuecat transfer deliveries
-```
+## Task 2: Add forward-only schema, durable trusted-UID reconciliation, and migration coverage
 
-## Task 2: Add the forward-only normalized schema, legacy scrub, and proven PostgreSQL harness
+**Files:** Create migration/schema/integration test; modify schema exports, subscriptions schema, and every hardcoded migration/table assertion in `user-data-integration.test.mjs`.
 
-**Files:**
+- [ ] **Step 1: Add failing migration, collation, cascade, and upgrade tests**
 
-- Create `lib/db/migrations/0004_revenuecat_entitlement_integrity.sql`.
-- Create `lib/db/src/schema/revenuecat.ts`.
-- Modify `lib/db/src/schema/index.ts`.
-- Modify `lib/db/src/schema/subscriptions.ts`.
-- Create `scripts/tests/revenuecat-integration.test.mjs`.
-- Modify `scripts/tests/user-data-integration.test.mjs`.
+Use the proven harness exactly: test-only database name, unique schema in `DATABASE_URL.options`, migrations before setting/importing DB modules, `tsx/esm/api` registration, then dynamic TypeScript imports. Throw under `CI=true` without `TEST_DATABASE_URL`; local execution may skip.
 
-- [ ] **Step 1: Create the failing integration harness and schema assertions**
+For the upgrade test, copy exact `0000`–`0003` files to a temporary migration directory, run them, insert a hostile legacy subscription with `entitlement_active=true`, overlong identifiers, future `last_event_at`, raw `last_event`, and an anonymous `revenuecat_user_id`, then run the full migration directory. Assert `0004` succeeds, writes only the inactive sentinel, scrubs both sensitive legacy columns, and enforces both checks.
 
-Copy the proven ordering from `user-data-integration.test.mjs`: require a database name containing `test`, create a unique schema, run migrations against a URL whose `options` sets that schema, set `process.env.DATABASE_URL`, register `tsx/esm/api`, and only then dynamically import `@workspace/db`-dependent TypeScript modules. Do not statically import DB/API TypeScript at test-module scope.
+Assert every column/PK/FK/check/index below, `COLLATE "C"`, byte order for mixed `A/a/-/_` operation and event IDs under available locales, five-table discovery, pending state for an existing user without a subscription, two-user shared-event deletion safety, customer-state queue cascade, and event TTL deletion setting only entitlement `source_trigger_event_id` null.
 
-The new test must throw when `CI=true` and `TEST_DATABASE_URL` is absent; otherwise it may skip locally. Assert exact columns, PKs, checks, indexes, and FKs for all five tables below. For the upgrade fixture, run an exact temporary migration directory containing `0000`–`0003`, seed a hostile legacy row with `entitlement_active=true`, overlong entitlement/product/store values, a future `last_event_at`, and raw `last_event`, then rerun the same runner against the full directory so only `0004` applies. Migration must succeed, create only the fixed inactive `__legacy_unverified__` sentinel at the epoch, and scrub the raw event. A post-migration attempt to write non-null `subscriptions.last_event` must fail specifically on `subscriptions_last_event_must_be_null`. Add a two-user transfer fixture whose entitlements reference one shared event; deleting user A must delete only A-linked subject/alias/state/entitlement rows while user B and the PII-free event remain.
-
-Update every hardcoded migration/table assertion in `user-data-integration.test.mjs`:
-
-- add migration `0004_revenuecat_entitlement_integrity.sql` to blank-install, concurrent-runner, checksum-fixture, and baseline-adoption lists/counts;
-- preserve `0003_account_deletion_identity_outbox.sql` immediately before `0004` in every expected sequence; the live runner discovers `.sql` files and sorts them lexically, so `migrate.mjs` itself does not change;
-- add all five new tables to `expectedApplicationTables`;
-- keep all existing deletion/outbox cases unchanged.
+Update blank-install, concurrent-runner, checksum, baseline-adoption, and table-count fixtures. Preserve `0003_account_deletion_identity_outbox.sql` immediately before `0004`; `migrate.mjs` already discovers/sorts `.sql` lexically and does not change. Keep all existing deletion/outbox tests.
 
 - [ ] **Step 2: Run RED**
-
-Run:
 
 ```powershell
 $env:TEST_DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/elovia_test'
@@ -291,15 +285,13 @@ node --test scripts/tests/revenuecat-integration.test.mjs scripts/tests/user-dat
 Remove-Item Env:TEST_DATABASE_URL
 ```
 
-Expected: new schema assertions fail because migration `0004` is absent.
+Expected: missing `0004`/tables/checks fail.
 
-- [ ] **Step 3: Create migration `0004`**
-
-Create these exact relations:
+- [ ] **Step 3: Create exact migration `0004`**
 
 ```sql
 CREATE TABLE "revenuecat_webhook_events" (
-  "event_id" varchar(128) PRIMARY KEY,
+  "event_id" varchar(128) COLLATE "C" PRIMARY KEY,
   "type" varchar(64) NOT NULL,
   "event_at" timestamptz NOT NULL,
   "received_at" timestamptz NOT NULL DEFAULT now(),
@@ -309,89 +301,130 @@ CREATE TABLE "revenuecat_webhook_events" (
   "attempt_count" integer NOT NULL DEFAULT 0,
   "processing_lease_id" varchar(128),
   "processing_lease_until" timestamptz,
+  "next_attempt_at" timestamptz NOT NULL DEFAULT now(),
   "processed_at" timestamptz,
-  CONSTRAINT "revenuecat_event_identity_valid"
-    CHECK (
-      "event_id" ~ '^[A-Za-z0-9_-]{8,128}$'
-      AND "type" ~ '^[A-Z0-9_]{3,64}$'
-      AND "event_at" > '1970-01-01T00:00:00Z'::timestamptz
-    ),
+  "retention_until" timestamptz NOT NULL,
+  CONSTRAINT "revenuecat_event_identity_valid" CHECK (
+    "event_id" ~ '^[A-Za-z0-9_-]{8,128}$' AND
+    "type" ~ '^[A-Z0-9_]{3,64}$' AND
+    "event_at" > '1970-01-01T00:00:00Z'::timestamptz
+  ),
   CONSTRAINT "revenuecat_event_environment_valid"
     CHECK ("environment" IS NULL OR "environment" IN ('production','sandbox')),
   CONSTRAINT "revenuecat_event_disposition_valid"
     CHECK ("disposition" IN ('pending','applied','stale','ignored_unknown')),
-  CONSTRAINT "revenuecat_event_metadata_object"
-    CHECK (jsonb_typeof("metadata") = 'object'),
-  CONSTRAINT "revenuecat_event_attempt_count_valid"
-    CHECK ("attempt_count" >= 0),
-  CONSTRAINT "revenuecat_event_lease_consistent"
-    CHECK (
-      ("processing_lease_id" IS NULL) = ("processing_lease_until" IS NULL)
-      AND ("processing_lease_id" IS NULL OR length("processing_lease_id") BETWEEN 8 AND 128)
-    ),
-  CONSTRAINT "revenuecat_event_state_consistent"
-    CHECK (
-      ("disposition" = 'pending' AND "processed_at" IS NULL)
-      OR
-      ("disposition" <> 'pending' AND "processed_at" IS NOT NULL
-        AND "processing_lease_id" IS NULL AND "processing_lease_until" IS NULL)
-    )
+  CONSTRAINT "revenuecat_event_metadata_object" CHECK (jsonb_typeof("metadata") = 'object'),
+  CONSTRAINT "revenuecat_event_attempt_valid" CHECK ("attempt_count" >= 0),
+  CONSTRAINT "revenuecat_event_lease_consistent" CHECK (
+    ("processing_lease_id" IS NULL) = ("processing_lease_until" IS NULL) AND
+    ("processing_lease_id" IS NULL OR length("processing_lease_id") BETWEEN 8 AND 128)
+  ),
+  CONSTRAINT "revenuecat_event_state_consistent" CHECK (
+    ("disposition" = 'pending' AND "processed_at" IS NULL) OR
+    ("disposition" <> 'pending' AND "processed_at" IS NOT NULL AND
+      "processing_lease_id" IS NULL AND "processing_lease_until" IS NULL)
+  ),
+  CONSTRAINT "revenuecat_event_schedule_valid" CHECK (
+    "next_attempt_at" >= "received_at" AND
+    ("processed_at" IS NULL OR "processed_at" >= "received_at")
+  ),
+  CONSTRAINT "revenuecat_event_retention_valid" CHECK ("retention_until" > "received_at")
 );
 
 CREATE TABLE "revenuecat_event_subjects" (
-  "event_id" varchar(128) NOT NULL
+  "event_id" varchar(128) COLLATE "C" NOT NULL
     REFERENCES "revenuecat_webhook_events"("event_id") ON DELETE CASCADE,
   "subject_hash" char(64) NOT NULL,
   "role" varchar(32) NOT NULL,
   "local_user_id" varchar REFERENCES "users"("id") ON DELETE CASCADE,
-  PRIMARY KEY ("event_id", "subject_hash", "role"),
-  CONSTRAINT "revenuecat_subject_hash_valid"
-    CHECK ("subject_hash" ~ '^[0-9a-f]{64}$'),
-  CONSTRAINT "revenuecat_subject_role_valid"
-    CHECK ("role" IN ('primary','original','transferred_from','transferred_to'))
+  PRIMARY KEY ("event_id","subject_hash","role"),
+  CONSTRAINT "revenuecat_subject_hash_valid" CHECK ("subject_hash" ~ '^[0-9a-f]{64}$'),
+  CONSTRAINT "revenuecat_subject_role_valid" CHECK (
+    "role" IN ('primary','original','alias','transferred_from','transferred_to','redeemed_from','redeemed_by')
+  )
 );
 
 CREATE TABLE "revenuecat_customer_aliases" (
   "alias_hash" char(64) PRIMARY KEY,
   "local_user_id" varchar NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
   "alias_kind" varchar(32) NOT NULL,
+  "source_event_at" timestamptz NOT NULL,
+  "source_event_id" varchar(128) COLLATE "C" NOT NULL,
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "updated_at" timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT "revenuecat_alias_hash_valid"
-    CHECK ("alias_hash" ~ '^[0-9a-f]{64}$'),
-  CONSTRAINT "revenuecat_alias_kind_valid"
-    CHECK ("alias_kind" IN ('authenticated','anonymous','original','transferred'))
+  CONSTRAINT "revenuecat_alias_hash_valid" CHECK ("alias_hash" ~ '^[0-9a-f]{64}$'),
+  CONSTRAINT "revenuecat_alias_kind_valid" CHECK (
+    "alias_kind" IN ('authenticated','anonymous','original','ordinary','transferred')
+  ),
+  CONSTRAINT "revenuecat_alias_source_valid" CHECK (
+    "source_event_at" > '1970-01-01T00:00:00Z'::timestamptz AND
+    "source_event_id" ~ '^[A-Za-z0-9_-]{8,128}$'
+  )
 );
 
 CREATE TABLE "revenuecat_customer_state" (
   "user_id" varchar PRIMARY KEY REFERENCES "users"("id") ON DELETE CASCADE,
-  "canonicalization_state" varchar(32) NOT NULL DEFAULT 'legacy_unverified',
-  "source_kind" varchar(32) NOT NULL DEFAULT 'legacy_unverified',
-  "canonicalized_at" timestamptz,
+  "canonicalization_state" varchar(32) NOT NULL,
+  "source_kind" varchar(32) NOT NULL,
   "source_environment" varchar(16),
   "last_snapshot_at" timestamptz,
+  "last_operation_id" varchar(192) COLLATE "C",
+  "last_reconciled_at" timestamptz,
+  "reconcile_reason" varchar(32) NOT NULL,
+  "reconcile_after" timestamptz NOT NULL,
+  "reconcile_attempt_count" integer NOT NULL DEFAULT 0,
+  "reconcile_lease_id" varchar(128),
+  "reconcile_lease_until" timestamptz,
+  "reconcile_last_error_code" varchar(64),
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "updated_at" timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT "revenuecat_customer_canonicalization_valid"
-    CHECK ("canonicalization_state" IN ('legacy_unverified','canonical')),
-  CONSTRAINT "revenuecat_customer_source_kind_valid"
-    CHECK ("source_kind" IN ('legacy_unverified','webhook_canonical','bootstrap_canonical')),
-  CONSTRAINT "revenuecat_customer_environment_valid"
-    CHECK ("source_environment" IS NULL OR "source_environment" IN ('production','sandbox')),
-  CONSTRAINT "revenuecat_customer_canonicalized_consistent"
-    CHECK (
-      ("canonicalization_state" = 'legacy_unverified'
-        AND "source_kind" = 'legacy_unverified'
-        AND "canonicalized_at" IS NULL
-        AND "source_environment" IS NULL
-        AND "last_snapshot_at" IS NULL)
-      OR
-      ("canonicalization_state" = 'canonical'
-        AND "source_kind" IN ('webhook_canonical','bootstrap_canonical')
-        AND "canonicalized_at" IS NOT NULL
-        AND "source_environment" IS NOT NULL
-        AND "last_snapshot_at" IS NOT NULL)
-    )
+  CONSTRAINT "revenuecat_customer_state_valid" CHECK (
+    "canonicalization_state" IN ('legacy_unverified','pending','canonical')
+  ),
+  CONSTRAINT "revenuecat_customer_source_kind_valid" CHECK (
+    "source_kind" IN ('none','legacy_unverified','webhook_canonical','bootstrap_canonical','auth_canonical','worker_canonical')
+  ),
+  CONSTRAINT "revenuecat_customer_environment_valid" CHECK (
+    "source_environment" IS NULL OR "source_environment" IN ('production','sandbox')
+  ),
+  CONSTRAINT "revenuecat_customer_reason_valid" CHECK (
+    "reconcile_reason" IN ('legacy_bootstrap','webhook_failure','authenticated','on_demand','scheduled')
+  ),
+  CONSTRAINT "revenuecat_customer_attempt_valid" CHECK ("reconcile_attempt_count" >= 0),
+  CONSTRAINT "revenuecat_customer_schedule_valid" CHECK (
+    "reconcile_after" > '1970-01-01T00:00:00Z'::timestamptz AND
+    ("last_snapshot_at" IS NULL OR "last_snapshot_at" > '1970-01-01T00:00:00Z'::timestamptz) AND
+    ("last_reconciled_at" IS NULL OR "last_reconciled_at" > '1970-01-01T00:00:00Z'::timestamptz)
+  ),
+  CONSTRAINT "revenuecat_customer_lease_consistent" CHECK (
+    ("reconcile_lease_id" IS NULL) = ("reconcile_lease_until" IS NULL) AND
+    ("reconcile_lease_id" IS NULL OR length("reconcile_lease_id") BETWEEN 8 AND 128)
+  ),
+  CONSTRAINT "revenuecat_customer_error_code_valid" CHECK (
+    "reconcile_last_error_code" IS NULL OR
+      "reconcile_last_error_code" ~ '^[a-z0-9_]{3,64}$'
+  ),
+  CONSTRAINT "revenuecat_customer_operation_valid" CHECK (
+    "last_operation_id" IS NULL OR
+    "last_operation_id" ~ '^(webhook:[A-Za-z0-9_-]{8,128}|bootstrap:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|auth:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|worker:[A-Za-z0-9_-]{8,128})$'
+  ),
+  CONSTRAINT "revenuecat_customer_operation_source_consistent" CHECK (
+    "last_operation_id" IS NULL OR
+    ("source_kind" = 'webhook_canonical' AND "last_operation_id" LIKE 'webhook:%') OR
+    ("source_kind" = 'bootstrap_canonical' AND "last_operation_id" LIKE 'bootstrap:%') OR
+    ("source_kind" = 'auth_canonical' AND "last_operation_id" LIKE 'auth:%') OR
+    ("source_kind" = 'worker_canonical' AND "last_operation_id" LIKE 'worker:%')
+  ),
+  CONSTRAINT "revenuecat_customer_canonical_consistent" CHECK (
+    ("canonicalization_state" = 'legacy_unverified' AND "source_kind" = 'legacy_unverified' AND
+      "source_environment" IS NULL AND "last_snapshot_at" IS NULL AND "last_operation_id" IS NULL) OR
+    ("canonicalization_state" = 'pending' AND "source_kind" = 'none' AND
+      "source_environment" IS NULL AND "last_snapshot_at" IS NULL AND "last_operation_id" IS NULL) OR
+    ("canonicalization_state" = 'canonical' AND
+      "source_kind" IN ('webhook_canonical','bootstrap_canonical','auth_canonical','worker_canonical') AND
+      "source_environment" IS NOT NULL AND "last_snapshot_at" IS NOT NULL AND
+      "last_operation_id" IS NOT NULL AND "last_reconciled_at" IS NOT NULL)
+  )
 );
 
 CREATE TABLE "subscription_entitlements" (
@@ -407,95 +440,111 @@ CREATE TABLE "subscription_entitlements" (
   "will_renew" boolean NOT NULL DEFAULT false,
   "source_environment" varchar(16),
   "source_kind" varchar(32) NOT NULL,
-  "source_event_at" timestamptz NOT NULL,
-  "source_event_id" varchar(128)
-    REFERENCES "revenuecat_webhook_events"("event_id") ON DELETE RESTRICT,
+  "source_snapshot_at" timestamptz NOT NULL,
+  "source_operation_id" varchar(192) COLLATE "C" NOT NULL,
+  "source_trigger_event_id" varchar(128) COLLATE "C"
+    REFERENCES "revenuecat_webhook_events"("event_id") ON DELETE SET NULL,
   "updated_at" timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY ("user_id", "entitlement_id"),
+  PRIMARY KEY ("user_id","entitlement_id"),
   CONSTRAINT "subscription_entitlement_id_valid"
     CHECK (length(btrim("entitlement_id")) BETWEEN 1 AND 128),
-  CONSTRAINT "subscription_entitlement_status_valid"
-    CHECK ("status" IN ('active','trial','cancelled','billing_issue','grace','expired','refunded','paused')),
-  CONSTRAINT "subscription_entitlement_environment_valid"
-    CHECK ("source_environment" IS NULL OR "source_environment" IN ('production','sandbox')),
-  CONSTRAINT "subscription_entitlement_source_kind_valid"
-    CHECK ("source_kind" IN ('legacy_unverified','webhook_canonical','bootstrap_canonical')),
-  CONSTRAINT "subscription_entitlement_source_consistent"
-    CHECK (
-      ("source_kind" = 'legacy_unverified'
-        AND "source_environment" IS NULL AND "source_event_id" IS NULL
-        AND "source_event_at" = '1970-01-01T00:00:00Z'::timestamptz)
-      OR
-      ("source_kind" = 'bootstrap_canonical'
-        AND "source_environment" IS NOT NULL AND "source_event_id" IS NULL
-        AND "source_event_at" = '1970-01-01T00:00:00Z'::timestamptz)
-      OR
-      ("source_kind" = 'webhook_canonical'
-        AND "source_environment" IS NOT NULL AND "source_event_id" IS NOT NULL
-        AND "source_event_at" > '1970-01-01T00:00:00Z'::timestamptz)
-    ),
-  CONSTRAINT "subscription_entitlement_inactive_status_valid"
-    CHECK ("status" NOT IN ('expired','refunded') OR "active" = false),
-  CONSTRAINT "subscription_entitlement_access_window_valid"
-    CHECK (
-      "status" = 'refunded'
-      OR "access_ends_at" IS NULL
-      OR "period_ends_at" IS NULL
-      OR "access_ends_at" >= "period_ends_at"
-    )
+  CONSTRAINT "subscription_entitlement_status_valid" CHECK (
+    "status" IN ('active','trial','intro','prepaid','promotional','cancelled','billing_issue','grace','expired','refunded','paused')
+  ),
+  CONSTRAINT "subscription_entitlement_store_valid" CHECK (
+    "store" IS NULL OR "store" IN ('app_store','mac_app_store','play_store','amazon','stripe','promotional','rc_billing','paddle','roku','test_store')
+  ),
+  CONSTRAINT "subscription_entitlement_environment_valid" CHECK (
+    "source_environment" IS NULL OR "source_environment" IN ('production','sandbox')
+  ),
+  CONSTRAINT "subscription_entitlement_source_kind_valid" CHECK (
+    "source_kind" IN ('legacy_unverified','webhook_canonical','bootstrap_canonical','auth_canonical','worker_canonical')
+  ),
+  CONSTRAINT "subscription_entitlement_operation_valid" CHECK (
+    "source_operation_id" = 'legacy' OR
+    "source_operation_id" ~ '^(webhook:[A-Za-z0-9_-]{8,128}|bootstrap:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|auth:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|worker:[A-Za-z0-9_-]{8,128})$'
+  ),
+  CONSTRAINT "subscription_entitlement_operation_source_consistent" CHECK (
+    ("source_kind" = 'legacy_unverified' AND "source_operation_id" = 'legacy') OR
+    ("source_kind" = 'webhook_canonical' AND "source_operation_id" LIKE 'webhook:%') OR
+    ("source_kind" = 'bootstrap_canonical' AND "source_operation_id" LIKE 'bootstrap:%') OR
+    ("source_kind" = 'auth_canonical' AND "source_operation_id" LIKE 'auth:%') OR
+    ("source_kind" = 'worker_canonical' AND "source_operation_id" LIKE 'worker:%')
+  ),
+  CONSTRAINT "subscription_entitlement_source_consistent" CHECK (
+    ("source_kind" = 'legacy_unverified' AND "source_environment" IS NULL AND
+      "entitlement_id" = '__legacy_unverified__' AND "active" = false AND
+      "status" = 'expired' AND "product_id" IS NULL AND "store" IS NULL AND
+      "period_ends_at" IS NULL AND "grace_ends_at" IS NULL AND
+      "access_ends_at" IS NULL AND "will_renew" = false AND
+      "source_snapshot_at" = '1970-01-01T00:00:00Z'::timestamptz AND
+      "source_operation_id" = 'legacy' AND "source_trigger_event_id" IS NULL) OR
+    ("source_kind" <> 'legacy_unverified' AND "source_environment" IS NOT NULL AND
+      "source_snapshot_at" > '1970-01-01T00:00:00Z'::timestamptz AND
+      ("source_kind" = 'webhook_canonical' OR "source_trigger_event_id" IS NULL))
+  ),
+  CONSTRAINT "subscription_entitlement_active_status_valid"
+    CHECK ("active" = ("status" NOT IN ('expired','refunded'))),
+  CONSTRAINT "subscription_entitlement_renewal_valid" CHECK (
+    "will_renew" = false OR
+    ("active" = true AND "status" IN ('active','trial','intro','billing_issue','grace'))
+  ),
+  CONSTRAINT "subscription_entitlement_access_window_valid" CHECK (
+    "status" = 'refunded' OR "access_ends_at" IS NULL OR
+    "period_ends_at" IS NULL OR "access_ends_at" >= "period_ends_at"
+  )
 );
 ```
 
-Create these indexes:
+Create exact indexes:
 
 - `IDX_revenuecat_events_type_time(type,event_at DESC)`;
-- `IDX_revenuecat_events_pending_lease(disposition,processing_lease_until)`;
+- `IDX_revenuecat_events_pending_due(disposition,next_attempt_at,processing_lease_until)`;
+- `IDX_revenuecat_events_retention(retention_until,disposition)`;
 - `IDX_revenuecat_event_subjects_local(local_user_id,event_id)`;
-- `IDX_revenuecat_aliases_local(local_user_id)`;
-- `IDX_revenuecat_customer_state_pending(canonicalization_state,user_id)`;
+- `IDX_revenuecat_aliases_local(local_user_id)` and `IDX_revenuecat_aliases_source(source_event_at,source_event_id)`;
+- `IDX_revenuecat_customer_reconcile_due(reconcile_after,reconcile_lease_until,user_id)`;
 - `IDX_subscription_entitlements_active(user_id,active,access_ends_at)`;
-- `IDX_subscription_entitlements_source(user_id,source_event_at,source_event_id)`.
+- `IDX_subscription_entitlements_source(user_id,source_snapshot_at,source_operation_id)`.
 
-The event row contains no user/alias field. `metadata` is constructed field-by-field from the bounded contract allowlist (period type plus counts/booleans needed for operations), never by spreading `event` or storing product, transaction, or subject identifiers. Subject/alias tables contain only keyed hashes. Because the event is not owned by one user, deleting either side of a transfer cascades that user's entitlement before any event relationship matters. `source_event_id` is `RESTRICT` so the ordering ID cannot silently disappear; it never references a user and therefore cannot block user deletion. For webhook projections, processor tests require `subscription_entitlements.source_event_at` to equal the referenced ledger `event_at`; bootstrap/legacy use the checked epoch. `canonicalized_at`, `last_snapshot_at`, and `updated_at` use database transaction time and never participate in event ordering.
-
-Backfill exactly:
+Backfill exactly one customer-state row per existing trusted user. Users with a legacy subscription are `legacy_unverified`; users without one are `pending`. Backfill one hostile sentinel only for each legacy subscription:
 
 ```sql
 INSERT INTO "revenuecat_customer_state" (
-  "user_id", "canonicalization_state", "source_kind"
+  "user_id","canonicalization_state","source_kind","reconcile_reason","reconcile_after"
 )
-SELECT "user_id", 'legacy_unverified', 'legacy_unverified'
-FROM "subscriptions"
+SELECT u."id",
+       CASE WHEN s."user_id" IS NULL THEN 'pending' ELSE 'legacy_unverified' END,
+       CASE WHEN s."user_id" IS NULL THEN 'none' ELSE 'legacy_unverified' END,
+       'legacy_bootstrap',now()
+FROM "users" u
+LEFT JOIN "subscriptions" s ON s."user_id" = u."id"
 ON CONFLICT ("user_id") DO NOTHING;
 
 INSERT INTO "subscription_entitlements" (
-  "user_id", "entitlement_id", "active", "status", "product_id", "store",
-  "period_ends_at", "grace_ends_at", "access_ends_at", "will_renew",
-  "source_environment", "source_kind", "source_event_at", "source_event_id"
+  "user_id","entitlement_id","active","status","will_renew",
+  "source_kind","source_snapshot_at","source_operation_id"
 )
-SELECT
-  "user_id", '__legacy_unverified__', false, 'expired', NULL, NULL,
-  NULL, NULL, NULL, false,
-  NULL, 'legacy_unverified', '1970-01-01T00:00:00Z'::timestamptz, NULL
-FROM "subscriptions"
-ON CONFLICT ("user_id", "entitlement_id") DO NOTHING;
+SELECT "user_id",'__legacy_unverified__',false,'expired',false,
+       'legacy_unverified','1970-01-01T00:00:00Z'::timestamptz,'legacy'
+FROM "subscriptions" ON CONFLICT ("user_id","entitlement_id") DO NOTHING;
 
-UPDATE "subscriptions" SET "last_event" = NULL WHERE "last_event" IS NOT NULL;
+UPDATE "subscriptions"
+SET "last_event" = NULL, "revenuecat_user_id" = "user_id"
+WHERE "last_event" IS NOT NULL OR "revenuecat_user_id" IS DISTINCT FROM "user_id";
 
 ALTER TABLE "subscriptions"
-  ADD CONSTRAINT "subscriptions_last_event_must_be_null"
-  CHECK ("last_event" IS NULL);
+  ADD CONSTRAINT "subscriptions_last_event_must_be_null" CHECK ("last_event" IS NULL),
+  ADD CONSTRAINT "subscriptions_revenuecat_user_is_local" CHECK (
+    "revenuecat_user_id" IS NULL OR "revenuecat_user_id" = "user_id"
+  );
 ```
 
-The fixed sentinel avoids migration failures or accidental trust from unbounded legacy entitlement/product/store/date values; bootstrap deletes it in the same transaction that writes the two configured canonical rows. The null-only constraint is defense in depth against any raw-payload rewrite, but does not make the old handler deletion-safe; rollout therefore forbids old/new replica overlap. Do not create synthetic legacy event rows, do not copy `entitlement_active`, and do not use `last_event_at` as a source clock.
+Do not copy any legacy access/product/store/date/event value into normalized state and do not create a synthetic event.
 
-- [ ] **Step 4: Mirror the schema in Drizzle**
+- [ ] **Step 4: Mirror exact Drizzle schema and run GREEN**
 
-Define all five tables, checks, indexes, PKs, and FK actions exactly in `lib/db/src/schema/revenuecat.ts`; export select/insert types and re-export from `schema/index.ts`. Mirror `subscriptions_last_event_must_be_null` in `schema/subscriptions.ts` so the Drizzle schema reflects the database-enforced invariant.
-
-- [ ] **Step 5: Run GREEN and commit**
-
-Run:
+Mirror all relations, collations, checks, indexes, and FK actions. Mirror both new `subscriptions` checks. Export insert/select types.
 
 ```powershell
 pnpm run typecheck:libs
@@ -505,76 +554,62 @@ Remove-Item Env:TEST_DATABASE_URL
 pnpm test
 ```
 
-Expected: schema/typecheck PASS; PostgreSQL tests execute when configured; every existing deletion/outbox test remains green.
+Expected: PASS, including all pre-existing deletion/outbox cases.
 
-Commit:
+Commit: `feat: add durable revenuecat entitlement schema`
 
-```text
-feat: add revenuecat normalized entitlement schema
-```
+## Task 3: Add validated product configuration and bounded Get-or-Create client
 
-## Task 3: Add fail-closed configuration and a bounded canonical client
+**Files:** Create config/client/snapshot modules; modify env, startup/readiness, and contract tests.
 
-**Files:**
+- [ ] **Step 1: Add failing configuration/client/normalization tests**
 
-- Create `artifacts/api-server/src/lib/revenuecatConfig.ts`.
-- Create `artifacts/api-server/src/lib/revenuecatClient.ts`.
-- Modify `artifacts/api-server/src/index.ts`.
-- Modify `artifacts/api-server/src/routes/health.ts`.
-- Modify `.env.example`.
-- Modify `scripts/tests/revenuecat-contract.test.mjs`.
+Configuration rejects missing/blank values, secrets over 1,024 UTF-8 bytes, HMAC outside 32–1,024 bytes, equal/reserved/overlong entitlement IDs, invalid JSON, empty or >64 product lists, >16 KiB JSON, duplicate products within/across entitlements, invalid kind/accessDays, unknown environment, and any read mode except `per_user | strict`.
 
-- [ ] **Step 1: Add failing config, byte-limit, timeout, environment, and truth-table tests**
+Client tests inject fetch/clock and prove:
 
-Assert configuration rejects missing/blank secrets; a webhook header or API key over 1,024 UTF-8 bytes; an HMAC key outside 32–1,024 UTF-8 bytes; entitlement IDs outside 1–128 characters, equal after trimming, or equal to reserved `__legacy_unverified__`; an unknown environment/read mode; and startup in any runtime without every required value.
-
-Inject `fetch` and a clock into the canonical client. Test:
-
-- URL uses `encodeURIComponent` and rejects traversal/overlong IDs;
-- bearer secret is present only in the outbound Authorization header;
-- non-2xx responses become typed errors; `404` becomes `subscriber_not_found`;
-- `429`/5xx/network/timeout errors are retryable without logging body/key;
-- malformed JSON, invalid UTF-8, or a response that fails the bounded canonical schema becomes typed `canonical_response_invalid`, is retryable, and cannot project state;
-- declared `Content-Length > 1_048_576` is rejected before reading;
-- chunked responses are read through a stream counter and aborted as soon as accumulated bytes exceed 1,048,576;
-- the client uses a 5-second abort timeout and `JSON.parse` only after the bounded UTF-8 text is complete—never unbounded `response.json()`;
-- mixed production/sandbox candidates retain only configured environment;
-- every row in the truth table above, including lifetime, non-subscription, refund, grace, cancellation, pause, billing issue, trial, expired, and multiple-product tie-breaking;
-- configured entitlements absent from the snapshot produce explicit inactive/expired rows.
+- it is callable only with a trusted local UID type and URL-encodes it;
+- `200` returns `{lookup:'existing', snapshot}` and `201` returns `{lookup:'created', snapshot}`;
+- no test or code path expects `404`/`subscriber_not_found`;
+- `201` carries no local-provision/trial authority;
+- 400/401 are typed configuration/request failures; 429/5xx/network/timeout are retryable and sanitized;
+- declared or streamed decoded bytes over 1,048,576 abort; timeout is 5 seconds; bounded text precedes `JSON.parse`; content type/UTF-8/JSON/schema are validated;
+- every count/string/date/enum/skew bound above; no `response.json()` or subscriber attribute traversal;
+- `request_date_ms` becomes `sourceSnapshotAt` for 200 and 201;
+- configured-product discovery, pointer cross-check, environment filtering, multiple products, and every truth-table row including PREPAID/promotional/non-renewing/lifetime/refund reversal/temporary-grant canonical outcomes.
 
 - [ ] **Step 2: Run RED**
 
-Run:
-
 ```powershell
 node --test scripts/tests/revenuecat-contract.test.mjs
+pnpm --filter @workspace/api-server typecheck
 ```
 
-Expected: new config/client tests fail because the modules do not exist.
+Expected: missing config/client/snapshot modules fail.
 
-- [ ] **Step 3: Implement validated configuration**
+- [ ] **Step 3: Implement fail-closed configuration**
 
-Add:
+Add exact environment template:
 
 ```dotenv
-REVENUECAT_WEBHOOK_SECRET=replace-with-a-long-random-webhook-secret
+REVENUECAT_WEBHOOK_SECRET=replace-with-the-exact-configured-authorization-header
 REVENUECAT_SECRET_API_KEY=replace-with-a-secret-server-api-key
 REVENUECAT_SUBJECT_HASH_KEY=replace-with-at-least-32-random-bytes
 REVENUECAT_PRO_ENTITLEMENT_ID=Elovia Pro
 REVENUECAT_COACHING_ENTITLEMENT_ID=Elovia Coaching
+REVENUECAT_PRO_PRODUCTS_JSON=[{"id":"elovia_pro_monthly","kind":"auto_renewing"}]
+REVENUECAT_COACHING_PRODUCTS_JSON=[{"id":"elovia_coaching_monthly","kind":"auto_renewing"}]
 REVENUECAT_ENVIRONMENT=production
 REVENUECAT_NORMALIZED_READS=per_user
 ```
 
-`loadRevenueCatConfig(env)` returns an immutable validated object. `src/index.ts` loads it before `listen`; invalid configuration aborts startup in development, test, staging, and production, so the platform can never mark that process ready. `/readyz` also receives the validated config status and defensively reports not ready if it is invalid. `REVENUECAT_NORMALIZED_READS` accepts exactly `legacy | per_user | strict`; rollout begins in `per_user` and ends in `strict` after Task 5 bootstrap.
+`loadRevenueCatConfig(env)` returns an immutable object. `index.ts` validates before listen in every runtime; invalid configuration means the process never becomes ready. Diagnostics later expose booleans/counts only.
 
-- [ ] **Step 4: Implement the bounded client**
+- [ ] **Step 4: Implement bounded client and pure projector**
 
-Export `createRevenueCatClient({apiKey,environment,fetchImpl,now,timeoutMs=5000,maxResponseBytes=1048576})`. Normalize only allowlisted fields required by the truth table. Do not return subscriber attributes or raw JSON. Include the raw app-user ID only as a request argument; it must not enter errors/logs.
+`createRevenueCatClient({apiKey,fetchImpl,clock,timeoutMs=5000,maxResponseBytes=1048576})` calls `GET https://api.revenuecat.com/v1/subscribers/{encodeURIComponent(trustedUid)}` with `Authorization: Bearer <secret API key>` and `Accept: application/json`, and returns the explicit 200/201 lookup status plus a bounded allowlisted snapshot. It never accepts a raw webhook subject. `revenuecatSnapshot.ts` performs all product/environment/status derivation and emits two rows with a supplied operation ID. It never accepts webhook expiry as truth.
 
 - [ ] **Step 5: Run GREEN and commit**
-
-Run:
 
 ```powershell
 node --test scripts/tests/revenuecat-contract.test.mjs
@@ -584,70 +619,48 @@ pnpm --filter @workspace/api-server run build
 
 Expected: PASS.
 
-Commit:
+Commit: `feat: add bounded revenuecat snapshot client`
 
-```text
-feat: add bounded revenuecat canonical client
-```
+## Task 4: Implement neutral locks, ordered aliases, and webhook processor
 
-## Task 4: Implement neutral account locks and the complete processor
+**Files:** Modify account deletion; create processor and the shared transactional reconciler; extend real PostgreSQL tests.
 
-**Files:**
+- [ ] **Step 1: Add failing neutral-lock regression tests**
 
-- Modify `artifacts/api-server/src/lib/accountDeletion.ts`.
-- Create `artifacts/api-server/src/lib/revenuecatProcessor.ts`.
-- Modify `scripts/tests/revenuecat-integration.test.mjs`.
+Prove `withAccountLock(uid, callback)` and `withAccountLocks(uids, callback)` invoke callbacks for existing/missing/deleted accounts, use the current advisory seed, reject empty IDs, dedupe exact strings, and sort by UTF-8 bytes. Refactor deletion/provisioning without changing repeated tombstone/request results or identity-outbox lease/retry/finalization tests. The provisioning API remains the authenticated path; processor code must have no insert into `users`.
 
-- [ ] **Step 1: Add failing lock-regression tests**
+- [ ] **Step 2: Add failing processor/idempotency/identity tests**
 
-Add tests that prove:
+With fake client and real PostgreSQL, cover:
 
-- `withAccountLock(uid, callback)` takes the existing advisory key and invokes the callback whether the user is active, missing, or tombstoned;
-- `withAccountLocks([uids], callback)` deduplicates and locks sorted UIDs in one transaction;
-- repeated deletion still returns the original tombstone/request;
-- identity-outbox lease/retry/finalization tests remain unchanged;
-- provisioning still checks the tombstone under the same lock;
-- a missing user is distinguishable from a tombstoned user.
+- 20 concurrent duplicates: one valid lease owner calls GET/commits, others do not call while that lease is valid; an expired lease after simulated crash may call again, but the old fence cannot commit;
+- terminal duplicate, event-ID envelope collision, pending retry/reclaim, stale canonical snapshot, and equal snapshot time with mixed-case/hyphen/underscore operation IDs under `COLLATE "C"`;
+- ordinary identity union maps one existing owner; zero owners returns `ignored_unmapped`; two owners returns `ignored_identity_conflict`; neither persists identifiers/hashes nor calls GET;
+- webhook never inserts `users`; an existing user with 200 can reconcile; 201 after a recognized webhook is retryable/non-applied, preserves state, and enqueues that trusted UID;
+- provider/normalization/finalization failure enqueues trusted UID and releases only the current event fence;
+- a syntactically valid unknown event bypasses identity resolution, stores at most its identifier-free envelope as terminal `ignored_unknown`, and never stores subjects or calls GET;
+- unsupported volume/redemption shape is acknowledged without event/hash/GET and increments only a count/type metric;
+- Pro/Coaching independence, absence revocation, configuration/environment fail-closed, exact compatibility projection, stale compatibility no-op.
 
-Do not define an “active-only” primitive that deletion must use.
+Transfer/alias tests:
 
-- [ ] **Step 2: Add failing processor behavior/concurrency tests**
+- existing source→destination and anonymous mapped source→destination; a retained source with no trusted destination can only reconcile canonical revocation and cannot move aliases/grant; a trusted destination with no retained source can receive only non-tombstoned alias hashes and its canonical snapshot; tombstoned sides are excluded before any GET and both deleted means no persistence;
+- alias upsert advances only on `(source_event_at, source_event_id COLLATE "C")`;
+- after sorted locks, every hash/direct UID is re-resolved; a new owner outside the lock set rolls back, unions the expanded set, and retries from sorted order without acquiring an extra lock in-place;
+- maximum three expanded-set retries in one request, then return typed `503 identity_set_changed` and emit a count-only alert. If the event was already claimed, leave it pending and enqueue trusted UIDs for worker backoff; if instability happened before claim, persist nothing and let the authenticated webhook retry;
+- reverse transfer chain and concurrent transfer-vs-transfer; older alias movement cannot undo newer;
+- a UID on both sides is locked once and destination canonical truth is applied once, never source-deactivated afterward;
+- event-subject `local_user_id` links are updated in the alias-assignment transaction and follow the final owner; a presented identity equal to a live local UID is self-owned and cannot be overridden by an alias row;
+- 50 transfer-vs-deletion races: tombstone leaves no linked rows and no provider GET begins for a prechecked deleted side.
+- deletion after a permitted GET but before final lock discards the response; an ordinary event with no surviving link is deleted/acknowledged `ignored_deleted`, while transfer retries with only surviving sides. Neither path remains a permanent `503`.
 
-Use fake canonical clients and real PostgreSQL. Cover:
+Purchase-redemption tests:
 
-- 20 concurrent identical ordinary deliveries: one applied, 19 duplicate, one event row;
-- the 20-delivery case performs exactly one canonical call; an unexpired non-owner claim waits, while an expired/released claim is resumable;
-- a transfer owner renews its lease between bounded fetch batches, and a simulated lost lease prevents all projection writes;
-- a terminal duplicate performs no additional canonical call, and a same-ID/different-envelope collision returns `400` without mutation;
-- newer then older distinct events: older stored `stale`, no normalized or legacy mutation;
-- equal timestamp uses lexical event ID tie-break;
-- Pro and Coaching coexist and independent rows advance;
-- absent entitlement is projected inactive/expired;
-- unknown event for existing user is ledgered `ignored_unknown` without client call or state mutation;
-- unknown event for missing/deleted user leaves zero ledger/subject/alias rows;
-- tombstone found before network causes no client call and returns `ignored_deleted`;
-- deletion after precheck but before final transaction wins the authoritative recheck;
-- canonical `subscriber_not_found` followed by a tombstone recheck returns `ignored_deleted`; the same error for a non-deleted ordinary customer remains typed/retryable;
-- `$RCAnonymousID:*` ordinary event without an existing alias is `ignored_missing` and never creates `users`;
-- legacy false-grant row remains inactive in normalized storage;
-- compatibility projection sets every column exactly and keeps `last_event` null;
-- when no normalized row advances, legacy projection is byte-for-byte unchanged.
-
-Transfer fixtures must use the Task 1A real shape and cover:
-
-- existing source → existing destination;
-- anonymous source alias → existing destination;
-- missing non-anonymous destination provisioned only after canonical success and final tombstone check;
-- anonymous destination never provisioned;
-- deleted source with active destination, active source with deleted destination, and both deleted;
-- canonical source not-found means empty/inactive source state only for `transferred_from` processing;
-- source aliases move only to one unambiguous retained destination; direct local-UID aliases stay pinned to their own UID, and conflicting destination ownership fails closed without projection;
-- 50 transfer-vs-deletion races with the invariant: each local UID ends either active with its own rows or tombstoned with none, and no transaction deadlocks;
-- one shared transfer event can update two users and deleting either user leaves the other user/event valid.
+- `alias` and `redeemer_owns` reconcile only one unambiguous already-existing retained `redeemed_by` owner;
+- `transfer` never moves aliases or deactivates a source (the separate `TRANSFER` owns that), but may canonical-reconcile one unambiguous existing redeemer;
+- no redemption outcome provisions, trusts an unmapped ID, or fetches `redeemed_from`.
 
 - [ ] **Step 3: Run RED**
-
-Run:
 
 ```powershell
 $env:TEST_DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/elovia_test'
@@ -655,54 +668,29 @@ node --test scripts/tests/revenuecat-integration.test.mjs scripts/tests/user-dat
 Remove-Item Env:TEST_DATABASE_URL
 ```
 
-Expected: new lock/processor cases fail.
+Expected: processor/lock/alias tests fail.
 
-- [ ] **Step 4: Implement neutral lock primitives**
+- [ ] **Step 4: Implement neutral locks and fenced event claim**
 
-Export the transaction type derived from the live Drizzle `db.transaction` callback and:
+`withAccountLocks` uses one transaction and sorted `pg_advisory_xact_lock(hashtextextended(uid, ACCOUNT_DELETION_LOCK_SEED))`; sorting is explicit UTF-8 byte order, never locale order. Never rewrite UIDs or acquire later-discovered locks out of order.
 
-```ts
-withAccountLock<T>(userId: string, callback: (tx: DbTransaction) => Promise<T>): Promise<T>
-withAccountLocks<T>(userIds: readonly string[], callback: (tx: DbTransaction) => Promise<T>): Promise<T>
-```
+For a mapped recognized event, under the initial sorted account locks recheck tombstones/owners, insert-or-claim the direct-identifier-free event with a 30-second lease, add user-linked subject hashes, and enqueue each trusted UID before releasing locks. Persisted metadata is constructed—not copied—from the exact allowlist `{schemaVersion: 1, identityCount: number, redemptionOutcome?: 'alias'|'transfer'|'redeemer_owns'}`; it contains no raw ID, product, payload, or provider response. `INSERT ... ON CONFLICT DO NOTHING`; conflict validates immutable type/event time/environment, allowlisted metadata, and the complete hash/role set. Reclaim uses one conditional `UPDATE ... WHERE disposition='pending' AND next_attempt_at<=now() AND (lease IS NULL OR lease_until<=now()) RETURNING`, increments attempts, and creates a new fence. Nonowners poll at most 5.5 seconds, then return `503 processing` with `Retry-After: 1` if still pending.
 
-`withAccountLocks` rejects empty UIDs, deduplicates the exact strings without rewriting them, and sorts them by ascending UTF-8 byte order (`Buffer.compare`) before acquiring the same `hashtextextended(uid, ACCOUNT_DELETION_LOCK_SEED)` transaction locks. Refactor provisioning and deletion on the neutral primitive without changing their public results. Build separate internal helpers for `existing | missing | deleted` lookup and recognized provisioning. Never export an unlocked provisioning path.
+Only the fence owner fetches. Before final writes it reacquires the sorted account locks, re-resolves every direct identity/alias hash, rechecks tombstones, and verifies `processing_lease_id`. A newly discovered owner outside the acquired set aborts the transaction and retries from the expanded, byte-sorted union; it never takes an extra lock in-place. Final entitlement/alias/subject/compatibility writes and terminal transition are atomic. Never hold a DB transaction/account lock across network I/O. A provider/normalization failure clears its own lease, advances `next_attempt_at` with the bounded backoff defined in Task 5, and leaves both the PII-minimized pending event and trusted-UID queue durable. A crash may cause a second GET after expiry; canonical ordering and fencing prevent stale commit.
 
-- [ ] **Step 5: Implement ordinary/unknown processing**
+- [ ] **Step 5: Implement ordinary, transfer, redemption, and unknown semantics**
 
-Processing sequence:
+Ordinary events assign only newer aliases to the one trusted owner. A raw presented identity equal to an existing local UID resolves directly to itself; alias-table ownership is consulted only when no live direct user exists, so an alias row cannot steal an authenticated UID. Transfer excludes prechecked tombstones before fetch, locks all retained source/destination UIDs, and fetches one canonical snapshot per unique UID. A retained source is deactivated only when its canonical configured products are absent/inactive; a still-live source or a `201` is `transfer_visibility_lag`, remains pending, and commits no entitlement batch. Once all snapshots are authoritative, apply newer alias provenance, all source projections, and every destination projection atomically; a UID present on both sides is projected only as destination. On re-resolution expansion, rollback and restart with the union sorted set. Redemptions follow the no-duplicate-transfer rules above. Unknown/unsupported/unmapped paths do no canonical work.
 
-1. Hash request-local subjects with the configured HMAC key.
-2. Terminal event read fast path: validate the immutable envelope and return duplicate without network.
-3. Unknown: resolve only an existing alias/local UID; enter the neutral account lock; recheck user/tombstone; insert a terminal PII-free `ignored_unknown` event plus local subject hash only for an existing user; otherwise return without persistence.
-4. Recognized anonymous ordinary delivery: resolve an existing alias first; if none, return `ignored_missing` without persistence, claim, or fetch. Never provision the alias.
-5. Recognized delivery: perform an unlocked tombstone precheck, then acquire the event claim described above. A non-owner waits/returns without calling RevenueCat. Only the owner proceeds.
-6. The owner fetches canonical state outside any transaction/account lock, enters the account lock, verifies its event lease, and rechecks the tombstone. Provision a missing non-anonymous local UID only after canonical success and this final check. If deleted, delete the owned pending claim and return `ignored_deleted`.
-7. Conditionally upsert both configured entitlement rows using `(source_event_at, COALESCE(source_event_id,''))` SQL comparison. Write absent rows explicitly.
-8. If at least one row advances, mark customer state canonical with `source_kind='webhook_canonical'`, recompute every compatibility column, and atomically finalize the event as applied. If none advances, finalize it stale and do not touch compatibility state.
-9. Commit before returning.
+If the authoritative final tombstone check removes the last linked user, discard the fetched response, delete the now-unreconstructable pending envelope, and return terminal HTTP `ignored_deleted`. If a transfer retains another live side, rollback and restart with only the surviving side set; never keep returning `503` for a deleted subject.
 
-On retryable external/normalization failure, release only the owner lease and leave the PII-free event pending for a later delivery; no subject, alias, customer, entitlement, or compatibility row is written. If an insert/update fails, the final transaction rolls back all projections and leaves the earlier claim safely reclaimable after its bounded lease.
+Alias movement uses one conditional upsert: update `local_user_id`, `alias_kind`, `source_event_at`, and `source_event_id` only where `(existing.source_event_at, existing.source_event_id COLLATE "C") < (incoming.event_at, incoming.event_id COLLATE "C")`. In that same transaction, update every matching `revenuecat_event_subjects.local_user_id` to the final owner. Equal/older events may add a missing event-subject link to the already-established owner but cannot move the alias.
 
-- [ ] **Step 6: Implement transfer processing**
+Create `applyTrustedSnapshot(...)` in `revenuecatReconciler.ts` now so the webhook processor and later worker/on-demand paths share the exact conditional normalized upsert, compatibility reprojection, customer-state update, fence verification, and snapshot ordering code. Task 5 adds provider-fetch orchestration around this transactional primitive instead of reimplementing it.
 
-For a transfer:
+Provider GET arguments are always trusted local UIDs, never a raw anonymous/unmapped webhook subject. No processor import or SQL may insert `users`.
 
-1. Hash every source/destination alias and resolve existing mappings/local users.
-2. Treat direct, non-anonymous destination IDs as provisionable candidates; anonymous IDs never are.
-3. Precheck tombstones for every known/provisionable local UID. If no eligible local/provisionable side remains, acknowledge without a claim or hashes.
-4. Acquire the event claim. Only its owner fetches unique source and destination canonical snapshots outside a DB transaction, in batches of at most eight with conditional lease renewal before each batch. A typed `subscriber_not_found` source is an empty source snapshot only for `transferred_from`; destination not-found is retryable unless a second tombstone check proves deletion.
-5. Acquire all resolved/provisionable non-deleted local UID account locks in sorted order in one transaction, verify the event lease, and recheck every tombstone.
-6. Skip deleted sides, provision only successful non-anonymous destinations, and attach bounded subject hashes/roles to the single PII-free event. Set `local_user_id` when an alias resolves to a retained user; it is null only for an otherwise relevant unresolved alias.
-7. Resolve destination ownership before mutation. An identifier equal to an existing/provisioned non-anonymous local UID is permanently pinned to that UID. All remaining destination aliases must collapse to one retained destination UID; multiple destination UIDs or an alias pinned to a different authenticated UID is typed `alias_conflict`, releases the event lease, and writes no projection. On success, move anonymous/nonlocal source aliases and all nonlocal destination aliases to that destination; never move an authenticated local-UID alias or map anything to a deleted destination.
-8. Atomically deactivate/reconcile every retained source, reconcile the retained destination, update aliases/customer states, recompute only compatibility rows whose normalized state advanced, and finalize the event applied/stale.
-9. If the authoritative recheck leaves no local side, delete the owned pending event and its cascaded subjects, then acknowledge `ignored_deleted`/`ignored_missing` without hashes.
-
-Never hold a database transaction or account advisory lock across a RevenueCat network request. Event claims are durable rows, not locks held during I/O.
-
-- [ ] **Step 7: Run GREEN and commit**
-
-Run:
+- [ ] **Step 6: Run GREEN and commit**
 
 ```powershell
 $env:TEST_DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/elovia_test'
@@ -712,50 +700,39 @@ pnpm test
 pnpm typecheck
 ```
 
-Expected: PASS, including every pre-existing account-deletion/outbox test.
+Expected: PASS, including existing deletion/outbox coverage.
 
-Commit:
+Commit: `fix: serialize trusted revenuecat projections`
 
-```text
-fix: serialize revenuecat projections and transfers
-```
+## Task 5: Add trusted-UID worker, auth/on-demand recovery, bootstrap, and safe reads
 
-## Task 5: Canonically bootstrap legacy users and switch entitlement authority safely
+**Files:** Extend the shared reconciler; create worker/CLI; modify auth middleware, resolver, entitlement route, health, index, and tests.
 
-**Files:**
+- [ ] **Step 1: Add failing durable-reconciliation tests**
 
-- Create `artifacts/api-server/src/lib/revenuecatReconciler.ts`.
-- Create `scripts/reconcile-revenuecat.mjs`.
-- Modify `artifacts/api-server/src/lib/entitlements.ts`.
-- Modify `artifacts/api-server/src/routes/health.ts`.
-- Modify `scripts/tests/revenuecat-contract.test.mjs`.
-- Modify `scripts/tests/revenuecat-integration.test.mjs`.
+Test the exact customer-state queue:
 
-- [ ] **Step 1: Add failing bootstrap and resolution tests**
+- migration covers every existing user, and auth provisioning creates `pending` state/due work for every future user in the same account-lock transaction through an optional/additive provisioning callback; tombstoned/deletion-fallback auth never enqueues;
+- authenticated requests enqueue only missing/legacy/due state, avoiding a request-rate polling storm;
+- `GET /entitlement` attempts one bounded on-demand reconciliation only for a trusted uncanonicalized/due user, then resolves safely even if provider fails;
+- webhook failure already mapped to a trusted UID remains recoverable after all webhook retries stop;
+- `FOR UPDATE SKIP LOCKED` claims both due trusted-UID rows and reconstructable pending events once across replicas; lease/fence, attempts, exponential retry (1 minute doubling to 1 hour), and sanitized error code work;
+- success schedules the next canonical refresh at 6 hours, clears lease/error/attempts, and writes real `request_date_ms` plus the operation ID;
+- 201 behavior: bootstrap for an existing trusted user applies canonical empty only when the bounded response has no configured pointer/candidate; webhook/auth/on-demand/scheduled work treats its first 201 as visibility-lag retry and does not revoke/grant; a later 200 applies;
+- worker/on-demand/bootstrap never provision a user and deletion between fetch/final lock wins;
+- bootstrap pages `revenuecat_customer_state.user_id` joined to a still-existing `users.id`, never legacy `subscriptions.revenuecat_user_id`, cursor batches deterministically, removes any sentinel, and accepts 200 or bootstrap-only 201 empty;
+- webhook-vs-bootstrap and worker-vs-webhook races leave the greatest canonical snapshot tuple; alias ordering remains independent;
+- the event worker reconstructs ordinary/transfer/redemption work only from event roles, hashes, and still-linked trusted local UIDs—never raw subjects—and preserves atomic source/destination transfer projection after RevenueCat's delivery retry window;
+- terminal event cleanup at 90 days; pending events alert at 24 hours and remain retryable for 30 days. After 30 days, a no-live-lease event whose linked users have independently canonicalized after `received_at` becomes terminal `stale`; an event with no surviving trusted link is deleted with an unreconstructable alert by type/count only. Otherwise it keeps retrying and pages operations. At 90 days, enqueue every surviving linked trusted UID, emit a critical type/count-only alert, and delete the event; trusted-UID reconciliation remains the bounded recovery path.
 
-Test with injected clocks/config/client:
+Resolver tests:
 
-- bootstrap selects only users with legacy `subscriptions` rows whose customer state is not canonical;
-- it processes deterministic `user_id` cursor batches and resumes safely;
-- bootstrap uses `source_kind='bootstrap_canonical'` and Unix epoch ordering, so the next real webhook always wins;
-- a legacy row with `entitlement_active=true` created by an unknown-event shape receives either a canonical empty snapshot or typed `subscriber_not_found` and resolves free/trial, never premium;
-- deleted users are skipped without client calls after tombstone precheck and cannot be recreated;
-- retryable canonical errors leave the user uncanonicalized and cause nonzero command exit;
-- repeated bootstrap is idempotent;
-- a real webhook racing bootstrap always owns the final row: bootstrap rechecks `legacy_unverified` under the account lock and cannot overwrite a webhook-canonical state;
-- `per_user` reads normalized state only for canonicalized users and temporarily falls back to legacy only for uncanonicalized users with an existing legacy subscription row;
-- `strict` never reads legacy subscription access;
-- Pro alone → premium;
-- Coaching alone or Pro+Coaching → coaching with Pro access;
-- cancelled/billing issue/paused within effective deadline remain entitled with exact status;
-- grace uses `accessEndsAt`, not expired `periodEndsAt`;
-- refunded/expired/mismatched-environment rows grant nothing;
-- no paid state falls back to the exact existing 15-day account trial, then free;
-- readiness in strict mode fails while any legacy subscription user remains uncanonicalized.
+- `REVENUECAT_NORMALIZED_READS=per_user`: canonical rows only when canonical; otherwise account-created trial/free only and enqueue—never legacy paid/store trial;
+- `strict`: same grant logic and no legacy reads; readiness fails while any customer state is absent or not `canonical`;
+- legacy false-grant fixture immediately resolves only account trial/free before bootstrap and remains nonpaid after canonical empty;
+- Pro, Coaching, combined, grace, cancelled, paused, trial, intro, prepaid, promotional, lifetime, non-renewing, expired/refunded, environment mismatch, and account trial/free.
 
 - [ ] **Step 2: Run RED**
-
-Run:
 
 ```powershell
 node --test scripts/tests/revenuecat-contract.test.mjs
@@ -764,29 +741,46 @@ node --test scripts/tests/revenuecat-integration.test.mjs
 Remove-Item Env:TEST_DATABASE_URL
 ```
 
-Expected: bootstrap/resolver cases fail.
+Expected: queue/worker/bootstrap/resolver cases fail.
 
-- [ ] **Step 3: Implement the reconciler and CLI**
+- [ ] **Step 3: Implement one shared trusted-user reconciler**
 
-`revenuecatReconciler.ts` exposes a batch operation with injected client/clock/DB. It fetches by the local `subscriptions.user_id`, never the untrusted legacy `revenuecat_user_id`, and uses the Task 4 tombstone precheck/final lock recheck, canonical truth table, normalized projection, customer-state update, and complete compatibility projection. Unlike a fresh webhook whose 404 may reflect read-after-write lag, bootstrap has no triggering delivery: after the second tombstone check, typed `subscriber_not_found` for an existing local user is authoritative empty state in the configured environment. Bootstrap rows use the epoch/null-event tuple and never create a webhook-event row or hash a UID into an event ID. A bootstrap update is permitted only from `legacy_unverified`; its transaction deletes `__legacy_unverified__`, writes both configured entitlement rows, and sets customer state to canonical with `source_kind='bootstrap_canonical'`. After that transition, the same user is not selected again.
+Extend Task 4's `revenuecatReconciler.ts` with `reconcileTrustedUser({userId, reason, operationId, allowCreatedEmpty})`. It requires an existing local user, performs tombstone precheck, fetches outside locks, and projects through `applyTrustedSnapshot` under `withAccountLock`. It verifies the worker/event fence when supplied and rechecks tombstone/user. It never provisions.
 
-`scripts/reconcile-revenuecat.mjs` follows the proven test bootstrap: validate configuration, set/import modules in the correct order, page by `user_id`, print counts only, and set a nonzero exit code if any user remains retryable/unreconciled. It never prints UIDs, aliases, response bodies, or keys.
+For `lookup='created'`, only `reason=legacy_bootstrap` with an existing user, final tombstone check, and zero configured candidate/pointer may project canonical empty; a nonempty 201 is `canonical_response_invalid`. Webhook/auth/on-demand/scheduled first-created responses remain non-applied, schedule retry after 60 seconds, and cannot create trial state. Later documented `200` is authoritative.
 
-Run the production bootstrap before enabling strict reads:
+Operation IDs are generated before GET and restricted ASCII: `webhook:<event-id>`, `bootstrap:<run-uuid>`, `auth:<request-uuid>` for authenticated/on-demand work, or `worker:<lease-id>`. Conditional normalized upserts use an explicit byte-collated comparison, never the connection locale:
+
+```sql
+WHERE subscription_entitlements.source_snapshot_at < CAST($incoming_snapshot_at AS timestamptz)
+   OR (
+     subscription_entitlements.source_snapshot_at = CAST($incoming_snapshot_at AS timestamptz)
+     AND subscription_entitlements.source_operation_id COLLATE "C"
+         < CAST($incoming_operation_id AS text) COLLATE "C"
+   )
+```
+
+If neither configured row advances, the operation is stale and compatibility stays byte-for-byte unchanged. If either advances, rebuild compatibility from the post-upsert normalized rows. Customer-state source tuple advances only when the incoming tuple is greater by the same comparison; `last_reconciled_at`, queue scheduling, and the current fence can still finalize without regressing that tuple.
+
+- [ ] **Step 4: Implement worker, auth, on-demand, and cleanup**
+
+The worker claims due `revenuecat_customer_state` rows in batches with `FOR UPDATE SKIP LOCKED`, a random lease, and a 60-second lease deadline. It fetches only `user_id`, finalizes only with its current lease, schedules 6-hour success or bounded exponential retry, and emits type/error-code/count metrics only. It separately claims `revenuecat_webhook_events` where `disposition='pending'`, `next_attempt_at<=now()`, and no valid lease. Using surviving `revenuecat_event_subjects.local_user_id` grouped by role plus stored hashes, it retries the Task 4 canonical batch/alias assignment without reconstructing raw IDs; the same fence and sorted-lock rules apply. An unreconstructable event never calls RevenueCat. `index.ts` starts/stops both loops beside the existing account-deletion finalizer.
+
+Keep `provisionAuthenticatedUserIfActive` public return compatibility. Add an optional transaction callback so `authMiddleware` can create/due reconciliation state atomically after trusted Firebase provisioning. Deletion-fallback auth never invokes it. `GET /entitlement` invokes bounded on-demand reconciliation for due/uncanonicalized trusted users; failure is fail-closed to account trial/free, not a 500 paid grant and not a legacy read.
+
+Cleanup deletes terminal event rows after 90 days. It alerts on pending age at 24 hours; at 30 days and with no live lease it follows the exact canonicalized-linked-user or no-surviving-link terminal/delete rule from Step 1; at 90 days it enqueues surviving linked UIDs, emits the critical alert, and hard-deletes. `source_trigger_event_id ON DELETE SET NULL` preserves canonical ordering. Alert counts identify pending events that lost all user-linked subjects after deletion; no subject/hash is printed.
+
+- [ ] **Step 5: Implement bootstrap and remove legacy paid fallback**
+
+CLI pages all noncanonical (`legacy_unverified` or `pending`) existing users by `user_id`, prints counts only, exits nonzero for remaining retryable users, and uses `allowCreatedEmpty=true`. Successful transaction deletes `__legacy_unverified__` when present, writes both configured rows with real snapshot time, and sets canonical state. `per_user` has no legacy paid fallback; `strict` is enabled only after `unreconciled=0`, where the count also detects trusted users with no state row. There is no successful `legacy` read mode or rollback to legacy grants.
 
 ```powershell
 node scripts/reconcile-revenuecat.mjs --batch-size=100
 ```
 
-Expected: exit 0 and `unreconciled=0`. Then set `REVENUECAT_NORMALIZED_READS=strict` and redeploy. `/readyz` queries for uncanonicalized legacy subscribers and fails closed if any remain.
+Expected before strict: exit 0, `unreconciled=0`.
 
-- [ ] **Step 4: Implement normalized entitlement resolution**
-
-Query both configured entitlement rows and customer state. Gate using only matching configured environment and `active && (!accessEndsAt || accessEndsAt > now)`. Coaching wins display selection, then Pro. Preserve exact account-created trial logic. `legacy` mode exists only for emergency rollback; `per_user` is rollout mode; `strict` is the completed P0 state and never grants from `subscriptions`.
-
-- [ ] **Step 5: Run GREEN and commit**
-
-Run:
+- [ ] **Step 6: Run GREEN and commit**
 
 ```powershell
 node --test scripts/tests/revenuecat-contract.test.mjs
@@ -799,81 +793,52 @@ pnpm typecheck
 
 Expected: PASS.
 
-Commit:
+Commit: `fix: converge trusted revenuecat customers`
 
-```text
-fix: bootstrap canonical revenuecat entitlements
-```
+## Task 6: Add injectable pre-auth transport and separated presentation tests
 
-## Task 6: Replace the route with an injectable, pre-auth, bounded transport
+**Files:** Modify route/app/index/privacy/diagnostics; create presentation module and two DB-free tests; extend DB integration wiring tests.
 
-**Files:**
+- [ ] **Step 1: Add failing DB-free transport tests**
 
-- Modify `artifacts/api-server/src/routes/webhooks/revenuecat.ts`.
-- Modify `artifacts/api-server/src/routes/index.ts`.
-- Modify `artifacts/api-server/src/app.ts`.
-- Modify `artifacts/api-server/src/index.ts`.
-- Modify `artifacts/api-server/src/routes/privacy.ts`.
-- Modify `artifacts/api-server/src/routes/diagnostics.ts`.
-- Create `scripts/tests/revenuecat-http.test.mjs`.
+Register TypeScript before dynamic imports. Build only `createRevenueCatWebhookRouter` with injected secret/fake processor and `createApp` with injected empty authenticated router/no-op Firebase middleware. Do not import aggregate DB routes or require `DATABASE_URL`.
 
-- [ ] **Step 1: Add failing HTTP boundary tests**
+Assert secret missing fails construction; bad/missing auth 401; valid-auth body >256 KiB 413 before parse/processor; malformed JSON/schema 400; Firebase verification never runs; applied 200; duplicate/stale/ignored_unknown/ignored_unmapped/ignored_identity_conflict/ignored_identity_volume/unsupported_redemption_shape/ignored_deleted are exact non-applied 200; event collision 400; pending/visibility/provider/identity-set-changed failures are typed 503 with bounded `Retry-After`. Logs contain request ID and bounded event ID/type/disposition only.
 
-Register TypeScript loading before dynamic imports. Build the app/router with an injected webhook secret, fake processor, no-op Firebase middleware, and empty authenticated router; the HTTP test must not require `DATABASE_URL` or import production DB routes. Assert:
+- [ ] **Step 2: Add pure presentation tests and DB-backed wiring tests**
 
-- bad/missing Authorization → 401;
-- missing configured secret at construction/startup → fail closed;
-- malformed JSON/schema → 400;
-- a validly authenticated body above 256 KiB → 413 before parsing or processor invocation;
-- webhook does not invoke Firebase token verification even when the shared secret uses a `Bearer ` prefix;
-- valid applied → 200 `{received:true,applied:true,disposition:'applied'}`;
-- duplicate/stale/ignored_unknown/ignored_missing/ignored_deleted → 200 with `applied:false` and exact disposition;
-- same-ID/different-ledger-envelope → 400 `event_id_collision`; an unexpired pending claim that does not finish within the bounded wait → 503 `processing` with `Retry-After: 1`;
-- canonical retryable/not-found-for-active/network failure → typed 503 plus bounded `Retry-After`;
-- logs contain request ID, event ID/type/disposition only—no UID, subject hash, alias, secret, subscriber attribute, or raw body;
-- diagnostics expose booleans only for webhook secret, API key, HMAC key, configured distinct IDs, environment, and strict-read state;
-- privacy export returns normalized entitlement and allowlisted event metadata/subject roles, never subject hashes, aliases, raw legacy event JSON, or secrets.
+`revenuecat-presentation.test.mjs` tests pure allowlist builders with plain rows: diagnostics booleans/counts only; privacy output normalized entitlements, bounded event metadata, event roles, and reconciliation status without hashes, aliases, legacy RevenueCat ID, raw event, payload, API response, or secrets.
 
-- [ ] **Step 2: Run RED**
+The ordered PostgreSQL integration harness—not the DB-free app factory—dynamically imports and mounts real privacy/diagnostics routes after migrations and DB env setup. Assert live query/wiring, local-user cascade, shared event behavior, pseudonymous hash omission, and readiness counts.
 
-Run:
+- [ ] **Step 3: Run RED**
 
 ```powershell
-node --test scripts/tests/revenuecat-http.test.mjs
+node --test scripts/tests/revenuecat-http.test.mjs scripts/tests/revenuecat-presentation.test.mjs
+$env:TEST_DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/elovia_test'
+node --test scripts/tests/revenuecat-integration.test.mjs
+Remove-Item Env:TEST_DATABASE_URL
 ```
 
-Expected: tests fail because the current route is stateful and mounted after global parsing/auth.
+Expected: missing factories/builders and old route wiring fail.
 
-- [ ] **Step 3: Create the injectable route seam**
+- [ ] **Step 4: Implement transport/app seams**
 
-Export:
+Export `createRevenueCatWebhookRouter({processor,webhookSecret})`. Bound the supplied Authorization header to 1,024 bytes, SHA-256 hash supplied/expected separately, then `timingSafeEqual` equal-length digests. Compare the exact full configured header value.
 
-```ts
-createRevenueCatWebhookRouter({
-  processor,
-  webhookSecret,
-}: {
-  processor: RevenueCatProcessor;
-  webhookSecret: string;
-}): IRouter
-```
+Make `app.ts` DB-free: `createApp({revenueCatRouter,authenticatedRouter,authMiddlewareImpl})`. Mount `/api` webhook router immediately after request logging/CORS, before global 20 MiB parsers and Firebase auth. Inside webhook router order shared-secret auth, route-specific `express.json({limit:'256kb',strict:true,type:'application/json'})`, contract parsing, processor. Then mount global parsers/auth/authenticated router. `index.ts` assembles production dependencies. Remove webhook from aggregate router.
 
-Compare the complete Authorization header to the configured RevenueCat header value. Bound the supplied header to 1,024 bytes, hash supplied and expected values separately with SHA-256, and use `timingSafeEqual` on the equal-length digests; never branch on the original secret length. The production default is assembled from validated configuration, but tests inject both dependencies without mutating process-global environment.
+- [ ] **Step 5: Implement safe surfaces/readiness**
 
-Make `app.ts` DB-free and export `createApp({ revenueCatRouter, authenticatedRouter, authMiddlewareImpl })`, with all three dependencies required. Mount `app.use('/api', revenueCatRouter)` immediately after request logging/CORS and before the existing global JSON/urlencoded parsers and injected Firebase auth, preserving `/api/webhooks/revenuecat`; then mount the injected authenticated router at `/api`. `index.ts` imports the production aggregate router/auth middleware, creates the validated processor/router, calls `createApp`, and listens. Inside the webhook router, order middleware as constant-time shared-secret authentication, then `express.json({limit:'256kb',strict:true,type:'application/json'})`, then schema parsing/processor invocation. Remove the webhook from the later aggregate router so it cannot be mounted twice. Other routes retain their current parser/auth behavior.
+Pure builders accept already-fetched rows. Route services own DB queries. Diagnostics expose config-present booleans, configured product counts, due/failed/pending counts, and strict/noncanonical booleans—never values/hashes. Privacy export explicitly labels RevenueCat data as billing entitlement state and omits pseudonymous hashes. Readiness fails on invalid config or strict mode with any missing/noncanonical customer state.
 
-The transport only authenticates, parses, invokes the processor, and maps outcomes. It never imports `usersTable`, `subscriptionsTable`, or canonical client internals.
-
-- [ ] **Step 4: Complete privacy, diagnostics, and readiness surfaces**
-
-Export allowlisted event metadata and normalized entitlements. Subject roles may be reported without hashes. Local-user cascade remains the deletion mechanism; add an integration assertion that account deletion removes all local-linked aliases/subjects/state/entitlements. Diagnostics emit booleans only. Readiness remains false for invalid configuration or strict-mode unreconciled legacy users.
-
-- [ ] **Step 5: Run GREEN and commit**
-
-Run:
+- [ ] **Step 6: Run GREEN and commit**
 
 ```powershell
-node --test scripts/tests/revenuecat-http.test.mjs
+node --test scripts/tests/revenuecat-http.test.mjs scripts/tests/revenuecat-presentation.test.mjs
+$env:TEST_DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/elovia_test'
+node --test scripts/tests/revenuecat-integration.test.mjs
+Remove-Item Env:TEST_DATABASE_URL
 pnpm test
 pnpm typecheck
 pnpm --filter @workspace/api-server run build
@@ -881,54 +846,34 @@ pnpm --filter @workspace/api-server run build
 
 Expected: PASS.
 
-Commit:
+Commit: `fix: expose bounded revenuecat transport`
 
-```text
-fix: make revenuecat webhook transport fail closed
-```
+## Task 7: Complete PG14/16 behavioral and release gate
 
-## Task 7: PostgreSQL 14/16 replay and release gate
+- [ ] **Step 1: Complete the real delivery/snapshot matrix**
 
-**Files:**
+Include ordinary `INITIAL_PURCHASE`, `RENEWAL`, `CANCELLATION`, `UNCANCELLATION`, `EXPIRATION`, `REFUND`, `REFUND_REVERSED`, `BILLING_ISSUE`, `PRODUCT_CHANGE`, `SUBSCRIPTION_PAUSED`, `SUBSCRIPTION_EXTENDED`, `TEMPORARY_ENTITLEMENT_GRANT`, non-renewing/lifetime, future unknown, real `TRANSFER`, and all three `PURCHASE_REDEEMED` outcomes. Every recognized event uses canonical state, never webhook expiry.
 
-- `scripts/tests/revenuecat-contract.test.mjs`.
-- `scripts/tests/revenuecat-integration.test.mjs`.
-- `scripts/tests/revenuecat-http.test.mjs`.
-- `.github/workflows/ci.yml` only if the required-DB guard proves the existing `pnpm test` step does not execute the new integration file; the current PG14/16 matrix otherwise remains unchanged.
+Matrix requirements:
 
-- [ ] **Step 1: Complete the final real delivery matrix**
-
-Fixtures must cover ordinary `INITIAL_PURCHASE`, `RENEWAL`, `CANCELLATION`, `UNCANCELLATION`, `EXPIRATION`, `REFUND`, `BILLING_ISSUE`, `PRODUCT_CHANGE`, `SUBSCRIPTION_PAUSED`, non-renewing/lifetime, one future unknown, and real-shape `TRANSFER`. For each recognized type, fake canonical state—not webhook expiry—drives the result.
-
-The matrix must include:
-
-- reverse delivery order and equal-timestamp event-ID tie-breaking;
-- two independent entitlements and explicit absence/revocation;
-- 20 concurrent duplicate deliveries;
-- mixed environment and test-store rejection;
-- missing/deleted/anonymous subjects;
-- canonical 404 distinctions;
-- transfer aliases, sorted multi-user locks, one-side deletion, and transfer/deletion races;
-- legacy false grant, epoch clock, canonical bootstrap, strict read cutover;
-- raw-payload scrub and privacy cascade;
-- compatibility projection exactness and stale no-op;
-- HTTP body/auth/logging/error contracts.
+- aliases in ordinary identity; 256 accepted/257 acknowledged fail-closed;
+- 200 existing vs 201 created semantics and zero webhook provisioning;
+- purchase-before-first-server-call recovered after trusted auth; anonymous→authenticated recovered by ordinary alias webhook/on-demand schedule;
+- canonical request-time reverse order/equal-time C-collation operation tie; webhook event time cannot overwrite newer canonical snapshot;
+- configured product ambiguity, product classes, pointer cross-check, multi-product tie, environment/Test Store;
+- PREPAID/promotional/non-renewing/lifetime/refund/absence/willRenew exactness;
+- valid-lease concurrency, crash/expired-lease duplicate GET allowance, old-fence rejection;
+- reverse/concurrent transfer chains, lock-set expansion, both-side UID destination win, subject-link reassignment, transfer/deletion races;
+- durable missed-webhook convergence, worker lease/backoff, on-demand/bootstrap, 201 visibility lag;
+- no legacy paid fallback, false-grant fixture, bootstrap cutover, strict readiness;
+- hostile migration, raw payload/RevenueCat ID scrub, pseudonymous privacy cascade, TTL cleanup;
+- DB-free transport/presentation plus DB-backed privacy/diagnostics wiring.
 
 - [ ] **Step 2: Confirm CI database enforcement**
 
-The integration file must contain:
+`revenuecat-integration.test.mjs` must throw when `CI=true` without `TEST_DATABASE_URL`. The current workflow already runs `pnpm test` and typechecks against PostgreSQL 14 and 16; do not add a redundant matrix or allow a CI skip. Locale/collation assertions run in both jobs.
 
-```js
-if (process.env.CI === "true" && !process.env.TEST_DATABASE_URL) {
-  throw new Error("CI must provide TEST_DATABASE_URL for RevenueCat integration tests");
-}
-```
-
-The existing workflow already runs `pnpm test` against PostgreSQL 14 and 16. Do not add a redundant matrix or permit CI skip.
-
-- [ ] **Step 3: Run the full local/release gate**
-
-Run:
+- [ ] **Step 3: Run the complete release gate**
 
 ```powershell
 $env:TEST_DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/elovia_test'
@@ -942,57 +887,54 @@ $baseSha = '59dba42c61d4ba8e88479c7bf7c608171967181a'
 git diff --check "$baseSha..HEAD"
 ```
 
-Expected: zero failures; integration tests execute rather than skip while `TEST_DATABASE_URL` is present.
+Expected: zero failures and real PostgreSQL tests execute.
 
-- [ ] **Step 4: Fresh spec and quality reviews**
+Commit Task 7 test/workflow changes as `test: close revenuecat integrity matrix` before requesting the fresh reviews.
 
-Use a fresh spec reviewer and a fresh quality reviewer. Correct every Critical/Important issue through the owning task and repeat the complete gate. Commit review-only corrections separately:
+- [ ] **Step 4: Fresh spec and quality review**
 
-```text
-fix: close revenuecat review findings
-```
+Review against the four official documents in Phase 0 and every invariant. Correct every Critical/Important issue through the owning task, repeat the full gate, and commit review corrections as `fix: close revenuecat review findings`.
 
 ---
 
-## External configuration required for rollout
+## External configuration and operational dependencies
 
-No implementation decision is blocked on credentials. Deployment does require operators to provide four secret/non-secret facts that code cannot infer: a RevenueCat secret REST API v1 key with subscriber-read access, the exact full Authorization header value configured for the webhook, a new random HMAC key of at least 32 bytes, and the exact distinct Pro/Coaching entitlement IDs plus `production | sandbox`. Store secrets in the deployment secret manager, not repository files or CI output. The operator must also configure the deployed `/api/webhooks/revenuecat` HTTPS URL in RevenueCat only after Task 6 is live. Bootstrap and staging replay use injected/fake clients in tests; a real production bootstrap requires the production API key and an approved maintenance/rollout window, but no mobile release or mobile secret is required.
+Implementation is not blocked by credentials. Deployment requires the secret v1 API key, exact webhook Authorization value, new HMAC key, exact distinct entitlement IDs, reviewed Pro/Coaching product JSON allowlists/classification/durations, and production/sandbox selection. Product owners must confirm every live product ID and non-renewing access duration from the RevenueCat dashboard; code must not infer them from names. Store secrets only in the deployment secret manager.
 
----
+RevenueCat's dashboard must point to `/api/webhooks/revenuecat`. Production bootstrap requires the production secret key and a maintenance window. Operations must alert on identity-volume/conflict counts, due reconciliation age/attempts, provider/config errors, and unreconstructable pending-event cleanup without identifiers.
 
 ## Rollout sequence
 
-Task commits are review checkpoints, not independently safe production deployments. In particular, no old webhook replica may serve after `0004`: although the null-only constraint rejects its raw subscription write, the legacy handler provisions `users` before that failure and does not share the deletion lock.
+Task commits are not independent deployments. No old webhook replica may serve after `0004`: the legacy handler can create `users` before its raw-event write fails.
 
-1. Finish and review Tasks 1A–7; replay representative sandbox fixtures against a staging deployment with staging credentials/environment.
-2. Preload all validated production configuration and keep `REVENUECAT_NORMALIZED_READS=per_user`.
-3. Enter a short webhook/API maintenance window, remove traffic, and stop every old replica. Run migration `0004`, then start only the Task 2–6 server artifact and restore traffic. RevenueCat retries the bounded downtime; do not use a rolling overlap with the old handler.
-4. Confirm the new pre-auth processor is handling live retries, both configured entitlements are projected independently, and readiness is green in `per_user` mode.
-5. Run canonical bootstrap until `unreconciled=0`.
-6. Set `REVENUECAT_NORMALIZED_READS=strict`, redeploy, and verify readiness plus Pro/Coaching/account-trial smoke tests.
-7. Keep the event lease/error-rate and unreconciled-count signals under observation through the RevenueCat retry window.
+1. Finish Tasks 1A–7 and pass fresh reviews; deploy/replay all official shapes in sandbox staging.
+2. Validate production secrets, environment, entitlement IDs, and product-class JSON; set reads to `per_user`.
+3. Enter maintenance, remove traffic, stop every old replica, and run `0004`.
+4. Run canonical bootstrap from the new artifact while traffic is stopped until `unreconciled=0`; no legacy paid fallback is available.
+5. Start only the new Task 2–6 artifact, restore traffic, and verify webhook retries, trusted-auth enqueue/on-demand recovery, worker leases, and both entitlements.
+6. Set reads to `strict`, redeploy, and verify readiness plus Pro/Coaching/account-created-trial smoke tests.
+7. Observe reconciliation age/attempts, event pending/TTL cleanup, identity conflicts/volume, and provider errors through the retry window.
 
-Rollback may switch reads temporarily to `per_user` or `legacy`, but must not drop tables, restore raw payload writes, weaken tombstones, accept the wrong environment, or edit migrations `0000`–`0004`.
+Rollback may switch from `strict` to `per_user`, which still grants only normalized canonical access or account-created trial/free. Never restore legacy paid grants, raw payload writes, webhook provisioning, wrong-environment products, old replicas, or modify migrations `0000`–`0004`.
 
 ## Final self-review checklist
 
-- Task 1A models ordinary and real-shape transfer deliveries separately and preserves shipped date/metadata bounds.
-- No migration before `0004` is modified.
-- The event ledger is PII-free and supports multi-user transfer events safely.
-- Local subject/alias/state/entitlement data cascades without cross-user event ownership.
-- Legacy active state is never promoted; its source clock is epoch and raw payload is scrubbed.
-- Canonical bootstrap completes before strict normalized reads.
-- Neutral single/multi-account locks preserve deletion retry/outbox semantics.
-- Tombstones are checked before network and authoritatively under lock.
-- Anonymous IDs are never provisioned.
-- Transfers reconcile all retained sides atomically under sorted locks.
-- Grace, refund, pause, cancel, trial, lifetime, environment, and multiple products follow one deterministic truth table.
-- Absent and stale transitions are explicit.
-- Compatibility projection sets every column and never writes `last_event`.
-- Required config fails startup/readiness and diagnostics expose booleans only.
-- Canonical responses have a real streaming byte limit and timeout.
-- Webhook parsing happens before Firebase auth with a 256 KiB route limit.
-- Existing migration assertions and account-deletion tests are updated/preserved.
-- CI executes real PostgreSQL tests on 14 and 16.
-- Final diff gate uses the explicit Task 1 base SHA, never `HEAD~N`.
-- Unknown events cannot provision or grant, raw payload/PII/secrets are absent, deletion wins, and Pro+Coaching coexist.
+- Task 1A preserves the exported Set, metadata Record compatibility, ordinary fields, date/metadata bounds, and adds ordinary aliases/transfer/redemption shapes.
+- REFUND_REVERSED, TEMPORARY_ENTITLEMENT_GRANT, and PURCHASE_REDEEMED reconcile canonically.
+- Identity volume is 256 with acknowledged non-applied over-limit behavior and no persistence/retry storm.
+- No 404/subscriber-not-found assumption remains; 200/201 Get-or-Create semantics are explicit.
+- Webhooks and provider responses never provision local users or create trials.
+- Auth provisioning plus on-demand/durable scheduled reconciliation recovers missed purchase/merge webhooks.
+- Entitlements order only by validated canonical request time plus C-collated operation ID.
+- Aliases retain C-collated event provenance and update only when newer under expandable sorted lock sets.
+- Transfer chains/races, both-side destination truth, and event-subject relinking are specified/tested.
+- One owner exists per valid event lease; fencing, crash semantics, trusted-UID recovery, TTL cleanup, and alerts are exact.
+- No successful read/rollback path trusts legacy paid/trial state; bootstrap completes before strict.
+- Product allowlists/classification, environment, bounds, truth table, and non-subscription limitations match documented v1 fields.
+- Legacy sentinel stays inactive/epoch; `last_event` and legacy RevenueCat ID are scrubbed/constrained.
+- HMAC hashes are treated as pseudonymous and never logged/exported.
+- Neutral deletion locks, tombstone dominance, independent Pro/Coaching, and account-created 15-day trial remain intact.
+- DB-free transport/presentation tests are separated from ordered DB-backed route tests.
+- Pre-auth 256 KiB body limit, constant-time header check, 1 MiB streamed response limit, 5-second timeout, and sanitized errors remain.
+- Migration assertions and existing deletion/outbox tests remain; PG14/16 exercise C-collation/races.
+- Final diff gate uses explicit base `59dba42c61d4ba8e88479c7bf7c608171967181a`, never `HEAD~N`.
