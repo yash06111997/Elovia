@@ -203,6 +203,9 @@ const requireFromDatabasePackage = createRequire(
 const requireFromScriptsPackage = createRequire(
   new URL("../package.json", import.meta.url),
 );
+const requireFromApiPackage = createRequire(
+  new URL("../../artifacts/api-server/package.json", import.meta.url),
+);
 
 let Pool;
 let adminPool;
@@ -214,14 +217,22 @@ let usersTable;
 let revenuecatSchema;
 let processRevenueCatDelivery;
 let applyTrustedSnapshot;
+let reconcileTrustedUser;
 let tombstoneAndDeleteAccountData;
 let provisionAuthenticatedUserIfActive;
 let createRevenueCatAuthProvisioningCallback;
 let claimDueTrustedUsers;
 let runTrustedUserBatch;
 let runPendingEventBatch;
+let claimPendingRevenueCatEvents;
+let recoverClaimedRevenueCatEvent;
+let reconcileTrustedUserOnDemand;
 let bootstrapRevenueCatCustomers;
 let cleanupRevenueCatEvents;
+let startRevenueCatWorkers;
+let resolveEntitlement;
+let apiApp;
+let applyVerifiedFirebaseAuth;
 let runMigrations;
 let unregisterTsx;
 let temporaryDatabaseCounter = 0;
@@ -377,6 +388,56 @@ function subjectHash(raw) {
   return createHmac("sha256", processorConfig.subjectHashKey)
     .update(raw, "utf8")
     .digest("hex");
+}
+
+async function makeOnlyEventDue(eventId) {
+  await scopedPool.query(
+    `UPDATE revenuecat_webhook_events
+     SET next_attempt_at=CASE WHEN event_id=$1
+       THEN '2000-01-01T00:00:00Z'::timestamptz
+       ELSE '2099-01-01T00:00:00Z'::timestamptz END,
+         processing_lease_id=NULL,
+         processing_lease_until=NULL
+     WHERE disposition='pending'`,
+    [eventId],
+  );
+}
+
+async function insertRawlessEvent({
+  eventId,
+  type = "INITIAL_PURCHASE",
+  subjects,
+  identityApplied = false,
+  entitlementApplied = false,
+}) {
+  await insertEvent(scopedPool, {
+    eventId,
+    type,
+    eventAt: "2026-09-01T10:00:00Z",
+    receivedAt: "2026-09-01T10:00:01Z",
+    identityCount: subjects.length,
+    identityRequired: true,
+    entitlementRequired: true,
+    nextAttemptAt: "2000-01-01T00:00:00Z",
+    retentionUntil: "2099-01-01T00:00:00Z",
+  });
+  for (const subject of subjects) {
+    await scopedPool.query(
+      `INSERT INTO revenuecat_event_subjects
+       (event_id,subject_hash,role_mask,local_user_id) VALUES ($1,$2,$3,$4)`,
+      [eventId, subject.hash, subject.roleMask, subject.localUserId ?? null],
+    );
+  }
+  if (identityApplied || entitlementApplied) {
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET identity_applied_at=CASE WHEN $2 THEN clock_timestamp() ELSE NULL END,
+           entitlement_applied_at=CASE WHEN $3 THEN clock_timestamp() ELSE NULL END
+       WHERE event_id=$1`,
+      [eventId, identityApplied, entitlementApplied],
+    );
+  }
+  await makeOnlyEventDue(eventId);
 }
 
 test("processor source contract is fenced, privacy-minimized, and provisioning-neutral", async () => {
@@ -535,6 +596,19 @@ if (testDatabaseUrl) {
     ({ runMigrations } = await import("../../lib/db/scripts/migrate.mjs"));
     await runMigrations(databaseUrl);
     process.env.DATABASE_URL = databaseUrl;
+    Object.assign(process.env, {
+      REVENUECAT_WEBHOOK_SECRET: processorConfig.webhookSecret,
+      REVENUECAT_SECRET_API_KEY: processorConfig.apiKey,
+      REVENUECAT_SUBJECT_HASH_KEY: processorConfig.subjectHashKey,
+      REVENUECAT_PRO_ENTITLEMENT_ID: processorConfig.proEntitlementId,
+      REVENUECAT_COACHING_ENTITLEMENT_ID: processorConfig.coachingEntitlementId,
+      REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify(processorConfig.proProducts),
+      REVENUECAT_COACHING_PRODUCTS_JSON: JSON.stringify(
+        processorConfig.coachingProducts,
+      ),
+      REVENUECAT_ENVIRONMENT: processorConfig.environment,
+      REVENUECAT_NORMALIZED_READS: "per_user",
+    });
     const { register } = requireFromScriptsPackage("tsx/esm/api");
     unregisterTsx = register();
     const databaseModule = await import("../../lib/db/src/index.ts");
@@ -547,16 +621,33 @@ if (testDatabaseUrl) {
       await import("../../artifacts/api-server/src/lib/revenuecatProcessor.ts"));
     ({ tombstoneAndDeleteAccountData, provisionAuthenticatedUserIfActive } =
       await import("../../artifacts/api-server/src/lib/accountDeletion.ts"));
-    ({ applyTrustedSnapshot } =
+    ({ applyTrustedSnapshot, reconcileTrustedUser } =
       await import("../../artifacts/api-server/src/lib/revenuecatReconciler.ts"));
     ({
       createRevenueCatAuthProvisioningCallback,
       claimDueTrustedUsers,
+      claimPendingRevenueCatEvents,
+      recoverClaimedRevenueCatEvent,
+      reconcileTrustedUserOnDemand,
       runTrustedUserBatch,
       runPendingEventBatch,
       bootstrapRevenueCatCustomers,
       cleanupRevenueCatEvents,
+      startRevenueCatWorkers,
     } = await import("../../artifacts/api-server/src/lib/revenuecatWorker.ts"));
+    ({ resolveEntitlement } =
+      await import("../../artifacts/api-server/src/lib/entitlements.ts"));
+    const { default: healthRouter } =
+      await import("../../artifacts/api-server/src/routes/health.ts");
+    const express = requireFromApiPackage("express");
+    apiApp = express();
+    apiApp.use((request, _response, next) => {
+      request.log = { error() {} };
+      next();
+    });
+    apiApp.use("/api", healthRouter);
+    ({ applyVerifiedFirebaseAuth } =
+      await import("../../artifacts/api-server/src/middlewares/authMiddleware.ts"));
     scopedPool = new Pool({ connectionString: databaseUrl });
   });
 
@@ -3751,7 +3842,9 @@ integrationTest(
       [[priorOwner, authenticated]],
     );
     assert.deepEqual(
-      new Set(queued.rows.map((row) => `${row.user_id}:${row.reconcile_reason}`)),
+      new Set(
+        queued.rows.map((row) => `${row.user_id}:${row.reconcile_reason}`),
+      ),
       new Set([
         `${priorOwner}:authenticated`,
         `${authenticated}:authenticated`,
@@ -3805,6 +3898,259 @@ integrationTest(
 );
 
 integrationTest(
+  "new and existing authenticated users enqueue once while tombstoned auth writes no RevenueCat state",
+  async () => {
+    const suffix = Date.now();
+    const active = `auth-state-active-${suffix}`;
+    const deleted = `auth-state-deleted-${suffix}`;
+    const activeUser = {
+      id: active,
+      email: null,
+      firstName: null,
+      lastName: null,
+      profileImageUrl: null,
+    };
+    assert.equal(
+      await provisionAuthenticatedUserIfActive(
+        activeUser,
+        createRevenueCatAuthProvisioningCallback(activeUser, processorConfig),
+      ),
+      "active",
+    );
+    const hash = subjectHash(active);
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT alias_kind,ownership_source,local_user_id
+           FROM revenuecat_customer_aliases WHERE alias_hash=$1`,
+          [hash],
+        )
+      ).rows[0],
+      {
+        alias_kind: "authenticated",
+        ownership_source: "authenticated",
+        local_user_id: active,
+      },
+    );
+    await scopedPool.query(
+      `UPDATE revenuecat_customer_state SET
+         canonicalization_state='canonical',source_kind='auth_canonical',
+         source_environment='sandbox',last_snapshot_at='2026-09-02T01:15:00Z',
+         last_operation_id='auth:00000000-0000-0000-0000-000000000002',
+         last_reconciled_at=clock_timestamp(),reconcile_reason='scheduled',
+         reconcile_after='2099-01-01T00:00:00Z',updated_at='2026-09-02T01:15:01Z'
+       WHERE user_id=$1`,
+      [active],
+    );
+    const before = (
+      await scopedPool.query(
+        `SELECT reconcile_reason,reconcile_after,updated_at
+         FROM revenuecat_customer_state WHERE user_id=$1`,
+        [active],
+      )
+    ).rows[0];
+    assert.equal(
+      await provisionAuthenticatedUserIfActive(
+        activeUser,
+        createRevenueCatAuthProvisioningCallback(activeUser, processorConfig),
+      ),
+      "active",
+    );
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT reconcile_reason,reconcile_after,updated_at
+           FROM revenuecat_customer_state WHERE user_id=$1`,
+          [active],
+        )
+      ).rows[0],
+      before,
+    );
+
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [deleted]);
+    await tombstoneAndDeleteAccountData(deleted, `delete-auth-${suffix}`);
+    const deletedUser = { ...activeUser, id: deleted };
+    assert.equal(
+      await provisionAuthenticatedUserIfActive(
+        deletedUser,
+        createRevenueCatAuthProvisioningCallback(deletedUser, processorConfig),
+      ),
+      "deleted",
+    );
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT
+             (SELECT count(*)::integer FROM users WHERE id=$1) AS users,
+             (SELECT count(*)::integer FROM revenuecat_customer_state WHERE user_id=$1) AS states,
+             (SELECT count(*)::integer FROM revenuecat_customer_aliases WHERE alias_hash=$2) AS aliases`,
+          [deleted, subjectHash(deleted)],
+        )
+      ).rows[0],
+      { users: 0, states: 0, aliases: 0 },
+    );
+  },
+);
+
+integrationTest(
+  "authenticated provisioning expands over a concurrently rebound displaced owner",
+  async () => {
+    const suffix = Date.now();
+    const authenticated = `auth-expansion-${suffix}`;
+    const firstOwner = `auth-expansion-first-${suffix}`;
+    const secondOwner = `auth-expansion-second-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      [firstOwner, secondOwner],
+    ]);
+    const user = {
+      id: authenticated,
+      email: null,
+      firstName: null,
+      lastName: null,
+      profileImageUrl: null,
+    };
+    const hash = subjectHash(authenticated);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_aliases
+       (alias_hash,local_user_id,alias_kind,ownership_source,source_event_at,source_event_id)
+       VALUES ($1,$2,'ordinary','webhook','2026-08-01T00:00:00Z',$3)`,
+      [hash, firstOwner, `auth_expand_${suffix}`],
+    );
+    const realCallback = createRevenueCatAuthProvisioningCallback(
+      user,
+      processorConfig,
+    );
+    let discoveries = 0;
+    let rebound = false;
+    const expandingCallback = {
+      async discoverAdditionalOwners(transaction) {
+        discoveries += 1;
+        const discovered =
+          await realCallback.discoverAdditionalOwners(transaction);
+        if (!rebound) {
+          rebound = true;
+          await scopedPool.query(
+            `UPDATE revenuecat_customer_aliases SET local_user_id=$2
+             WHERE alias_hash=$1`,
+            [hash, secondOwner],
+          );
+        }
+        return discovered;
+      },
+      afterProvision: realCallback.afterProvision,
+    };
+    assert.equal(
+      await provisionAuthenticatedUserIfActive(user, expandingCallback),
+      "active",
+    );
+    assert.equal(discoveries, 3);
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT local_user_id,ownership_source FROM revenuecat_customer_aliases
+           WHERE alias_hash=$1`,
+          [hash],
+        )
+      ).rows[0],
+      { local_user_id: authenticated, ownership_source: "authenticated" },
+    );
+    const queued = await scopedPool.query(
+      `SELECT user_id,reconcile_reason FROM revenuecat_customer_state
+       WHERE user_id=ANY($1::text[]) ORDER BY user_id`,
+      [[authenticated, secondOwner]],
+    );
+    assert.deepEqual(
+      new Set(
+        queued.rows.map((row) => `${row.user_id}:${row.reconcile_reason}`),
+      ),
+      new Set([
+        `${authenticated}:authenticated`,
+        `${secondOwner}:authenticated`,
+      ]),
+    );
+  },
+);
+
+integrationTest(
+  "verified deletion fallback only authorizes tombstone finalization and never provisions RevenueCat state",
+  async () => {
+    const suffix = Date.now();
+    const userId = `auth-fallback-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [userId]);
+    await tombstoneAndDeleteAccountData(userId, `fallback-${suffix}`);
+    const verification = {
+      user: {
+        id: userId,
+        email: null,
+        firstName: null,
+        lastName: null,
+        profileImageUrl: null,
+      },
+      deletionFallback: true,
+    };
+    const response = () => ({
+      statusCode: 200,
+      body: null,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(body) {
+        this.body = body;
+        return this;
+      },
+    });
+    let nextCalls = 0;
+    const ordinaryRequest = {
+      method: "GET",
+      path: "/api/entitlement",
+      log: { error() {} },
+    };
+    const ordinaryResponse = response();
+    await applyVerifiedFirebaseAuth(
+      ordinaryRequest,
+      ordinaryResponse,
+      () => {
+        nextCalls += 1;
+      },
+      verification,
+    );
+    assert.equal(ordinaryResponse.statusCode, 410);
+    assert.equal(ordinaryResponse.body.code, "deleted_account");
+    assert.equal(nextCalls, 0);
+    assert.equal(ordinaryRequest.user, undefined);
+
+    const deletionRequest = {
+      method: "GET",
+      path: "/api/account/deletion-status",
+      log: { error() {} },
+    };
+    await applyVerifiedFirebaseAuth(
+      deletionRequest,
+      response(),
+      () => {
+        nextCalls += 1;
+      },
+      verification,
+    );
+    assert.equal(nextCalls, 1);
+    assert.equal(deletionRequest.user.id, userId);
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT
+             (SELECT count(*)::integer FROM users WHERE id=$1) AS users,
+             (SELECT count(*)::integer FROM revenuecat_customer_state WHERE user_id=$1) AS states,
+             (SELECT count(*)::integer FROM revenuecat_customer_aliases WHERE local_user_id=$1) AS aliases`,
+          [userId],
+        )
+      ).rows[0],
+      { users: 0, states: 0, aliases: 0 },
+    );
+  },
+);
+
+integrationTest(
   "trusted UID claims are fenced, 201 is non-applying, and a later 200 schedules six hours",
   async () => {
     const suffix = Date.now();
@@ -3833,7 +4179,10 @@ integrationTest(
        WHERE user_id<>$1`,
       [userId],
     );
-    const empty = snapshot("2026-09-02T00:00:00Z", { pro: false, coaching: false });
+    const empty = snapshot("2026-09-02T00:00:00Z", {
+      pro: false,
+      coaching: false,
+    });
     await runTrustedUserBatch({
       config: processorConfig,
       client: fakeClient({ lookup: "created", snapshot: empty }, []),
@@ -3882,6 +4231,1008 @@ integrationTest(
       ).rows[0].active,
       false,
     );
+  },
+);
+
+integrationTest(
+  "customer workers claim one slow item per replica, fence expired claims, and back off exponentially",
+  async () => {
+    const suffix = Date.now();
+    const slow = `customer-a-slow-${suffix}`;
+    const peer = `customer-b-peer-${suffix}`;
+    const fenced = `customer-c-fenced-${suffix}`;
+    const retrying = `customer-d-retry-${suffix}`;
+    const users = [slow, peer, fenced, retrying];
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      users,
+    ]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_state
+       (user_id,canonicalization_state,source_kind,reconcile_reason,reconcile_after,
+        reconcile_attempt_count)
+       SELECT user_id,'pending','none','scheduled','2000-01-01T00:00:00Z',attempts
+       FROM unnest($1::text[],$2::integer[]) AS seeded(user_id,attempts)`,
+      [users, [0, 0, 0, 3]],
+    );
+    await scopedPool.query(
+      `UPDATE revenuecat_customer_state
+       SET reconcile_after='2099-01-01T00:00:00Z'
+       WHERE user_id NOT IN ($1,$2)`,
+      [slow, peer],
+    );
+    let releaseSlow;
+    let slowStartedResolve;
+    const slowStarted = new Promise((resolve) => {
+      slowStartedResolve = resolve;
+    });
+    const slowGate = new Promise((resolve) => {
+      releaseSlow = resolve;
+    });
+    const calls = [];
+    const firstReplica = runTrustedUserBatch({
+      config: processorConfig,
+      client: {
+        async getSubscriber(uid) {
+          calls.push(`first:${uid}`);
+          slowStartedResolve();
+          await slowGate;
+          return {
+            lookup: "existing",
+            snapshot: snapshot("2026-09-02T01:20:00Z", { pro: true }),
+          };
+        },
+      },
+      limit: 2,
+    });
+    await slowStarted;
+    const secondReplica = await runTrustedUserBatch({
+      config: processorConfig,
+      client: {
+        async getSubscriber(uid) {
+          calls.push(`second:${uid}`);
+          return {
+            lookup: "existing",
+            snapshot: snapshot("2026-09-02T01:21:00Z", { pro: true }),
+          };
+        },
+      },
+      limit: 1,
+    });
+    assert.deepEqual(secondReplica, { claimed: 1, succeeded: 1, retried: 0 });
+    assert.deepEqual(calls, [`first:${slow}`, `second:${peer}`]);
+    releaseSlow();
+    assert.deepEqual(await firstReplica, {
+      claimed: 1,
+      succeeded: 1,
+      retried: 0,
+    });
+
+    await scopedPool.query(
+      `UPDATE revenuecat_customer_state
+       SET reconcile_after=CASE WHEN user_id=$1
+         THEN '2000-01-01T00:00:00Z'::timestamptz
+         ELSE '2099-01-01T00:00:00Z'::timestamptz END
+       WHERE user_id=ANY($2::text[])`,
+      [fenced, users],
+    );
+    const oldClaim = (await claimDueTrustedUsers(1))[0];
+    assert.equal(oldClaim.userId, fenced);
+    await scopedPool.query(
+      `UPDATE revenuecat_customer_state
+       SET reconcile_lease_until=clock_timestamp() - interval '1 second'
+       WHERE user_id=$1`,
+      [fenced],
+    );
+    const currentClaim = (await claimDueTrustedUsers(1))[0];
+    assert.equal(currentClaim.userId, fenced);
+    const fenceCalls = [];
+    const oldResult = await reconcileTrustedUser({
+      userId: fenced,
+      reason: "scheduled",
+      operationId: `worker:${oldClaim.leaseId}`,
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T03:00:00Z", { pro: true }),
+        },
+        fenceCalls,
+      ),
+      fence: { leaseId: oldClaim.leaseId, customerState: true },
+    });
+    assert.deepEqual(oldResult, { outcome: "fenced_out" });
+    const currentResult = await reconcileTrustedUser({
+      userId: fenced,
+      reason: "scheduled",
+      operationId: `worker:${currentClaim.leaseId}`,
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T02:00:00Z", {
+            pro: false,
+            coaching: false,
+          }),
+        },
+        fenceCalls,
+      ),
+      fence: { leaseId: currentClaim.leaseId, customerState: true },
+    });
+    assert.deepEqual(currentResult, { outcome: "applied" });
+    assert.deepEqual(fenceCalls, [fenced, fenced]);
+    assert.equal(
+      (
+        await scopedPool.query(
+          `SELECT active FROM subscription_entitlements
+           WHERE user_id=$1 AND entitlement_id='elovia_pro'`,
+          [fenced],
+        )
+      ).rows[0].active,
+      false,
+    );
+
+    await scopedPool.query(
+      `UPDATE revenuecat_customer_state
+       SET reconcile_after=CASE WHEN user_id=$1
+         THEN '2000-01-01T00:00:00Z'::timestamptz
+         ELSE '2099-01-01T00:00:00Z'::timestamptz END,
+           reconcile_lease_id=NULL,reconcile_lease_until=NULL
+       WHERE user_id=ANY($2::text[])`,
+      [retrying, users],
+    );
+    const retryMetrics = [];
+    await runTrustedUserBatch({
+      config: processorConfig,
+      client: {
+        async getSubscriber() {
+          throw Object.assign(new Error("do not persist this"), {
+            code: "revenuecat_timeout",
+          });
+        },
+      },
+      limit: 1,
+      metric: (metric) => retryMetrics.push(metric),
+    });
+    const retryState = await scopedPool.query(
+      `SELECT reconcile_attempt_count,reconcile_last_error_code,
+              reconcile_after >= clock_timestamp() + interval '7 minutes' AS backed_off,
+              reconcile_lease_id
+       FROM revenuecat_customer_state WHERE user_id=$1`,
+      [retrying],
+    );
+    assert.deepEqual(retryState.rows[0], {
+      reconcile_attempt_count: 4,
+      reconcile_last_error_code: "revenuecat_timeout",
+      backed_off: true,
+      reconcile_lease_id: null,
+    });
+    assert.deepEqual(retryMetrics, [
+      {
+        type: "customer_reconcile_failure",
+        errorCode: "revenuecat_timeout",
+        count: 1,
+      },
+    ]);
+  },
+);
+
+integrationTest(
+  "webhook, bootstrap, and worker observations preserve the greatest canonical tuple",
+  async () => {
+    const suffix = Date.now();
+    const userId = `canonical-order-${suffix}`;
+    const eventId = `ordering_${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [userId]);
+    await insertEvent(scopedPool, {
+      eventId,
+      disposition: "pending",
+      nextAttemptAt: "2099-01-01T00:00:00Z",
+      retentionUntil: "2099-02-01T00:00:00Z",
+    });
+    await db.transaction((transaction) =>
+      applyTrustedSnapshot(transaction, {
+        userId,
+        snapshot: snapshot("2026-09-02T02:30:00Z", { pro: true }),
+        config: processorConfig,
+        operationId: `webhook:${eventId}`,
+      }),
+    );
+    const bootstrapResult = await reconcileTrustedUser({
+      userId,
+      reason: "legacy_bootstrap",
+      operationId: "bootstrap:00000000-0000-0000-0000-000000000004",
+      allowCreatedEmpty: true,
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T02:29:00Z", {
+            pro: false,
+            coaching: false,
+          }),
+        },
+        [],
+      ),
+    });
+    assert.deepEqual(bootstrapResult, { outcome: "stale" });
+    assert.equal(
+      (
+        await scopedPool.query(
+          `SELECT active FROM subscription_entitlements
+           WHERE user_id=$1 AND entitlement_id='elovia_pro'`,
+          [userId],
+        )
+      ).rows[0].active,
+      true,
+    );
+
+    await scopedPool.query(
+      `UPDATE revenuecat_customer_state
+       SET reconcile_after='2000-01-01T00:00:00Z'
+       WHERE user_id=$1`,
+      [userId],
+    );
+    await scopedPool.query(
+      `UPDATE revenuecat_customer_state
+       SET reconcile_after='2099-01-01T00:00:00Z'
+       WHERE user_id<>$1`,
+      [userId],
+    );
+    await runTrustedUserBatch({
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T02:30:00Z", {
+            pro: false,
+            coaching: false,
+          }),
+        },
+        [],
+      ),
+      limit: 1,
+    });
+    const final = await scopedPool.query(
+      `SELECT entitlement.active,state.last_operation_id
+       FROM subscription_entitlements AS entitlement
+       JOIN revenuecat_customer_state AS state ON state.user_id=entitlement.user_id
+       WHERE entitlement.user_id=$1 AND entitlement.entitlement_id='elovia_pro'`,
+      [userId],
+    );
+    assert.equal(final.rows[0].active, false);
+    assert.match(final.rows[0].last_operation_id, /^worker:/);
+  },
+);
+
+integrationTest(
+  "on-demand reconciliation is due-only, fail-closed, and deletion wins after fetch",
+  async () => {
+    const suffix = Date.now();
+    const due = `on-demand-due-${suffix}`;
+    const notDue = `on-demand-future-${suffix}`;
+    const failing = `on-demand-failing-${suffix}`;
+    const deleted = `on-demand-deleted-${suffix}`;
+    const users = [due, notDue, failing, deleted];
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      users,
+    ]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_state
+       (user_id,canonicalization_state,source_kind,reconcile_reason,reconcile_after)
+       SELECT user_id,'pending','none','scheduled',reconcile_after
+       FROM unnest($1::text[],$2::timestamptz[]) AS seeded(user_id,reconcile_after)`,
+      [
+        users,
+        [
+          "2000-01-01T00:00:00Z",
+          "2099-01-01T00:00:00Z",
+          "2000-01-01T00:00:00Z",
+          "2000-01-01T00:00:00Z",
+        ],
+      ],
+    );
+    const calls = [];
+    await reconcileTrustedUserOnDemand({
+      userId: due,
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T01:00:00Z", { pro: true }),
+        },
+        calls,
+      ),
+    });
+    await reconcileTrustedUserOnDemand({
+      userId: notDue,
+      config: processorConfig,
+      client: fakeClient(null, calls),
+    });
+    await reconcileTrustedUserOnDemand({
+      userId: failing,
+      config: processorConfig,
+      client: {
+        async getSubscriber(uid) {
+          calls.push(uid);
+          throw Object.assign(new Error("provider payload must not persist"), {
+            code: "secret_provider_failure",
+          });
+        },
+      },
+    });
+    await reconcileTrustedUserOnDemand({
+      userId: deleted,
+      config: processorConfig,
+      client: {
+        async getSubscriber(uid) {
+          calls.push(uid);
+          await scopedPool.query("DELETE FROM users WHERE id=$1", [uid]);
+          return {
+            lookup: "existing",
+            snapshot: snapshot("2026-09-02T01:01:00Z", { pro: true }),
+          };
+        },
+      },
+    });
+    assert.deepEqual(calls, [due, failing, deleted]);
+    const states = await scopedPool.query(
+      `SELECT user_id,canonicalization_state,reconcile_last_error_code,
+              reconcile_lease_id,reconcile_after > clock_timestamp() AS scheduled
+       FROM revenuecat_customer_state WHERE user_id=ANY($1::text[])
+       ORDER BY user_id`,
+      [[due, notDue, failing, deleted]],
+    );
+    const byUser = new Map(states.rows.map((row) => [row.user_id, row]));
+    assert.equal(byUser.get(due).canonicalization_state, "canonical");
+    assert.equal(byUser.get(notDue).canonicalization_state, "pending");
+    assert.equal(
+      byUser.get(failing).reconcile_last_error_code,
+      "revenuecat_worker_failure",
+    );
+    assert.equal(byUser.get(failing).reconcile_lease_id, null);
+    assert.equal(byUser.get(failing).scheduled, true);
+    assert.equal(byUser.has(deleted), false);
+  },
+);
+
+integrationTest(
+  "only bootstrap accepts an empty first 201 and every nonempty 201 is invalid",
+  async () => {
+    const suffix = Date.now();
+    const reasons = [
+      "authenticated",
+      "on_demand",
+      "scheduled",
+      "webhook_failure",
+    ];
+    const users = reasons.map((reason) => `created-${reason}-${suffix}`);
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      users,
+    ]);
+    const emptyCreated = {
+      lookup: "created",
+      snapshot: snapshot("2026-09-02T01:10:00Z", {
+        pro: false,
+        coaching: false,
+      }),
+    };
+    for (const [index, reason] of reasons.entries()) {
+      const result = await reconcileTrustedUser({
+        userId: users[index],
+        reason,
+        operationId:
+          reason === "scheduled"
+            ? `worker:created-${suffix}`
+            : `auth:created-${suffix}-${index}`,
+        config: processorConfig,
+        client: fakeClient(emptyCreated, []),
+      });
+      assert.deepEqual(result, { outcome: "visibility_lag" });
+    }
+    assert.equal(
+      (
+        await scopedPool.query(
+          `SELECT count(*)::integer AS count FROM subscription_entitlements
+           WHERE user_id=ANY($1::text[])`,
+          [users],
+        )
+      ).rows[0].count,
+      0,
+    );
+    await assert.rejects(
+      () =>
+        reconcileTrustedUser({
+          userId: users[0],
+          reason: "legacy_bootstrap",
+          operationId: `bootstrap:invalid-${suffix}`,
+          allowCreatedEmpty: true,
+          config: processorConfig,
+          client: fakeClient(
+            {
+              lookup: "created",
+              snapshot: snapshot("2026-09-02T01:11:00Z", { pro: true }),
+            },
+            [],
+          ),
+        }),
+      (error) => error?.code === "canonical_response_invalid",
+    );
+  },
+);
+
+integrationTest(
+  "rawless worker rejects ordinary, redemption, and either transfer-side ambiguity before provider IO",
+  async () => {
+    const suffix = Date.now();
+    const users = [
+      `ambiguity-a-${suffix}`,
+      `ambiguity-b-${suffix}`,
+      `ambiguity-c-${suffix}`,
+    ];
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      users,
+    ]);
+    const cases = [
+      {
+        eventId: `ambiguous_ordinary_${suffix}`,
+        type: "INITIAL_PURCHASE",
+        subjects: [
+          { hash: "1".repeat(63) + "a", roleMask: 1, localUserId: users[0] },
+          { hash: "1".repeat(63) + "b", roleMask: 1, localUserId: users[1] },
+        ],
+      },
+      {
+        eventId: `ambiguous_redemption_${suffix}`,
+        type: "PURCHASE_REDEEMED",
+        subjects: [
+          { hash: "2".repeat(63) + "a", roleMask: 64, localUserId: users[0] },
+          { hash: "2".repeat(63) + "b", roleMask: 64, localUserId: users[1] },
+        ],
+      },
+      {
+        eventId: `ambiguous_transfer_source_${suffix}`,
+        type: "TRANSFER",
+        subjects: [
+          { hash: "3".repeat(63) + "a", roleMask: 8, localUserId: users[0] },
+          { hash: "3".repeat(63) + "b", roleMask: 8, localUserId: users[1] },
+          { hash: "3".repeat(63) + "c", roleMask: 16, localUserId: users[2] },
+        ],
+      },
+      {
+        eventId: `ambiguous_transfer_destination_${suffix}`,
+        type: "TRANSFER",
+        subjects: [
+          { hash: "4".repeat(63) + "a", roleMask: 8, localUserId: users[0] },
+          { hash: "4".repeat(63) + "b", roleMask: 16, localUserId: users[1] },
+          { hash: "4".repeat(63) + "c", roleMask: 16, localUserId: users[2] },
+        ],
+      },
+    ];
+    for (const testCase of cases) {
+      await insertRawlessEvent(testCase);
+      const calls = [];
+      const metrics = [];
+      await runPendingEventBatch({
+        config: processorConfig,
+        client: fakeClient(null, calls),
+        limit: 1,
+        metric: (metric) => metrics.push(metric),
+      });
+      assert.deepEqual(calls, []);
+      assert.equal(
+        metrics.some(
+          (metric) =>
+            metric.type === "event_recovery_failure" &&
+            metric.errorCode === "identity_conflict" &&
+            metric.count === 1,
+        ),
+        true,
+      );
+      const state = await scopedPool.query(
+        `SELECT disposition,identity_applied_at,entitlement_applied_at,
+                processing_lease_id
+         FROM revenuecat_webhook_events
+         WHERE event_id=$1`,
+        [testCase.eventId],
+      );
+      assert.equal(state.rows[0].disposition, "pending");
+      assert.equal(state.rows[0].identity_applied_at, null);
+      assert.equal(state.rows[0].entitlement_applied_at, null);
+      assert.equal(state.rows[0].processing_lease_id, null);
+    }
+  },
+);
+
+integrationTest(
+  "rawless transfer recovery supports source-only, destination-only, and overlap while source-live and 201 remain pending",
+  async () => {
+    const suffix = Date.now();
+    const source = `one-sided-source-${suffix}`;
+    const destination = `one-sided-destination-${suffix}`;
+    const overlap = `one-sided-overlap-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      [source, destination, overlap],
+    ]);
+    const cases = [
+      {
+        eventId: `transfer_source_only_${suffix}`,
+        subjects: [
+          { hash: "5".repeat(63) + "a", roleMask: 8, localUserId: source },
+        ],
+        lookup: {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T00:00:00Z", {
+            pro: false,
+            coaching: false,
+          }),
+        },
+        terminal: true,
+      },
+      {
+        eventId: `transfer_destination_only_${suffix}`,
+        subjects: [
+          {
+            hash: "6".repeat(63) + "a",
+            roleMask: 16,
+            localUserId: destination,
+          },
+        ],
+        lookup: {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T00:01:00Z", { pro: true }),
+        },
+        terminal: true,
+      },
+      {
+        eventId: `transfer_overlap_${suffix}`,
+        subjects: [
+          { hash: "7".repeat(63) + "a", roleMask: 24, localUserId: overlap },
+        ],
+        lookup: {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T00:02:00Z", { pro: true }),
+        },
+        terminal: true,
+      },
+      {
+        eventId: `transfer_source_live_${suffix}`,
+        subjects: [
+          { hash: "8".repeat(63) + "a", roleMask: 8, localUserId: source },
+        ],
+        lookup: {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T00:03:00Z", { pro: true }),
+        },
+        terminal: false,
+      },
+      {
+        eventId: `transfer_created_${suffix}`,
+        subjects: [
+          {
+            hash: "9".repeat(63) + "a",
+            roleMask: 16,
+            localUserId: destination,
+          },
+        ],
+        lookup: {
+          lookup: "created",
+          snapshot: snapshot("2026-09-02T00:04:00Z", {
+            pro: false,
+            coaching: false,
+          }),
+        },
+        terminal: false,
+      },
+    ];
+    for (const testCase of cases) {
+      await insertRawlessEvent({
+        eventId: testCase.eventId,
+        type: "TRANSFER",
+        subjects: testCase.subjects,
+      });
+      const calls = [];
+      await runPendingEventBatch({
+        config: processorConfig,
+        client: fakeClient(testCase.lookup, calls),
+        limit: 1,
+      });
+      assert.equal(calls.length, 1);
+      const state = await scopedPool.query(
+        `SELECT disposition,identity_applied_at IS NOT NULL AS identity_done,
+                entitlement_applied_at IS NOT NULL AS entitlement_done
+         FROM revenuecat_webhook_events WHERE event_id=$1`,
+        [testCase.eventId],
+      );
+      assert.equal(state.rows[0].disposition !== "pending", testCase.terminal);
+      assert.equal(state.rows[0].identity_done, testCase.terminal);
+      assert.equal(state.rows[0].entitlement_done, testCase.terminal);
+    }
+    const sourceOnlyAliases = await scopedPool.query(
+      `SELECT count(*)::integer AS count FROM revenuecat_customer_aliases
+       WHERE alias_hash=$1`,
+      ["5".repeat(63) + "a"],
+    );
+    assert.equal(sourceOnlyAliases.rows[0].count, 0);
+  },
+);
+
+integrationTest(
+  "direct UID links without aliases survive both event phase-crash directions",
+  async () => {
+    const suffix = Date.now();
+    const identityOnlyUser = `direct-identity-${suffix}`;
+    const entitlementOnlyUser = `direct-entitlement-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      [identityOnlyUser, entitlementOnlyUser],
+    ]);
+
+    const identityOnlyEvent = `direct_identity_only_${suffix}`;
+    const identityOnlyHash = "a".repeat(63) + "1";
+    await insertRawlessEvent({
+      eventId: identityOnlyEvent,
+      subjects: [
+        {
+          hash: identityOnlyHash,
+          roleMask: 1,
+          localUserId: identityOnlyUser,
+        },
+      ],
+      entitlementApplied: true,
+    });
+    const forbiddenCalls = [];
+    await runPendingEventBatch({
+      config: processorConfig,
+      client: fakeClient(null, forbiddenCalls),
+      limit: 1,
+    });
+    assert.deepEqual(forbiddenCalls, []);
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT disposition,identity_applied_at IS NOT NULL AS identity_done,
+                  entitlement_applied_at IS NOT NULL AS entitlement_done
+           FROM revenuecat_webhook_events WHERE event_id=$1`,
+          [identityOnlyEvent],
+        )
+      ).rows[0],
+      { disposition: "stale", identity_done: true, entitlement_done: true },
+    );
+    assert.equal(
+      (
+        await scopedPool.query(
+          `SELECT count(*)::integer AS count FROM revenuecat_customer_aliases
+           WHERE alias_hash=$1`,
+          [identityOnlyHash],
+        )
+      ).rows[0].count,
+      0,
+    );
+
+    const entitlementOnlyEvent = `direct_entitlement_only_${suffix}`;
+    const entitlementOnlyHash = "b".repeat(63) + "1";
+    await insertRawlessEvent({
+      eventId: entitlementOnlyEvent,
+      subjects: [
+        {
+          hash: entitlementOnlyHash,
+          roleMask: 1,
+          localUserId: entitlementOnlyUser,
+        },
+      ],
+      identityApplied: true,
+    });
+    const calls = [];
+    await runPendingEventBatch({
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T00:10:00Z", { pro: true }),
+        },
+        calls,
+      ),
+      limit: 1,
+    });
+    assert.deepEqual(calls, [entitlementOnlyUser]);
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT disposition,identity_applied_at IS NOT NULL AS identity_done,
+                  entitlement_applied_at IS NOT NULL AS entitlement_done
+           FROM revenuecat_webhook_events WHERE event_id=$1`,
+          [entitlementOnlyEvent],
+        )
+      ).rows[0],
+      { disposition: "applied", identity_done: true, entitlement_done: true },
+    );
+    assert.equal(
+      (
+        await scopedPool.query(
+          `SELECT count(*)::integer AS count FROM revenuecat_customer_aliases
+           WHERE alias_hash=$1`,
+          [entitlementOnlyHash],
+        )
+      ).rows[0].count,
+      0,
+    );
+  },
+);
+
+integrationTest(
+  "fully pruned rawless events defer without provider IO until retention cleanup",
+  async () => {
+    const suffix = Date.now();
+    const userId = `worker-pruned-${suffix}`;
+    const eventId = `worker_pruned_${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [userId]);
+    await insertRawlessEvent({
+      eventId,
+      subjects: [
+        {
+          hash: "b".repeat(63) + "2",
+          roleMask: 1,
+          localUserId: userId,
+        },
+      ],
+    });
+    await scopedPool.query("DELETE FROM users WHERE id=$1", [userId]);
+    await makeOnlyEventDue(eventId);
+    const calls = [];
+    await runPendingEventBatch({
+      config: processorConfig,
+      client: fakeClient(null, calls),
+      limit: 1,
+    });
+    assert.deepEqual(calls, []);
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT disposition,retained_identity_count,pruned_identity_count,
+                  next_attempt_at=retention_until AS deferred_to_retention,
+                  processing_lease_id
+           FROM revenuecat_webhook_events WHERE event_id=$1`,
+          [eventId],
+        )
+      ).rows[0],
+      {
+        disposition: "pending",
+        retained_identity_count: 0,
+        pruned_identity_count: 1,
+        deferred_to_retention: true,
+        processing_lease_id: null,
+      },
+    );
+  },
+);
+
+integrationTest(
+  "event recovery expands ordered owner locks and bounds repeated ownership instability",
+  async () => {
+    const suffix = Date.now();
+    const owners = Array.from(
+      { length: 7 },
+      (_, index) => `expanded-${index}-${suffix}`,
+    );
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      owners,
+    ]);
+
+    const stableEvent = `expansion_stable_${suffix}`;
+    const stableHash = "c".repeat(63) + "1";
+    await insertRawlessEvent({
+      eventId: stableEvent,
+      subjects: [{ hash: stableHash, roleMask: 1, localUserId: owners[0] }],
+    });
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_aliases
+       (alias_hash,local_user_id,alias_kind,ownership_source,source_event_at,source_event_id)
+       VALUES ($1,$2,'ordinary','webhook','2026-08-01T00:00:00Z',$3)`,
+      [stableHash, owners[0], `seed_stable_${suffix}`],
+    );
+    const stableCalls = [];
+    const stableMetrics = [];
+    await runPendingEventBatch({
+      config: processorConfig,
+      client: fakeClient(async (uid) => {
+        stableCalls.push(uid);
+        if (uid === owners[0]) {
+          await scopedPool.query(
+            `UPDATE revenuecat_customer_aliases SET local_user_id=$2 WHERE alias_hash=$1`,
+            [stableHash, owners[1]],
+          );
+        }
+        return {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T00:20:00Z", { pro: true }),
+        };
+      }, []),
+      limit: 1,
+      metric: (metric) => stableMetrics.push(metric),
+    });
+    assert.deepEqual(stableCalls, [owners[0], owners[1]]);
+    assert.equal(
+      stableMetrics.some(
+        (metric) => metric.type === "event_recovery_expansion",
+      ),
+      true,
+    );
+    assert.equal(
+      (
+        await scopedPool.query(
+          `SELECT disposition FROM revenuecat_webhook_events WHERE event_id=$1`,
+          [stableEvent],
+        )
+      ).rows[0].disposition,
+      "applied",
+    );
+
+    const unstableEvent = `expansion_unstable_${suffix}`;
+    const unstableHash = "d".repeat(63) + "1";
+    await insertRawlessEvent({
+      eventId: unstableEvent,
+      subjects: [{ hash: unstableHash, roleMask: 1, localUserId: owners[2] }],
+    });
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_aliases
+       (alias_hash,local_user_id,alias_kind,ownership_source,source_event_at,source_event_id)
+       VALUES ($1,$2,'ordinary','webhook','2026-08-01T00:00:00Z',$3)`,
+      [unstableHash, owners[2], `seed_unstable_${suffix}`],
+    );
+    const unstableCalls = [];
+    const unstableMetrics = [];
+    await runPendingEventBatch({
+      config: processorConfig,
+      client: {
+        async getSubscriber(uid) {
+          unstableCalls.push(uid);
+          const index = owners.indexOf(uid);
+          await scopedPool.query(
+            `UPDATE revenuecat_customer_aliases SET local_user_id=$2 WHERE alias_hash=$1`,
+            [unstableHash, owners[index + 1]],
+          );
+          return {
+            lookup: "existing",
+            snapshot: snapshot("2026-09-02T00:21:00Z", { pro: true }),
+          };
+        },
+      },
+      limit: 1,
+      metric: (metric) => unstableMetrics.push(metric),
+    });
+    assert.equal(unstableCalls.length, 4);
+    assert.equal(
+      unstableMetrics.some(
+        (metric) =>
+          metric.type === "event_recovery_failure" &&
+          metric.errorCode === "identity_set_changed" &&
+          metric.count === 1,
+      ),
+      true,
+    );
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT disposition,identity_applied_at,entitlement_applied_at,
+                  processing_lease_id
+           FROM revenuecat_webhook_events WHERE event_id=$1`,
+          [unstableEvent],
+        )
+      ).rows[0],
+      {
+        disposition: "pending",
+        identity_applied_at: null,
+        entitlement_applied_at: null,
+        processing_lease_id: null,
+      },
+    );
+  },
+);
+
+integrationTest(
+  "event workers never hold queued leases behind a slow item and an old fence performs no duplicate GET",
+  async () => {
+    const suffix = Date.now();
+    const slowUser = `lease-slow-${suffix}`;
+    const peerUser = `lease-peer-${suffix}`;
+    const fencedUser = `lease-fenced-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      [slowUser, peerUser, fencedUser],
+    ]);
+    const slowEvent = `lease_a_slow_${suffix}`;
+    const peerEvent = `lease_b_peer_${suffix}`;
+    await insertRawlessEvent({
+      eventId: slowEvent,
+      subjects: [
+        { hash: "e".repeat(63) + "1", roleMask: 1, localUserId: slowUser },
+      ],
+    });
+    await insertRawlessEvent({
+      eventId: peerEvent,
+      subjects: [
+        { hash: "e".repeat(63) + "2", roleMask: 1, localUserId: peerUser },
+      ],
+    });
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events SET next_attempt_at='2000-01-01T00:00:00Z'
+       WHERE event_id=ANY($1::text[])`,
+      [[slowEvent, peerEvent]],
+    );
+    let releaseSlow;
+    let slowStartedResolve;
+    const slowStarted = new Promise((resolve) => {
+      slowStartedResolve = resolve;
+    });
+    const slowGate = new Promise((resolve) => {
+      releaseSlow = resolve;
+    });
+    const calls = [];
+    const firstReplica = runPendingEventBatch({
+      config: processorConfig,
+      client: {
+        async getSubscriber(uid) {
+          calls.push(`first:${uid}`);
+          slowStartedResolve();
+          await slowGate;
+          return {
+            lookup: "existing",
+            snapshot: snapshot("2026-09-02T00:30:00Z", { pro: true }),
+          };
+        },
+      },
+      limit: 2,
+    });
+    await slowStarted;
+    const secondReplica = await runPendingEventBatch({
+      config: processorConfig,
+      client: {
+        async getSubscriber(uid) {
+          calls.push(`second:${uid}`);
+          return {
+            lookup: "existing",
+            snapshot: snapshot("2026-09-02T00:31:00Z", { pro: true }),
+          };
+        },
+      },
+      limit: 1,
+    });
+    assert.equal(secondReplica, 1);
+    assert.deepEqual(calls, [`first:${slowUser}`, `second:${peerUser}`]);
+    releaseSlow();
+    assert.equal(await firstReplica, 1);
+
+    const fencedEvent = `lease_c_fenced_${suffix}`;
+    await insertRawlessEvent({
+      eventId: fencedEvent,
+      subjects: [
+        {
+          hash: "e".repeat(63) + "3",
+          roleMask: 1,
+          localUserId: fencedUser,
+        },
+      ],
+    });
+    const oldClaim = (await claimPendingRevenueCatEvents(1))[0];
+    assert.equal(oldClaim.eventId, fencedEvent);
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET processing_lease_until=clock_timestamp() - interval '1 second'
+       WHERE event_id=$1`,
+      [fencedEvent],
+    );
+    const currentClaim = (await claimPendingRevenueCatEvents(1))[0];
+    assert.equal(currentClaim.eventId, fencedEvent);
+    const fenceCalls = [];
+    const client = fakeClient(
+      {
+        lookup: "existing",
+        snapshot: snapshot("2026-09-02T00:32:00Z", { pro: true }),
+      },
+      fenceCalls,
+    );
+    await recoverClaimedRevenueCatEvent(oldClaim, processorConfig, client);
+    assert.deepEqual(fenceCalls, []);
+    await recoverClaimedRevenueCatEvent(currentClaim, processorConfig, client);
+    assert.deepEqual(fenceCalls, [fencedUser]);
   },
 );
 
@@ -3946,6 +5297,75 @@ integrationTest(
 );
 
 integrationTest(
+  "bootstrap paginates existing state, tolerates deletion, and reports remaining retryable failures",
+  async () => {
+    const suffix = Date.now();
+    const successful = `zz-bootstrap-a-success-${suffix}`;
+    const deleted = `zz-bootstrap-b-deleted-${suffix}`;
+    const failing = `zz-bootstrap-c-failing-${suffix}`;
+    const users = [successful, deleted, failing];
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      users,
+    ]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_state
+       (user_id,canonicalization_state,source_kind,reconcile_reason,reconcile_after)
+       SELECT user_id,'legacy_unverified','legacy_unverified','legacy_bootstrap',
+              '2000-01-01T00:00:00Z'
+       FROM unnest($1::text[]) AS seeded(user_id)`,
+      [users],
+    );
+    const calls = [];
+    const result = await bootstrapRevenueCatCustomers({
+      config: processorConfig,
+      client: {
+        async getSubscriber(uid) {
+          calls.push(uid);
+          if (uid === deleted) {
+            await scopedPool.query("DELETE FROM users WHERE id=$1", [uid]);
+          }
+          if (uid === failing) {
+            throw Object.assign(new Error("provider details stay private"), {
+              code: "revenuecat_unavailable",
+            });
+          }
+          return {
+            lookup: "existing",
+            snapshot: snapshot("2026-09-02T01:30:00Z", {
+              pro: false,
+              coaching: false,
+            }),
+          };
+        },
+      },
+      runId: "00000000-0000-0000-0000-000000000003",
+      batchSize: 1,
+    });
+    assert.deepEqual(calls, users);
+    assert.equal(result.attempted, 3);
+    assert.equal(result.remaining >= 1, true);
+    const states = await scopedPool.query(
+      `SELECT user_id,canonicalization_state,reconcile_last_error_code
+       FROM revenuecat_customer_state WHERE user_id=ANY($1::text[])
+       ORDER BY user_id`,
+      [users],
+    );
+    assert.deepEqual(states.rows, [
+      {
+        user_id: successful,
+        canonicalization_state: "canonical",
+        reconcile_last_error_code: null,
+      },
+      {
+        user_id: failing,
+        canonicalization_state: "legacy_unverified",
+        reconcile_last_error_code: "revenuecat_unavailable",
+      },
+    ]);
+  },
+);
+
+integrationTest(
   "cleanup preserves surviving identity work and never derives transfer phases from customer state",
   async () => {
     const suffix = Date.now();
@@ -3990,11 +5410,8 @@ integrationTest(
        (event_id,subject_hash,role_mask,local_user_id) VALUES ($1,$2,1,NULL)`,
       [pruned, "c".repeat(64)],
     );
-    await scopedPool.query(
-      `DELETE FROM revenuecat_event_subjects WHERE event_id=$1`,
-      [pruned],
-    );
-    await cleanupRevenueCatEvents();
+    const alerts = [];
+    await cleanupRevenueCatEvents({ alert: (alert) => alerts.push(alert) });
     const states = await scopedPool.query(
       `SELECT event_id,identity_applied_at IS NOT NULL AS identity_done,
               entitlement_applied_at IS NOT NULL AS entitlement_done
@@ -4024,6 +5441,161 @@ integrationTest(
       ).rows[0].count,
       0,
     );
+    assert.equal(
+      alerts.some(
+        (alert) => alert.type === "INITIAL_PURCHASE" && alert.count >= 1,
+      ),
+      true,
+    );
+    assert.equal(
+      alerts.some((alert) => alert.type === "TRANSFER" && alert.count >= 1),
+      true,
+    );
+    for (const alert of alerts) {
+      assert.deepEqual(Object.keys(alert).sort(), ["count", "type"]);
+    }
+  },
+);
+
+integrationTest(
+  "per-user and strict resolvers ignore legacy paid rows and strict readiness uses real customer state",
+  async () => {
+    const suffix = Date.now();
+    const legacyUser = `resolver-legacy-${suffix}`;
+    const canonicalUser = `resolver-canonical-${suffix}`;
+    await scopedPool.query(
+      `INSERT INTO users (id,created_at) VALUES
+       ($1,'2020-01-01T00:00:00Z'),($2,'2020-01-01T00:00:00Z')`,
+      [legacyUser, canonicalUser],
+    );
+    await scopedPool.query(
+      `INSERT INTO subscriptions
+       (user_id,revenuecat_user_id,entitlement_active,entitlement_id,status,tier,
+        product_id,store,current_period_ends_at,last_event,last_event_at)
+       VALUES ($1,$1,true,'legacy-paid','active','lifetime','legacy-product',
+               'app_store','2099-01-01T00:00:00Z',NULL,'2099-01-01T00:00:00Z')`,
+      [legacyUser],
+    );
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_state
+       (user_id,canonicalization_state,source_kind,source_environment,last_snapshot_at,
+        last_operation_id,last_reconciled_at,reconcile_reason,reconcile_after)
+       VALUES ($1,'canonical','worker_canonical','sandbox','2026-09-02T01:40:00Z',
+               'worker:resolver-canonical','2026-09-02T01:40:01Z','scheduled',
+               '2099-01-01T00:00:00Z')`,
+      [canonicalUser],
+    );
+    await scopedPool.query(
+      `INSERT INTO subscription_entitlements
+       (user_id,entitlement_id,active,status,product_id,store,access_ends_at,
+        will_renew,source_environment,source_kind,source_snapshot_at,source_operation_id)
+       VALUES ($1,'elovia_pro',true,'active','pro_monthly','test_store',
+               '2099-01-01T00:00:00Z',true,'sandbox','worker_canonical',
+               '2026-09-02T01:40:00Z','worker:resolver-canonical')`,
+      [canonicalUser],
+    );
+
+    process.env.REVENUECAT_NORMALIZED_READS = "per_user";
+    const legacyPerUser = await resolveEntitlement(legacyUser);
+    assert.deepEqual(legacyPerUser, {
+      tier: "free",
+      hasProAccess: false,
+      hasCoaching: false,
+      status: "expired",
+      trialEndsAt: new Date("2020-01-16T00:00:00.000Z"),
+      currentPeriodEndsAt: null,
+      productId: null,
+    });
+    assert.equal((await resolveEntitlement(canonicalUser)).tier, "premium");
+    process.env.REVENUECAT_NORMALIZED_READS = "strict";
+    assert.deepEqual(await resolveEntitlement(legacyUser), legacyPerUser);
+
+    const server = await new Promise((resolve, reject) => {
+      const listening = apiApp.listen(0, () => resolve(listening));
+      listening.once("error", reject);
+    });
+    try {
+      const address = server.address();
+      assert.equal(typeof address, "object");
+      const origin = `http://127.0.0.1:${address.port}`;
+      const unavailable = await fetch(`${origin}/api/readyz`);
+      assert.equal(unavailable.status, 503);
+
+      await scopedPool.query(`
+        INSERT INTO revenuecat_customer_state (
+          user_id,canonicalization_state,source_kind,source_environment,
+          last_snapshot_at,last_operation_id,last_reconciled_at,
+          reconcile_reason,reconcile_after
+        )
+        SELECT id,'canonical','bootstrap_canonical','sandbox',
+               '2026-09-02T01:50:00Z',
+               'bootstrap:00000000-0000-0000-0000-000000000001',
+               clock_timestamp(),'scheduled','2099-01-01T00:00:00Z'
+        FROM users
+        ON CONFLICT (user_id) DO UPDATE SET
+          canonicalization_state='canonical',
+          source_kind='bootstrap_canonical',
+          source_environment='sandbox',
+          last_snapshot_at='2026-09-02T01:50:00Z',
+          last_operation_id='bootstrap:00000000-0000-0000-0000-000000000001',
+          last_reconciled_at=clock_timestamp(),
+          reconcile_reason='scheduled',
+          reconcile_after='2099-01-01T00:00:00Z',
+          reconcile_attempt_count=0,
+          reconcile_lease_id=NULL,
+          reconcile_lease_until=NULL,
+          reconcile_last_error_code=NULL
+      `);
+      const ready = await fetch(`${origin}/api/readyz`);
+      assert.equal(ready.status, 200);
+      assert.deepEqual(await ready.json(), { status: "ok" });
+    } finally {
+      await new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+      process.env.REVENUECAT_NORMALIZED_READS = "per_user";
+    }
+  },
+);
+
+integrationTest(
+  "RevenueCat worker lifecycle performs one injected cycle and stops its next schedule",
+  async () => {
+    await scopedPool.query(
+      `UPDATE revenuecat_customer_state
+       SET reconcile_after='2099-01-01T00:00:00Z',
+           reconcile_lease_id=NULL,reconcile_lease_until=NULL`,
+    );
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET next_attempt_at='2099-01-01T00:00:00Z',
+           processing_lease_id=NULL,processing_lease_until=NULL
+       WHERE disposition='pending'`,
+    );
+    let cycleCount = 0;
+    let cycleResolve;
+    const cycle = new Promise((resolve) => {
+      cycleResolve = resolve;
+    });
+    const calls = [];
+    const stop = startRevenueCatWorkers({
+      intervalMs: 2_147_000_000,
+      runtime: {
+        config: processorConfig,
+        client: fakeClient(null, calls),
+      },
+      metric() {},
+      onCycle() {
+        cycleCount += 1;
+        cycleResolve();
+      },
+    });
+    await cycle;
+    stop();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(cycleCount, 1);
+    assert.deepEqual(calls, []);
   },
 );
 

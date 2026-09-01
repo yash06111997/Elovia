@@ -34,37 +34,23 @@ function errorType(error: unknown): string {
   return error instanceof Error ? error.name : "UnknownError";
 }
 
-export async function authMiddleware(
+type VerifiedFirebaseDeletionIdentity = Exclude<
+  Awaited<ReturnType<typeof verifyFirebaseDeletionToken>>,
+  null
+>;
+
+/** Apply an already verified identity; exported so DB-backed auth policy tests
+ * do not need to forge or weaken Firebase token verification. */
+export async function applyVerifiedFirebaseAuth(
   req: Request,
   res: Response,
   next: NextFunction,
-) {
-  req.isAuthenticated = function (this: Request) {
-    return this.user != null;
-  } as Request["isAuthenticated"];
-
-  const authHeader = req.headers["authorization"];
-  if (!authHeader?.startsWith("Bearer ")) {
-    next();
-    return;
-  }
-
-  const idToken = authHeader.slice(7);
-  if (!idToken) {
-    next();
-    return;
-  }
-
+  deletionVerification: VerifiedFirebaseDeletionIdentity,
+): Promise<void> {
+  const user = deletionVerification.user;
   const deletionRequest = isAccountDeletionRequest(req);
-  const deletionVerification = await verifyFirebaseDeletionToken(idToken);
-  const user = deletionVerification?.user ?? null;
-  if (!user) {
-    next();
-    return;
-  }
-
   try {
-    if (deletionVerification?.deletionFallback) {
+    if (deletionVerification.deletionFallback) {
       // A revoked/deleted identity is accepted only to finalize its existing
       // tombstone. Never provision a user from this narrow fallback.
       const tombstone = await findAccountDeletionTombstone(user.id);
@@ -115,4 +101,33 @@ export async function authMiddleware(
   }
 
   next();
+}
+
+export async function authMiddleware(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  req.isAuthenticated = function (this: Request) {
+    return this.user != null;
+  } as Request["isAuthenticated"];
+
+  const authHeader = req.headers["authorization"];
+  if (!authHeader?.startsWith("Bearer ")) {
+    next();
+    return;
+  }
+
+  const idToken = authHeader.slice(7);
+  if (!idToken) {
+    next();
+    return;
+  }
+
+  const deletionVerification = await verifyFirebaseDeletionToken(idToken);
+  if (!deletionVerification) {
+    next();
+    return;
+  }
+  await applyVerifiedFirebaseAuth(req, res, next, deletionVerification);
 }

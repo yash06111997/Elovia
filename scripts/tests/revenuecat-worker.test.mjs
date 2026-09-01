@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  classifyRawlessRevenueCatEvent,
   canonicalCreatedResponseIsEmpty,
   reconcileRetryDelayMs,
   resolveNormalizedEntitlement,
   sanitizeRevenueCatErrorCode,
   trustedStateNeedsEnqueue,
 } from "../../artifacts/api-server/src/lib/revenuecatWorkerCore.ts";
+import {
+  batchSizeFromArguments,
+  bootstrapExitCode,
+} from "../reconcile-revenuecat-core.mjs";
 
 const now = new Date("2026-09-02T12:00:00.000Z");
 
@@ -17,6 +22,16 @@ test("trusted customer retries double from one minute and cap at one hour", () =
   assert.equal(reconcileRetryDelayMs(6), 1_920_000);
   assert.equal(reconcileRetryDelayMs(7), 3_600_000);
   assert.equal(reconcileRetryDelayMs(99), 3_600_000);
+});
+
+test("bootstrap CLI validates pagination size and exits nonzero for remaining work", () => {
+  assert.equal(batchSizeFromArguments([]), 100);
+  assert.equal(batchSizeFromArguments(["--batch-size=1"]), 1);
+  assert.equal(batchSizeFromArguments(["--batch-size=1000"]), 1_000);
+  assert.throws(() => batchSizeFromArguments(["--batch-size=0"]));
+  assert.throws(() => batchSizeFromArguments(["--batch-size=1.5"]));
+  assert.equal(bootstrapExitCode(0), 0);
+  assert.equal(bootstrapExitCode(1), 1);
 });
 
 test("trusted customer errors are reduced to bounded non-sensitive codes", () => {
@@ -30,6 +45,10 @@ test("trusted customer errors are reduced to bounded non-sensitive codes", () =>
   );
   assert.equal(
     sanitizeRevenueCatErrorCode({ code: "UPPERCASE and spaces" }),
+    "revenuecat_worker_failure",
+  );
+  assert.equal(
+    sanitizeRevenueCatErrorCode({ code: "secret_internal_database_code" }),
     "revenuecat_worker_failure",
   );
 });
@@ -274,6 +293,101 @@ test("normalized reads cover every active and terminal RevenueCat status", () =>
     }).tier,
     "free",
   );
+});
+
+function rawlessSubject(overrides = {}) {
+  return {
+    subjectHash: "a".repeat(64),
+    roleMask: 1,
+    localUserId: "trusted-user",
+    localUserExists: true,
+    aliasOwner: null,
+    ownershipSource: null,
+    ...overrides,
+  };
+}
+
+test("rawless recovery treats a live local link without an alias as direct self", () => {
+  const decision = classifyRawlessRevenueCatEvent({
+    eventType: "INITIAL_PURCHASE",
+    subjects: [rawlessSubject()],
+  });
+  assert.equal(decision.kind, "ready");
+  assert.deepEqual(decision.owners, ["trusted-user"]);
+  assert.deepEqual(decision.subjects, [
+    {
+      subjectHash: "a".repeat(64),
+      owner: "trusted-user",
+      directOwner: "trusted-user",
+    },
+  ]);
+});
+
+test("rawless ordinary and redemption ambiguity fails before choosing an owner", () => {
+  const ambiguous = [
+    rawlessSubject({ subjectHash: "a".repeat(64), localUserId: "owner-a" }),
+    rawlessSubject({ subjectHash: "b".repeat(64), localUserId: "owner-b" }),
+  ];
+  assert.deepEqual(
+    classifyRawlessRevenueCatEvent({
+      eventType: "INITIAL_PURCHASE",
+      subjects: ambiguous,
+    }).kind,
+    "identity_conflict",
+  );
+  assert.deepEqual(
+    classifyRawlessRevenueCatEvent({
+      eventType: "PURCHASE_REDEEMED",
+      subjects: ambiguous.map((subject) => ({ ...subject, roleMask: 64 })),
+    }).kind,
+    "identity_conflict",
+  );
+});
+
+test("rawless transfer classification bounds each side and supports one-sided recovery", () => {
+  const sourceOnly = classifyRawlessRevenueCatEvent({
+    eventType: "TRANSFER",
+    subjects: [rawlessSubject({ roleMask: 8, localUserId: "source" })],
+  });
+  assert.equal(sourceOnly.kind, "ready");
+  assert.equal(sourceOnly.sourceOwner, "source");
+  assert.equal(sourceOnly.destinationOwner, null);
+
+  const destinationOnly = classifyRawlessRevenueCatEvent({
+    eventType: "TRANSFER",
+    subjects: [rawlessSubject({ roleMask: 16, localUserId: "destination" })],
+  });
+  assert.equal(destinationOnly.kind, "ready");
+  assert.equal(destinationOnly.sourceOwner, null);
+  assert.equal(destinationOnly.destinationOwner, "destination");
+
+  const overlap = classifyRawlessRevenueCatEvent({
+    eventType: "TRANSFER",
+    subjects: [rawlessSubject({ roleMask: 24, localUserId: "same-owner" })],
+  });
+  assert.equal(overlap.kind, "ready");
+  assert.deepEqual(overlap.owners, ["same-owner"]);
+  assert.equal(overlap.sourceOwner, "same-owner");
+  assert.equal(overlap.destinationOwner, "same-owner");
+
+  for (const roleMask of [8, 16]) {
+    const conflict = classifyRawlessRevenueCatEvent({
+      eventType: "TRANSFER",
+      subjects: [
+        rawlessSubject({
+          subjectHash: "a".repeat(64),
+          roleMask,
+          localUserId: "owner-a",
+        }),
+        rawlessSubject({
+          subjectHash: "b".repeat(64),
+          roleMask,
+          localUserId: "owner-b",
+        }),
+      ],
+    });
+    assert.equal(conflict.kind, "identity_conflict", `role ${roleMask}`);
+  }
 });
 
 test("Task 5 production wiring uses durable fenced workers and no legacy reads", async () => {

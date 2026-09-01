@@ -15,6 +15,7 @@ import {
   loadRevenueCatConfig,
   type RevenueCatConfig,
 } from "./revenuecatConfig.js";
+import { RECONCILING_REVENUECAT_EVENTS } from "./revenuecatContract.js";
 import {
   applyTrustedSnapshot,
   reconcileTrustedUser,
@@ -22,14 +23,50 @@ import {
 import { logger } from "./logger.js";
 import { projectRevenueCatSnapshot } from "./revenuecatSnapshot.js";
 import {
+  classifyRawlessRevenueCatEvent,
   reconcileRetryDelayMs,
   sanitizeRevenueCatErrorCode,
+  type RawlessRevenueCatSubject,
 } from "./revenuecatWorkerCore.js";
 
-const CUSTOMER_LEASE_SECONDS = 60;
 const CUSTOMER_BATCH_SIZE = 20;
 const EVENT_BATCH_SIZE = 20;
 const WORKER_INTERVAL_MS = 30_000;
+const MAX_EVENT_LOCK_EXPANSIONS = 4;
+
+export type RevenueCatWorkerMetric = Readonly<{
+  type:
+    | "customer_reconcile_success"
+    | "customer_reconcile_failure"
+    | "event_recovery_success"
+    | "event_recovery_failure"
+    | "event_recovery_expansion";
+  errorCode?:
+    | "applied"
+    | "stale"
+    | "deleted"
+    | "revenuecat_visibility_lag"
+    | "revenuecat_request_invalid"
+    | "revenuecat_configuration_invalid"
+    | "revenuecat_unavailable"
+    | "revenuecat_timeout"
+    | "canonical_response_invalid"
+    | "canonical_mapping_mismatch"
+    | "revenuecat_worker_failure"
+    | "identity_conflict"
+    | "identity_set_changed"
+    | "fence_lost";
+  count: number;
+}>;
+
+type RevenueCatWorkerMetricSink = (metric: RevenueCatWorkerMetric) => void;
+
+function emitMetric(
+  sink: RevenueCatWorkerMetricSink | undefined,
+  metric: RevenueCatWorkerMetric,
+): void {
+  sink?.(metric);
+}
 
 type TrustedClaim = Readonly<{
   userId: string;
@@ -130,12 +167,17 @@ export async function runTrustedUserBatch(
     config: RevenueCatConfig;
     client: RevenueCatClient;
     limit?: number;
+    metric?: RevenueCatWorkerMetricSink;
   }>,
 ): Promise<{ claimed: number; succeeded: number; retried: number }> {
-  const claims = await claimDueTrustedUsers(input.limit);
+  const limit = input.limit ?? CUSTOMER_BATCH_SIZE;
+  let claimed = 0;
   let succeeded = 0;
   let retried = 0;
-  for (const claim of claims) {
+  while (claimed < limit) {
+    const claim = (await claimDueTrustedUsers(1))[0];
+    if (!claim) break;
+    claimed += 1;
     try {
       const reconciled = await reconcileTrustedUser({
         userId: claim.userId,
@@ -150,11 +192,23 @@ export async function runTrustedUserBatch(
       });
       if (reconciled.outcome === "deleted") {
         await finishTrustedClaim(claim, "deleted");
+        emitMetric(input.metric, {
+          type: "customer_reconcile_success",
+          errorCode: "deleted",
+          count: 1,
+        });
       } else if (
         reconciled.outcome === "applied" ||
         reconciled.outcome === "stale"
       ) {
-        if (await finishTrustedClaim(claim, "success")) succeeded += 1;
+        if (await finishTrustedClaim(claim, "success")) {
+          succeeded += 1;
+          emitMetric(input.metric, {
+            type: "customer_reconcile_success",
+            errorCode: reconciled.outcome,
+            count: 1,
+          });
+        }
       } else if (reconciled.outcome === "visibility_lag") {
         if (
           await finishTrustedClaim(
@@ -165,22 +219,41 @@ export async function runTrustedUserBatch(
           )
         ) {
           retried += 1;
+          emitMetric(input.metric, {
+            type: "customer_reconcile_failure",
+            errorCode: "revenuecat_visibility_lag",
+            count: 1,
+          });
         }
+      } else if (reconciled.outcome === "fenced_out") {
+        emitMetric(input.metric, {
+          type: "customer_reconcile_failure",
+          errorCode: "fence_lost",
+          count: 1,
+        });
       }
     } catch (error) {
+      const errorCode = sanitizeRevenueCatErrorCode(
+        error,
+      ) as RevenueCatWorkerMetric["errorCode"];
       if (
         await finishTrustedClaim(
           claim,
           "retry",
-          sanitizeRevenueCatErrorCode(error),
+          errorCode,
           reconcileRetryDelayMs(claim.attemptCount),
         )
       ) {
         retried += 1;
+        emitMetric(input.metric, {
+          type: "customer_reconcile_failure",
+          errorCode,
+          count: 1,
+        });
       }
     }
   }
-  return { claimed: claims.length, succeeded, retried };
+  return { claimed, succeeded, retried };
 }
 
 export async function reconcileTrustedUserOnDemand(
@@ -188,6 +261,7 @@ export async function reconcileTrustedUserOnDemand(
     userId: string;
     config: RevenueCatConfig;
     client: RevenueCatClient;
+    metric?: RevenueCatWorkerMetricSink;
   }>,
 ): Promise<void> {
   const leaseId = randomUUID();
@@ -226,25 +300,61 @@ export async function reconcileTrustedUserOnDemand(
       client: input.client,
       fence: { leaseId, customerState: true },
     });
-    if (outcome.outcome === "deleted")
+    if (outcome.outcome === "deleted") {
       await finishTrustedClaim(work, "deleted");
-    else if (outcome.outcome === "applied" || outcome.outcome === "stale") {
-      await finishTrustedClaim(work, "success");
+      emitMetric(input.metric, {
+        type: "customer_reconcile_success",
+        errorCode: "deleted",
+        count: 1,
+      });
+    } else if (outcome.outcome === "applied" || outcome.outcome === "stale") {
+      if (await finishTrustedClaim(work, "success")) {
+        emitMetric(input.metric, {
+          type: "customer_reconcile_success",
+          errorCode: outcome.outcome,
+          count: 1,
+        });
+      }
+    } else if (outcome.outcome === "visibility_lag") {
+      if (
+        await finishTrustedClaim(
+          work,
+          "retry",
+          "revenuecat_visibility_lag",
+          60_000,
+        )
+      ) {
+        emitMetric(input.metric, {
+          type: "customer_reconcile_failure",
+          errorCode: "revenuecat_visibility_lag",
+          count: 1,
+        });
+      }
     } else {
+      emitMetric(input.metric, {
+        type: "customer_reconcile_failure",
+        errorCode: "fence_lost",
+        count: 1,
+      });
+    }
+  } catch (error) {
+    const errorCode = sanitizeRevenueCatErrorCode(
+      error,
+    ) as RevenueCatWorkerMetric["errorCode"];
+    if (
       await finishTrustedClaim(
         work,
         "retry",
-        "revenuecat_visibility_lag",
-        60_000,
-      );
+        errorCode,
+        reconcileRetryDelayMs(attemptCount),
+      )
+    ) {
+      emitMetric(input.metric, {
+        type: "customer_reconcile_failure",
+        errorCode,
+        count: 1,
+      });
     }
-  } catch (error) {
-    await finishTrustedClaim(
-      work,
-      "retry",
-      sanitizeRevenueCatErrorCode(error),
-      reconcileRetryDelayMs(attemptCount),
-    );
   }
 }
 
@@ -406,9 +516,12 @@ export async function claimPendingRevenueCatEvents(
   }));
 }
 
-async function retryEvent(claim: EventClaim): Promise<void> {
+async function retryEvent(
+  claim: EventClaim,
+  _errorCode: RevenueCatWorkerMetric["errorCode"] = "revenuecat_worker_failure",
+): Promise<boolean> {
   const retryDelayMs = reconcileRetryDelayMs(claim.attemptCount);
-  await db.execute(sql`
+  const retried = await db.execute<{ event_id: string }>(sql`
     UPDATE "revenuecat_webhook_events"
     SET "processing_lease_id" = NULL,
         "processing_lease_until" = NULL,
@@ -417,11 +530,13 @@ async function retryEvent(claim: EventClaim): Promise<void> {
     WHERE "event_id" = ${claim.eventId}
       AND "processing_lease_id" = ${claim.leaseId}
       AND "processing_lease_until" > clock_timestamp()
+    RETURNING "event_id"
   `);
+  return retried.rows.length === 1;
 }
 
-async function deferFullyPrunedEvent(claim: EventClaim): Promise<void> {
-  await db.execute(sql`
+async function deferFullyPrunedEvent(claim: EventClaim): Promise<boolean> {
+  const deferred = await db.execute<{ event_id: string }>(sql`
     UPDATE "revenuecat_webhook_events"
     SET "processing_lease_id" = NULL,
         "processing_lease_until" = NULL,
@@ -435,13 +550,34 @@ async function deferFullyPrunedEvent(claim: EventClaim): Promise<void> {
         SELECT 1 FROM "revenuecat_event_subjects" AS subject
         WHERE subject."event_id" = "revenuecat_webhook_events"."event_id"
       )
+    RETURNING "event_id"
   `);
+  return deferred.rows.length === 1;
 }
 
-async function recoverClaimedEvent(
+class EventOwnershipExpansion extends Error {
+  constructor(readonly owners: readonly string[]) {
+    super("RevenueCat event ownership expanded.");
+  }
+}
+
+function byteOrdered(values: Iterable<string>): string[] {
+  return [...new Set(values)].sort((left, right) =>
+    Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")),
+  );
+}
+
+export async function recoverClaimedRevenueCatEvent(
   claim: EventClaim,
   config: RevenueCatConfig,
   client: RevenueCatClient,
+  metric?: RevenueCatWorkerMetricSink,
+  expansionAttempt = 0,
+  inheritedLockOwners: readonly string[] = [],
+  inheritedLookups?: Map<
+    string,
+    Awaited<ReturnType<RevenueCatClient["getSubscriber"]>>
+  >,
 ): Promise<void> {
   const loaded = await db.execute<{
     type: string;
@@ -466,235 +602,334 @@ async function recoverClaimedEvent(
   `);
   const event = loaded.rows[0];
   if (!event) return;
+  if (!RECONCILING_REVENUECAT_EVENTS.has(event.type)) {
+    if (await retryEvent(claim, "identity_set_changed")) {
+      emitMetric(metric, {
+        type: "event_recovery_failure",
+        errorCode: "identity_set_changed",
+        count: 1,
+      });
+    }
+    return;
+  }
   const subjects = await db.execute<{
     subject_hash: string;
     role_mask: number;
     local_user_id: string | null;
+    local_user_exists: boolean;
     alias_owner: string | null;
-    ownership_source: string | null;
+    ownership_source: "authenticated" | "webhook" | null;
   }>(sql`
     SELECT subject."subject_hash", subject."role_mask", subject."local_user_id",
-           alias."local_user_id" AS "alias_owner",
-           alias."ownership_source"
+           EXISTS(
+             SELECT 1 FROM "users" AS local_user
+             WHERE local_user."id" = subject."local_user_id"
+               AND NOT EXISTS (
+                 SELECT 1 FROM "account_deletions" AS deletion
+                 WHERE deletion."user_id" = local_user."id"
+               )
+           ) AS "local_user_exists",
+           CASE WHEN alias_user."id" IS NOT NULL AND alias_deletion."user_id" IS NULL
+             THEN alias."local_user_id" ELSE NULL END AS "alias_owner",
+           CASE WHEN alias_user."id" IS NOT NULL AND alias_deletion."user_id" IS NULL
+             THEN alias."ownership_source" ELSE NULL END AS "ownership_source"
     FROM "revenuecat_event_subjects" AS subject
     LEFT JOIN "revenuecat_customer_aliases" AS alias
       ON alias."alias_hash" = subject."subject_hash"
+    LEFT JOIN "users" AS alias_user ON alias_user."id" = alias."local_user_id"
+    LEFT JOIN "account_deletions" AS alias_deletion
+      ON alias_deletion."user_id" = alias_user."id"
     WHERE subject."event_id" = ${claim.eventId}
+    ORDER BY subject."subject_hash" COLLATE "C"
   `);
   if (
     subjects.rows.length + event.pruned_identity_count !==
     event.identity_count
   ) {
-    await retryEvent(claim);
+    if (await retryEvent(claim, "identity_set_changed")) {
+      emitMetric(metric, {
+        type: "event_recovery_failure",
+        errorCode: "identity_set_changed",
+        count: 1,
+      });
+    }
     return;
   }
   if (subjects.rows.length === 0) {
     await deferFullyPrunedEvent(claim);
     return;
   }
-  const ownerFor = (subject: (typeof subjects.rows)[number]) =>
-    subject.ownership_source === "authenticated"
-      ? subject.alias_owner
-      : (subject.alias_owner ?? subject.local_user_id);
-  const ownerSubjects =
-    event.type === "PURCHASE_REDEEMED"
-      ? subjects.rows.filter((subject) =>
-          Boolean(subject.role_mask & REVENUECAT_SUBJECT_ROLE_MASKS.redeemedBy),
-        )
-      : subjects.rows;
-  const owners = [
-    ...new Set(ownerSubjects.map(ownerFor).filter((v): v is string => !!v)),
-  ].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
-  if (
-    owners.length === 0 ||
-    ownerSubjects.some((subject) => !ownerFor(subject))
-  ) {
-    await retryEvent(claim);
+  const decision = classifyRawlessRevenueCatEvent({
+    eventType: event.type,
+    subjects: subjects.rows.map(
+      (subject): RawlessRevenueCatSubject => ({
+        subjectHash: subject.subject_hash,
+        roleMask: subject.role_mask,
+        localUserId: subject.local_user_id,
+        localUserExists: subject.local_user_exists,
+        aliasOwner: subject.alias_owner,
+        ownershipSource: subject.ownership_source,
+      }),
+    ),
+  });
+  if (decision.kind !== "ready") {
+    const errorCode =
+      decision.kind === "identity_conflict"
+        ? "identity_conflict"
+        : "identity_set_changed";
+    if (await retryEvent(claim, errorCode)) {
+      emitMetric(metric, {
+        type: "event_recovery_failure",
+        errorCode,
+        count: 1,
+      });
+    }
     return;
   }
-  const lookups = new Map<
-    string,
-    Awaited<ReturnType<RevenueCatClient["getSubscriber"]>>
-  >();
+  const owners = [...decision.owners];
+  const lockOwners = byteOrdered([
+    ...inheritedLockOwners,
+    ...decision.observedOwners,
+  ]);
+  const lookups =
+    inheritedLookups ??
+    new Map<string, Awaited<ReturnType<RevenueCatClient["getSubscriber"]>>>();
   if (event.entitlement_required && event.entitlement_applied_at === null) {
     try {
       for (const owner of owners) {
+        if (lookups.has(owner)) continue;
         const lookup = await client.getSubscriber(owner as never);
         if (lookup.lookup !== "existing") {
-          await retryEvent(claim);
+          if (await retryEvent(claim, "revenuecat_visibility_lag")) {
+            emitMetric(metric, {
+              type: "event_recovery_failure",
+              errorCode: "revenuecat_visibility_lag",
+              count: 1,
+            });
+          }
           return;
         }
         lookups.set(owner, lookup);
       }
-    } catch {
-      await retryEvent(claim);
+    } catch (error) {
+      const errorCode = sanitizeRevenueCatErrorCode(
+        error,
+      ) as RevenueCatWorkerMetric["errorCode"];
+      if (await retryEvent(claim, errorCode)) {
+        emitMetric(metric, {
+          type: "event_recovery_failure",
+          errorCode,
+          count: 1,
+        });
+      }
       return;
     }
   }
 
-  await withAccountLocks(owners, async (transaction) => {
-    const locked = await transaction.execute<{
-      subject_hash: string;
-      role_mask: number;
-      local_user_id: string | null;
-      alias_owner: string | null;
-      ownership_source: string | null;
-    }>(sql`
+  try {
+    const completedDisposition = await withAccountLocks(
+      lockOwners,
+      async (transaction) => {
+        const lockedEventRows = await transaction.execute<{
+          type: string;
+          event_at: Date;
+          metadata: Record<string, unknown>;
+          identity_count: number;
+          pruned_identity_count: number;
+          identity_required: boolean;
+          entitlement_required: boolean;
+          identity_applied_at: Date | null;
+          entitlement_applied_at: Date | null;
+        }>(sql`
+          SELECT "type", "event_at", "metadata", "identity_count",
+                 "pruned_identity_count", "identity_required", "entitlement_required",
+                 "identity_applied_at", "entitlement_applied_at"
+          FROM "revenuecat_webhook_events"
+          WHERE "event_id" = ${claim.eventId}
+            AND "disposition" = 'pending'
+            AND "processing_lease_id" = ${claim.leaseId}
+            AND "processing_lease_until" > clock_timestamp()
+          FOR UPDATE
+        `);
+        const lockedEvent = lockedEventRows.rows[0];
+        if (!lockedEvent) {
+          throw Object.assign(new Error("fence_lost"), {
+            code: "fence_lost",
+          });
+        }
+        const locked = await transaction.execute<{
+          subject_hash: string;
+          role_mask: number;
+          local_user_id: string | null;
+          local_user_exists: boolean;
+          alias_owner: string | null;
+          ownership_source: "authenticated" | "webhook" | null;
+        }>(sql`
       SELECT subject."subject_hash", subject."role_mask", subject."local_user_id",
-             alias."local_user_id" AS "alias_owner", alias."ownership_source"
+             EXISTS(
+               SELECT 1 FROM "users" AS local_user
+               WHERE local_user."id" = subject."local_user_id"
+                 AND NOT EXISTS (
+                   SELECT 1 FROM "account_deletions" AS deletion
+                   WHERE deletion."user_id" = local_user."id"
+                 )
+             ) AS "local_user_exists",
+             CASE WHEN alias_user."id" IS NOT NULL AND alias_deletion."user_id" IS NULL
+               THEN alias."local_user_id" ELSE NULL END AS "alias_owner",
+             CASE WHEN alias_user."id" IS NOT NULL AND alias_deletion."user_id" IS NULL
+               THEN alias."ownership_source" ELSE NULL END AS "ownership_source"
       FROM "revenuecat_event_subjects" AS subject
       LEFT JOIN "revenuecat_customer_aliases" AS alias
         ON alias."alias_hash" = subject."subject_hash"
+      LEFT JOIN "users" AS alias_user ON alias_user."id" = alias."local_user_id"
+      LEFT JOIN "account_deletions" AS alias_deletion
+        ON alias_deletion."user_id" = alias_user."id"
       WHERE subject."event_id" = ${claim.eventId}
+      ORDER BY subject."subject_hash" COLLATE "C"
     `);
-    const lockedOwnerFor = (subject: (typeof locked.rows)[number]) =>
-      subject.ownership_source === "authenticated"
-        ? subject.alias_owner
-        : (subject.alias_owner ?? subject.local_user_id);
-    const lockedOwnerSubjects =
-      event.type === "PURCHASE_REDEEMED"
-        ? locked.rows.filter((subject) =>
-            Boolean(
-              subject.role_mask & REVENUECAT_SUBJECT_ROLE_MASKS.redeemedBy,
-            ),
-          )
-        : locked.rows;
-    const lockedOwners = [
-      ...new Set(
-        lockedOwnerSubjects
-          .map(lockedOwnerFor)
-          .filter((value): value is string => Boolean(value)),
-      ),
-    ];
-    if (
-      locked.rows.length + event.pruned_identity_count !==
-        event.identity_count ||
-      lockedOwnerSubjects.some((subject) => !lockedOwnerFor(subject)) ||
-      lockedOwners.length !== owners.length ||
-      lockedOwners.some((owner) => !owners.includes(owner))
-    ) {
-      throw new Error("identity_set_changed");
-    }
-    const fence = { eventId: claim.eventId, leaseId: claim.leaseId };
-    let advanced = false;
-    if (event.entitlement_required && event.entitlement_applied_at === null) {
-      if (event.type === "TRANSFER") {
-        const fromOwners = new Set(
-          locked.rows
-            .filter((subject) =>
-              Boolean(
-                subject.role_mask &
-                REVENUECAT_SUBJECT_ROLE_MASKS.transferredFrom,
-              ),
-            )
-            .map(lockedOwnerFor)
-            .filter((v): v is string => !!v),
-        );
-        const toOwners = new Set(
-          locked.rows
-            .filter((subject) =>
-              Boolean(
-                subject.role_mask & REVENUECAT_SUBJECT_ROLE_MASKS.transferredTo,
-              ),
-            )
-            .map(lockedOwnerFor)
-            .filter((v): v is string => !!v),
-        );
-        const inactive = [...fromOwners]
-          .filter((owner) => !toOwners.has(owner))
-          .every((owner) =>
-            projectRevenueCatSnapshot({
+        const lockedDecision = classifyRawlessRevenueCatEvent({
+          eventType: lockedEvent.type,
+          subjects: locked.rows.map(
+            (subject): RawlessRevenueCatSubject => ({
+              subjectHash: subject.subject_hash,
+              roleMask: subject.role_mask,
+              localUserId: subject.local_user_id,
+              localUserExists: subject.local_user_exists,
+              aliasOwner: subject.alias_owner,
+              ownershipSource: subject.ownership_source,
+            }),
+          ),
+        });
+        if (
+          locked.rows.length + lockedEvent.pruned_identity_count !==
+            lockedEvent.identity_count ||
+          lockedDecision.kind !== "ready"
+        ) {
+          throw Object.assign(new Error("identity_set_changed"), {
+            code:
+              lockedDecision.kind === "identity_conflict"
+                ? "identity_conflict"
+                : "identity_set_changed",
+          });
+        }
+        const expandedOwners = byteOrdered([
+          ...lockedDecision.observedOwners.filter(
+            (owner) => !lockOwners.includes(owner),
+          ),
+          ...(lockedEvent.entitlement_required &&
+          lockedEvent.entitlement_applied_at === null
+            ? lockedDecision.owners.filter((owner) => !lookups.has(owner))
+            : []),
+        ]);
+        if (expandedOwners.length > 0) {
+          throw new EventOwnershipExpansion(expandedOwners);
+        }
+        const fence = { eventId: claim.eventId, leaseId: claim.leaseId };
+        let advanced = false;
+        if (
+          lockedEvent.entitlement_required &&
+          lockedEvent.entitlement_applied_at === null
+        ) {
+          if (lockedEvent.type === "TRANSFER") {
+            const sourceOwner = lockedDecision.sourceOwner;
+            const destinationOwner = lockedDecision.destinationOwner;
+            if (sourceOwner && sourceOwner !== destinationOwner) {
+              const sourceLookup = lookups.get(sourceOwner);
+              const inactive =
+                sourceLookup?.lookup === "existing" &&
+                projectRevenueCatSnapshot({
+                  snapshot: sourceLookup.snapshot,
+                  config,
+                  operationId: `webhook:${claim.eventId}`,
+                }).every((row) => !row.active);
+              if (!inactive) {
+                throw Object.assign(new Error("visibility_lag"), {
+                  code: "revenuecat_visibility_lag",
+                });
+              }
+            }
+          }
+          for (const owner of lockedDecision.owners) {
+            const projection = await applyTrustedSnapshot(transaction, {
+              userId: owner,
               snapshot: lookups.get(owner)!.snapshot,
               config,
               operationId: `webhook:${claim.eventId}`,
-            }).every((row) => !row.active),
-          );
-        const destinationApplied =
-          toOwners.size > 0 &&
-          [...toOwners].every((owner) => lookups.has(owner));
-        if (!inactive || !destinationApplied) throw new Error("visibility_lag");
-      }
-      for (const owner of owners) {
-        const projection = await applyTrustedSnapshot(transaction, {
-          userId: owner,
-          snapshot: lookups.get(owner)!.snapshot,
-          config,
-          operationId: `webhook:${claim.eventId}`,
-          fence,
-        });
-        if (projection.deleted || projection.fencedOut)
-          throw new Error("fence_lost");
-        advanced = projection.advanced || advanced;
-      }
-    }
+              fence,
+            });
+            if (projection.deleted || projection.fencedOut)
+              throw Object.assign(new Error("fence_lost"), {
+                code: "fence_lost",
+              });
+            advanced = projection.advanced || advanced;
+          }
+        }
 
-    if (event.identity_required && event.identity_applied_at === null) {
-      const toOwner = locked.rows
-        .filter((subject) =>
-          Boolean(
-            subject.role_mask & REVENUECAT_SUBJECT_ROLE_MASKS.transferredTo,
-          ),
-        )
-        .map(lockedOwnerFor)
-        .find((value): value is string => !!value);
-      const redeemedBy = locked.rows
-        .filter((subject) =>
-          Boolean(subject.role_mask & REVENUECAT_SUBJECT_ROLE_MASKS.redeemedBy),
-        )
-        .map(lockedOwnerFor)
-        .find((value): value is string => !!value);
-      if (event.type === "TRANSFER" && !toOwner)
-        throw new Error("unreconstructable");
-      const ordinaryOwner = owners.length === 1 ? owners[0] : null;
-      if (event.type !== "TRANSFER" && !redeemedBy && !ordinaryOwner) {
-        throw new Error("identity_conflict");
-      }
-      for (const subject of locked.rows) {
-        const directOwner =
-          subject.ownership_source === "authenticated"
-            ? subject.alias_owner
-            : null;
-        const isRedemption = event.type === "PURCHASE_REDEEMED";
-        const isRedeemer = Boolean(
-          subject.role_mask & REVENUECAT_SUBJECT_ROLE_MASKS.redeemedBy,
-        );
-        const redemptionMayAlias =
-          event.metadata["redemptionOutcome"] === "alias" ||
-          event.metadata["redemptionOutcome"] === "redeemer_owns";
-        const target =
-          directOwner ??
-          (event.type === "TRANSFER"
-            ? toOwner
-            : isRedemption
-              ? isRedeemer
-                ? redeemedBy
-                : null
-              : ordinaryOwner);
-        if (!target && !isRedemption) throw new Error("unreconstructable");
-        if (!target) {
-          await transaction.execute(sql`
+        if (
+          lockedEvent.identity_required &&
+          lockedEvent.identity_applied_at === null
+        ) {
+          const resolvedByHash = new Map(
+            lockedDecision.subjects.map((subject) => [
+              subject.subjectHash,
+              subject,
+            ]),
+          );
+          for (const subject of locked.rows) {
+            const resolved = resolvedByHash.get(subject.subject_hash)!;
+            const directOwner = resolved.directOwner;
+            const isRedemption = lockedEvent.type === "PURCHASE_REDEEMED";
+            const isRedeemer = Boolean(
+              subject.role_mask & REVENUECAT_SUBJECT_ROLE_MASKS.redeemedBy,
+            );
+            const transferredFrom = Boolean(
+              subject.role_mask & REVENUECAT_SUBJECT_ROLE_MASKS.transferredFrom,
+            );
+            const redemptionMayAlias =
+              lockedEvent.metadata["redemptionOutcome"] === "alias" ||
+              lockedEvent.metadata["redemptionOutcome"] === "redeemer_owns";
+            let target: string | null;
+            if (directOwner) {
+              target = directOwner;
+            } else if (lockedEvent.type === "TRANSFER") {
+              if (!lockedDecision.destinationOwner) {
+                target = resolved.owner;
+              } else if (transferredFrom && !resolved.owner) {
+                target = null;
+              } else {
+                target = lockedDecision.destinationOwner;
+              }
+            } else if (isRedemption) {
+              target = isRedeemer ? lockedDecision.ordinaryOwner : null;
+            } else {
+              target = lockedDecision.ordinaryOwner;
+            }
+            if (!target) {
+              await transaction.execute(sql`
             UPDATE "revenuecat_event_subjects"
             SET "local_user_id" = NULL
             WHERE "event_id" = ${claim.eventId}
               AND "subject_hash" = ${subject.subject_hash}
           `);
-          continue;
-        }
-        let linkedTarget = target;
-        if (
-          !directOwner &&
-          (!isRedemption || (isRedeemer && redemptionMayAlias))
-        ) {
-          const assigned = await transaction.execute<{
-            local_user_id: string;
-          }>(sql`
+              continue;
+            }
+            let linkedTarget = target;
+            if (
+              !directOwner &&
+              (lockedEvent.type !== "TRANSFER" ||
+                lockedDecision.destinationOwner !== null) &&
+              (!isRedemption || (isRedeemer && redemptionMayAlias))
+            ) {
+              const assigned = await transaction.execute<{
+                local_user_id: string;
+              }>(sql`
             INSERT INTO "revenuecat_customer_aliases" (
               "alias_hash", "local_user_id", "alias_kind", "ownership_source",
               "source_event_at", "source_event_id"
             ) VALUES (
               ${subject.subject_hash}, ${target},
-              ${event.type === "TRANSFER" ? "transferred" : "ordinary"},
-              'webhook', ${event.event_at}, ${claim.eventId}
+              ${lockedEvent.type === "TRANSFER" ? "transferred" : "ordinary"},
+              'webhook', ${lockedEvent.event_at}, ${claim.eventId}
             )
             ON CONFLICT ("alias_hash") DO UPDATE SET
               "local_user_id" = EXCLUDED."local_user_id",
@@ -713,30 +948,36 @@ async function recoverClaimedEvent(
               )
             RETURNING "local_user_id"
           `);
-          if (assigned.rows[0]?.local_user_id) {
-            linkedTarget = assigned.rows[0].local_user_id;
-          } else {
-            const established = await transaction.execute<{
-              local_user_id: string;
-            }>(sql`
+              if (assigned.rows[0]?.local_user_id) {
+                linkedTarget = assigned.rows[0].local_user_id;
+                advanced = true;
+              } else {
+                const established = await transaction.execute<{
+                  local_user_id: string;
+                }>(sql`
               SELECT "local_user_id" FROM "revenuecat_customer_aliases"
               WHERE "alias_hash" = ${subject.subject_hash}
             `);
-            if (!established.rows[0]?.local_user_id) {
-              throw new Error("identity_set_changed");
+                const establishedOwner =
+                  established.rows[0]?.local_user_id ?? null;
+                if (
+                  establishedOwner &&
+                  !lockOwners.includes(establishedOwner)
+                ) {
+                  throw new EventOwnershipExpansion([establishedOwner]);
+                }
+                linkedTarget = establishedOwner;
+              }
             }
-            linkedTarget = established.rows[0].local_user_id;
-          }
-        }
-        await transaction.execute(sql`
+            await transaction.execute(sql`
           UPDATE "revenuecat_event_subjects"
           SET "local_user_id" = ${linkedTarget}
           WHERE "event_id" = ${claim.eventId}
             AND "subject_hash" = ${subject.subject_hash}
         `);
-      }
-    }
-    const completed = await transaction.execute<{ event_id: string }>(sql`
+          }
+        }
+        const completed = await transaction.execute<{ event_id: string }>(sql`
       UPDATE "revenuecat_webhook_events"
       SET "identity_applied_at" = CASE WHEN "identity_required"
             THEN COALESCE("identity_applied_at", clock_timestamp())
@@ -754,8 +995,53 @@ async function recoverClaimedEvent(
         AND "processing_lease_until" > clock_timestamp()
       RETURNING "event_id"
     `);
-    if (completed.rows.length !== 1) throw new Error("fence_lost");
-  }).catch(async () => retryEvent(claim));
+        if (completed.rows.length !== 1) {
+          throw Object.assign(new Error("fence_lost"), {
+            code: "fence_lost",
+          });
+        }
+        return advanced ? "applied" : "stale";
+      },
+    );
+    emitMetric(metric, {
+      type: "event_recovery_success",
+      errorCode: completedDisposition,
+      count: 1,
+    });
+  } catch (error) {
+    if (
+      error instanceof EventOwnershipExpansion &&
+      expansionAttempt + 1 < MAX_EVENT_LOCK_EXPANSIONS
+    ) {
+      emitMetric(metric, {
+        type: "event_recovery_expansion",
+        errorCode: "identity_set_changed",
+        count: 1,
+      });
+      return recoverClaimedRevenueCatEvent(
+        claim,
+        config,
+        client,
+        metric,
+        expansionAttempt + 1,
+        byteOrdered([...lockOwners, ...error.owners]),
+        lookups,
+      );
+    }
+    const errorCode =
+      error instanceof EventOwnershipExpansion
+        ? "identity_set_changed"
+        : (sanitizeRevenueCatErrorCode(
+            error,
+          ) as RevenueCatWorkerMetric["errorCode"]);
+    if (await retryEvent(claim, errorCode)) {
+      emitMetric(metric, {
+        type: "event_recovery_failure",
+        errorCode,
+        count: 1,
+      });
+    }
+  }
 }
 
 export async function runPendingEventBatch(
@@ -763,16 +1049,30 @@ export async function runPendingEventBatch(
     config: RevenueCatConfig;
     client: RevenueCatClient;
     limit?: number;
+    metric?: RevenueCatWorkerMetricSink;
   }>,
 ): Promise<number> {
-  const claims = await claimPendingRevenueCatEvents(input.limit);
-  for (const claim of claims) {
-    await recoverClaimedEvent(claim, input.config, input.client);
+  const limit = input.limit ?? EVENT_BATCH_SIZE;
+  let claimed = 0;
+  while (claimed < limit) {
+    const claim = (await claimPendingRevenueCatEvents(1))[0];
+    if (!claim) break;
+    claimed += 1;
+    await recoverClaimedRevenueCatEvent(
+      claim,
+      input.config,
+      input.client,
+      input.metric,
+    );
   }
-  return claims.length;
+  return claimed;
 }
 
-export async function cleanupRevenueCatEvents(): Promise<void> {
+export async function cleanupRevenueCatEvents(
+  options?: Readonly<{
+    alert?: (value: Readonly<{ type: string; count: number }>) => void;
+  }>,
+): Promise<void> {
   // Generic canonical observations may satisfy only non-transfer entitlement
   // work. They never complete identity and never write either TRANSFER phase.
   await db.execute(sql`
@@ -805,10 +1105,15 @@ export async function cleanupRevenueCatEvents(): Promise<void> {
     ) OR (
       "disposition" = 'pending'
       AND "retention_until" <= clock_timestamp()
-      AND "pruned_identity_count" = "identity_count"
       AND NOT EXISTS (
-        SELECT 1 FROM "revenuecat_event_subjects" AS subject
+        SELECT 1
+        FROM "revenuecat_event_subjects" AS subject
+        JOIN "users" AS live_user ON live_user."id" = subject."local_user_id"
         WHERE subject."event_id" = "revenuecat_webhook_events"."event_id"
+          AND NOT EXISTS (
+            SELECT 1 FROM "account_deletions" AS deletion
+            WHERE deletion."user_id" = live_user."id"
+          )
       )
       AND ("processing_lease_until" IS NULL OR "processing_lease_until" <= clock_timestamp())
     )
@@ -820,8 +1125,14 @@ export async function cleanupRevenueCatEvents(): Promise<void> {
       AND event."retention_until" <= clock_timestamp()
       AND (event."processing_lease_until" IS NULL OR event."processing_lease_until" <= clock_timestamp())
       AND EXISTS (
-        SELECT 1 FROM "revenuecat_event_subjects" AS subject
+        SELECT 1
+        FROM "revenuecat_event_subjects" AS subject
+        JOIN "users" AS live_user ON live_user."id" = subject."local_user_id"
         WHERE subject."event_id" = event."event_id"
+          AND NOT EXISTS (
+            SELECT 1 FROM "account_deletions" AS deletion
+            WHERE deletion."user_id" = live_user."id"
+          )
       )
   `);
   await db.execute(sql`
@@ -837,6 +1148,10 @@ export async function cleanupRevenueCatEvents(): Promise<void> {
       WHERE subject."local_user_id" = state."user_id"
         AND event."disposition" = 'pending'
         AND event."retention_until" <= clock_timestamp()
+        AND NOT EXISTS (
+          SELECT 1 FROM "account_deletions" AS deletion
+          WHERE deletion."user_id" = state."user_id"
+        )
     )
   `);
   const alerts = await db.execute<{ type: string; count: number }>(sql`
@@ -845,16 +1160,33 @@ export async function cleanupRevenueCatEvents(): Promise<void> {
     WHERE "disposition" = 'pending'
       AND "received_at" <= clock_timestamp() - interval '24 hours'
       AND EXISTS (
-        SELECT 1 FROM "revenuecat_event_subjects" AS subject
+        SELECT 1
+        FROM "revenuecat_event_subjects" AS subject
+        JOIN "users" AS live_user ON live_user."id" = subject."local_user_id"
         WHERE subject."event_id" = "revenuecat_webhook_events"."event_id"
+          AND NOT EXISTS (
+            SELECT 1 FROM "account_deletions" AS deletion
+            WHERE deletion."user_id" = live_user."id"
+          )
       )
     GROUP BY "type"
   `);
+  const safeAlerts = new Map<string, number>();
   for (const alert of alerts.rows) {
-    logger.error(
-      { type: alert.type, count: alert.count },
-      "RevenueCat identity reconciliation requires attention",
-    );
+    const type = RECONCILING_REVENUECAT_EVENTS.has(alert.type)
+      ? alert.type
+      : "UNKNOWN_RECONCILING_EVENT";
+    safeAlerts.set(type, (safeAlerts.get(type) ?? 0) + alert.count);
+  }
+  for (const [type, count] of safeAlerts) {
+    const alert = { type, count };
+    if (options?.alert) options.alert(alert);
+    else {
+      logger.error(
+        { type: alert.type, count: alert.count },
+        "RevenueCat identity reconciliation requires attention",
+      );
+    }
   }
 }
 
@@ -876,6 +1208,7 @@ export async function bootstrapRevenueCatCustomers(
     client: RevenueCatClient;
     runId: string;
     batchSize: number;
+    metric?: RevenueCatWorkerMetricSink;
   }>,
 ): Promise<{ attempted: number; remaining: number }> {
   let cursor = "";
@@ -894,7 +1227,7 @@ export async function bootstrapRevenueCatCustomers(
     for (const row of page.rows) {
       attempted += 1;
       try {
-        await reconcileTrustedUser({
+        const reconciled = await reconcileTrustedUser({
           userId: row.user_id,
           reason: "legacy_bootstrap",
           operationId: `bootstrap:${input.runId}`,
@@ -902,14 +1235,32 @@ export async function bootstrapRevenueCatCustomers(
           config: input.config,
           client: input.client,
         });
+        emitMetric(input.metric, {
+          type: "customer_reconcile_success",
+          errorCode:
+            reconciled.outcome === "deleted"
+              ? "deleted"
+              : reconciled.outcome === "stale"
+                ? "stale"
+                : "applied",
+          count: 1,
+        });
       } catch (error) {
+        const errorCode = sanitizeRevenueCatErrorCode(
+          error,
+        ) as RevenueCatWorkerMetric["errorCode"];
         await db.execute(sql`
           UPDATE "revenuecat_customer_state"
           SET "reconcile_after" = clock_timestamp() + interval '1 minute',
-              "reconcile_last_error_code" = ${sanitizeRevenueCatErrorCode(error)},
+              "reconcile_last_error_code" = ${errorCode},
               "updated_at" = clock_timestamp()
           WHERE "user_id" = ${row.user_id}
         `);
+        emitMetric(input.metric, {
+          type: "customer_reconcile_failure",
+          errorCode,
+          count: 1,
+        });
       }
     }
     cursor = page.rows.at(-1)!.user_id;
@@ -928,10 +1279,21 @@ export function revenueCatRuntimeFromEnvironment(): Readonly<{
 export function startRevenueCatWorkers(
   options?: Readonly<{
     intervalMs?: number;
+    runtime?: Readonly<{
+      config: RevenueCatConfig;
+      client: RevenueCatClient;
+    }>;
+    metric?: RevenueCatWorkerMetricSink;
+    onCycle?: () => void;
   }>,
 ): () => void {
-  const runtime = revenueCatRuntimeFromEnvironment();
+  const runtime = options?.runtime ?? revenueCatRuntimeFromEnvironment();
   const intervalMs = options?.intervalMs ?? WORKER_INTERVAL_MS;
+  const metric =
+    options?.metric ??
+    ((value: RevenueCatWorkerMetric) => {
+      logger.info(value, "RevenueCat reconciliation metric");
+    });
   let stopped = false;
   let running = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -944,8 +1306,8 @@ export function startRevenueCatWorkers(
     if (stopped || running) return;
     running = true;
     try {
-      await runTrustedUserBatch(runtime);
-      await runPendingEventBatch(runtime);
+      await runTrustedUserBatch({ ...runtime, metric });
+      await runPendingEventBatch({ ...runtime, metric });
       await cleanupRevenueCatEvents();
     } catch (error) {
       logger.error(
@@ -954,6 +1316,7 @@ export function startRevenueCatWorkers(
       );
     } finally {
       running = false;
+      options?.onCycle?.();
       schedule();
     }
   };
