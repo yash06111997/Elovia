@@ -1041,7 +1041,12 @@ export default function ProfileScreen() {
                   {
                     text: "Sign Out",
                     style: "destructive",
-                    onPress: () => logout(),
+                    onPress: async () => {
+                      const outcome = await logout();
+                      if (outcome.status === "blocked") {
+                        Alert.alert("Sign-out needs a retry", outcome.message);
+                      }
+                    },
                   },
                 ]);
               }}

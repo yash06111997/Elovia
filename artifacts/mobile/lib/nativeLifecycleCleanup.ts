@@ -243,7 +243,7 @@ export async function runNativeOwnerReconciliation(options: {
 const nativeLifecycleState = new NativeLifecycleStateStore(AsyncStorage);
 let nativeLifecycleOperation: Promise<void> = Promise.resolve();
 let currentAuthOwnerUserId: string | null = null;
-const suspendedOwners = new Set<string>();
+const activeSuspensionLeases = new Map<symbol, string>();
 let authLifecycleGeneration = 0;
 
 export interface NativeLifecycleFence {
@@ -251,26 +251,50 @@ export interface NativeLifecycleFence {
   generation: number;
 }
 
+export interface NativeLifecycleSuspensionLease {
+  readonly ownerUserId: string;
+  readonly token: symbol;
+}
+
+function isOwnerSuspended(ownerUserId: string): boolean {
+  for (const suspendedOwnerUserId of activeSuspensionLeases.values()) {
+    if (suspendedOwnerUserId === ownerUserId) return true;
+  }
+  return false;
+}
+
 /** Synchronous auth-generation fence for the gap around Firebase sign-out. */
 export function setNativeLifecycleAuthOwner(ownerUserId: string | null): void {
   const ownerChanged = currentAuthOwnerUserId !== ownerUserId;
-  const suspensionCleared =
-    ownerUserId !== null && suspendedOwners.delete(ownerUserId);
-  if (ownerChanged || suspensionCleared) authLifecycleGeneration += 1;
+  if (ownerChanged) authLifecycleGeneration += 1;
   currentAuthOwnerUserId = ownerUserId;
-  if (ownerUserId === null) {
-    suspendedOwners.clear();
+  if (ownerChanged) {
+    for (const [token, suspendedOwnerUserId] of activeSuspensionLeases) {
+      if (suspendedOwnerUserId !== ownerUserId) {
+        activeSuspensionLeases.delete(token);
+      }
+    }
   }
 }
 
-export function suspendNativeLifecycleOwner(ownerUserId: string): void {
+export function suspendNativeLifecycleOwner(
+  ownerUserId: string,
+): NativeLifecycleSuspensionLease {
+  const lease = Object.freeze({ ownerUserId, token: Symbol(ownerUserId) });
   authLifecycleGeneration += 1;
-  suspendedOwners.add(ownerUserId);
+  activeSuspensionLeases.set(lease.token, ownerUserId);
+  return lease;
 }
 
-export function resumeNativeLifecycleOwner(ownerUserId: string): void {
+export function resumeNativeLifecycleOwner(
+  lease: NativeLifecycleSuspensionLease,
+): boolean {
+  if (activeSuspensionLeases.get(lease.token) !== lease.ownerUserId) {
+    return false;
+  }
   authLifecycleGeneration += 1;
-  suspendedOwners.delete(ownerUserId);
+  activeSuspensionLeases.delete(lease.token);
+  return true;
 }
 
 export function captureNativeLifecycleFence(
@@ -278,7 +302,7 @@ export function captureNativeLifecycleFence(
 ): NativeLifecycleFence | null {
   if (
     currentAuthOwnerUserId !== ownerUserId ||
-    (ownerUserId !== null && suspendedOwners.has(ownerUserId))
+    (ownerUserId !== null && isOwnerSuspended(ownerUserId))
   ) {
     return null;
   }
@@ -291,13 +315,13 @@ export function isNativeLifecycleFenceCurrent(
   return (
     fence.generation === authLifecycleGeneration &&
     fence.ownerUserId === currentAuthOwnerUserId &&
-    (fence.ownerUserId === null || !suspendedOwners.has(fence.ownerUserId))
+    (fence.ownerUserId === null || !isOwnerSuspended(fence.ownerUserId))
   );
 }
 
 export function isNativeLifecycleOwnerCurrent(ownerUserId: string): boolean {
   return (
-    currentAuthOwnerUserId === ownerUserId && !suspendedOwners.has(ownerUserId)
+    currentAuthOwnerUserId === ownerUserId && !isOwnerSuspended(ownerUserId)
   );
 }
 

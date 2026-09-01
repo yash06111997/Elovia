@@ -41,6 +41,10 @@ import {
 } from "../../artifacts/mobile/lib/pendingArrivalSignal.ts";
 import { runNativeReconciliationWithRetry } from "../../artifacts/mobile/lib/nativeReconciliationRetry.ts";
 import {
+  LogoutSingleFlight,
+  runLogoutWorkflow,
+} from "../../artifacts/mobile/lib/logoutWorkflow.ts";
+import {
   canCompleteNativeStateLogout,
   captureNativeLifecycleFence,
   isNativeLifecycleFenceCurrent,
@@ -486,7 +490,7 @@ test("logout suspension compensates a registration response already in flight", 
     },
   });
   await new Promise((resolve) => setImmediate(resolve));
-  suspendNativeLifecycleOwner("user-a");
+  const logoutLease = suspendNativeLifecycleOwner("user-a");
   responseGate.resolve();
   assert.deepEqual(await operation, { status: "stale", compensated: true });
   assert.equal(serverOwner, null);
@@ -494,7 +498,7 @@ test("logout suspension compensates a registration response already in flight", 
     ["register", "captured-a"],
     ["compensate", "captured-a"],
   ]);
-  resumeNativeLifecycleOwner("user-a");
+  resumeNativeLifecycleOwner(logoutLease);
   setNativeLifecycleAuthOwner(null);
 });
 
@@ -532,12 +536,12 @@ test("a registration queued behind cleanup cannot reattach during suspended logo
     return result.status;
   });
   await new Promise((resolve) => setImmediate(resolve));
-  suspendNativeLifecycleOwner("user-a");
+  const logoutLease = suspendNativeLifecycleOwner("user-a");
   cleanupGate.resolve();
   await cleanup;
   assert.equal(await queuedRegistration, "suspended");
   assert.equal(registerCalls, 0);
-  resumeNativeLifecycleOwner("user-a");
+  resumeNativeLifecycleOwner(logoutLease);
   setNativeLifecycleAuthOwner(null);
 });
 
@@ -897,10 +901,10 @@ test("logout suspension closes the auth-to-native transition race", () => {
   const beforeLogout = captureNativeLifecycleFence("user-a");
   assert.ok(beforeLogout);
   assert.equal(isNativeLifecycleOwnerCurrent("user-a"), true);
-  suspendNativeLifecycleOwner("user-a");
+  const logoutLease = suspendNativeLifecycleOwner("user-a");
   assert.equal(isNativeLifecycleFenceCurrent(beforeLogout), false);
   assert.equal(isNativeLifecycleOwnerCurrent("user-a"), false);
-  resumeNativeLifecycleOwner("user-a");
+  resumeNativeLifecycleOwner(logoutLease);
   assert.equal(
     isNativeLifecycleFenceCurrent(beforeLogout),
     false,
@@ -913,6 +917,171 @@ test("logout suspension closes the auth-to-native transition race", () => {
   assert.equal(isNativeLifecycleOwnerCurrent("user-b"), true);
   setNativeLifecycleAuthOwner(null);
   assert.equal(isNativeLifecycleOwnerCurrent("user-b"), false);
+});
+
+test("suspension leases require the exact owner attempt and compose safely", () => {
+  setNativeLifecycleAuthOwner("user-a");
+  const before = captureNativeLifecycleFence("user-a");
+  assert.ok(before);
+  const firstLease = suspendNativeLifecycleOwner("user-a");
+  const secondLease = suspendNativeLifecycleOwner("user-a");
+  let rebuilds = 0;
+  const releaseAndRebuild = (lease) => {
+    assert.equal(resumeNativeLifecycleOwner(lease), true);
+    if (captureNativeLifecycleFence("user-a")) rebuilds += 1;
+  };
+
+  releaseAndRebuild(firstLease);
+  assert.equal(rebuilds, 0, "the second logout still owns suspension");
+  assert.equal(captureNativeLifecycleFence("user-a"), null);
+  assert.equal(
+    resumeNativeLifecycleOwner(firstLease),
+    false,
+    "a released lease cannot release another attempt",
+  );
+  releaseAndRebuild(secondLease);
+  assert.equal(rebuilds, 1);
+  assert.equal(isNativeLifecycleFenceCurrent(before), false);
+  setNativeLifecycleAuthOwner(null);
+});
+
+test("logout is single-flight and concurrent callers share one typed result", async () => {
+  const singleFlight = new LogoutSingleFlight();
+  const gate = deferred();
+  let firstStarts = 0;
+  let secondStarts = 0;
+  const first = singleFlight.run(async () => {
+    firstStarts += 1;
+    await gate.promise;
+    return { status: "signed_out", operation: "sign_out" };
+  });
+  const second = singleFlight.run(async () => {
+    secondStarts += 1;
+    return { status: "signed_out", operation: "account_deletion" };
+  });
+  assert.equal(first, second, "callers receive the exact active promise");
+  gate.resolve();
+  assert.deepEqual(await first, {
+    status: "signed_out",
+    operation: "sign_out",
+  });
+  assert.equal(firstStarts, 1);
+  assert.equal(secondStarts, 0);
+
+  const third = singleFlight.run(async () => ({
+    status: "blocked",
+    operation: "account_deletion",
+    reason: "authentication_required",
+    message: "Sign in again.",
+  }));
+  assert.notEqual(third, first);
+  assert.equal((await third).status, "blocked");
+});
+
+test("account deletion never runs or clears locally when privacy cleanup blocks", async () => {
+  const recoveryJournal = ["push-owner", "native-owner"];
+  let remoteDeletionCalls = 0;
+  let firebaseSignOutCalls = 0;
+  let localClearCalls = 0;
+  const outcome = await runLogoutWorkflow({
+    operation: "account_deletion",
+    isAuthenticated: true,
+    async prepare() {
+      return {
+        pushDetached: false,
+        nativeDetached: true,
+        blockedMessage: "Push cleanup must be retried.",
+      };
+    },
+    async beforeSignOut() {
+      remoteDeletionCalls += 1;
+      recoveryJournal.length = 0;
+    },
+    async signOut() {
+      firebaseSignOutCalls += 1;
+    },
+  });
+  if (
+    outcome.status === "signed_out" &&
+    outcome.operation === "account_deletion"
+  ) {
+    localClearCalls += 1;
+  }
+  assert.deepEqual(outcome, {
+    status: "blocked",
+    operation: "account_deletion",
+    reason: "push_cleanup",
+    message: "Push cleanup must be retried.",
+  });
+  assert.equal(remoteDeletionCalls, 0);
+  assert.equal(firebaseSignOutCalls, 0);
+  assert.equal(localClearCalls, 0);
+  assert.deepEqual(recoveryJournal, ["push-owner", "native-owner"]);
+});
+
+test("account deletion clears only after verified detach, deletion, and sign-out", async () => {
+  const order = [];
+  let localClearCalls = 0;
+  const outcome = await runLogoutWorkflow({
+    operation: "account_deletion",
+    isAuthenticated: true,
+    async prepare() {
+      order.push("verified-detach");
+      return { pushDetached: true, nativeDetached: true };
+    },
+    async beforeSignOut() {
+      order.push("server-delete");
+    },
+    async signOut() {
+      order.push("firebase-sign-out");
+    },
+  });
+  if (
+    outcome.status === "signed_out" &&
+    outcome.operation === "account_deletion"
+  ) {
+    order.push("local-clear");
+    localClearCalls += 1;
+  }
+  assert.deepEqual(outcome, {
+    status: "signed_out",
+    operation: "account_deletion",
+  });
+  assert.deepEqual(order, [
+    "verified-detach",
+    "server-delete",
+    "firebase-sign-out",
+    "local-clear",
+  ]);
+  assert.equal(localClearCalls, 1);
+});
+
+test("account deletion failure after detach remains typed and never reports success", async () => {
+  let firebaseSignOutCalls = 0;
+  let localClearCalls = 0;
+  const outcome = await runLogoutWorkflow({
+    operation: "account_deletion",
+    isAuthenticated: true,
+    async prepare() {
+      return { pushDetached: true, nativeDetached: true };
+    },
+    async beforeSignOut() {
+      throw new Error("injected deletion failure");
+    },
+    async signOut() {
+      firebaseSignOutCalls += 1;
+    },
+  });
+  if (
+    outcome.status === "signed_out" &&
+    outcome.operation === "account_deletion"
+  ) {
+    localClearCalls += 1;
+  }
+  assert.equal(outcome.status, "blocked");
+  assert.equal(outcome.reason, "account_deletion_failed");
+  assert.equal(firebaseSignOutCalls, 0);
+  assert.equal(localClearCalls, 0);
 });
 
 test("direct reminder rebuild compensates when logout suspends its generation", async () => {
@@ -939,11 +1108,11 @@ test("direct reminder rebuild compensates when logout suspends its generation", 
     restore: async (snapshot) => snapshot.identifier,
   });
   await new Promise((resolve) => setImmediate(resolve));
-  suspendNativeLifecycleOwner("user-a");
+  const logoutLease = suspendNativeLifecycleOwner("user-a");
   scheduleGate.resolve();
   assert.equal(await reconciliation, "stale");
   assert.deepEqual(owned, [], "the crossed schedule is cancelled");
-  resumeNativeLifecycleOwner("user-a");
+  resumeNativeLifecycleOwner(logoutLease);
   setNativeLifecycleAuthOwner(null);
 });
 
@@ -973,11 +1142,11 @@ test("reminder rollback cannot recreate a previous schedule across suspension", 
     },
   });
   await new Promise((resolve) => setImmediate(resolve));
-  suspendNativeLifecycleOwner("user-a");
+  const logoutLease = suspendNativeLifecycleOwner("user-a");
   restoreGate.resolve();
   assert.equal(await reconciliation, "stale");
   assert.deepEqual(owned, [], "the crossed rollback schedule is cancelled");
-  resumeNativeLifecycleOwner("user-a");
+  resumeNativeLifecycleOwner(logoutLease);
   setNativeLifecycleAuthOwner(null);
 });
 
@@ -1001,12 +1170,12 @@ test("direct places sync compensates a geofence start crossing suspension", asyn
     },
   });
   await new Promise((resolve) => setImmediate(resolve));
-  suspendNativeLifecycleOwner("user-a");
+  const logoutLease = suspendNativeLifecycleOwner("user-a");
   startGate.resolve();
   assert.equal(await reconciliation, "stale");
   assert.equal(starts, 1);
   assert.equal(stops, 2, "initial stop plus stale-start compensation");
-  resumeNativeLifecycleOwner("user-a");
+  resumeNativeLifecycleOwner(logoutLease);
   setNativeLifecycleAuthOwner(null);
 });
 
@@ -1482,6 +1651,8 @@ test("authentication recovery and native lifecycle are connected without launch 
     geofenceTask,
     pushRoute,
     pushLib,
+    privacyData,
+    profileScreen,
   ] = await Promise.all([
     source("artifacts/mobile/app/auth.tsx"),
     source("artifacts/mobile/components/NativeLifecycleCoordinator.tsx"),
@@ -1494,6 +1665,8 @@ test("authentication recovery and native lifecycle are connected without launch 
     source("artifacts/mobile/lib/geofenceTask.ts"),
     source("artifacts/api-server/src/routes/push.ts"),
     source("artifacts/api-server/src/lib/push.ts"),
+    source("artifacts/mobile/app/privacy-data.tsx"),
+    source("artifacts/mobile/app/(tabs)/profile.tsx"),
   ]);
 
   assert.match(authScreen, /useAuth\(\)/);
@@ -1529,11 +1702,16 @@ test("authentication recovery and native lifecycle are connected without launch 
   assert.doesNotMatch(reconcileBody, /requestPermissionsAsync/);
   assert.match(notifications, /cancelScheduledNotificationAsync/);
   assert.doesNotMatch(notifications, /cancelAllScheduledNotificationsAsync/);
-  assert.match(auth, /!canCompletePushLogout\(pushDetachment\)/);
-  assert.match(auth, /!canCompleteNativeStateLogout\(nativeCleanup\)/);
+  assert.match(auth, /pushDetached: canCompletePushLogout\(pushDetachment\)/);
+  assert.match(
+    auth,
+    /nativeDetached: canCompleteNativeStateLogout\(nativeCleanup\)/,
+  );
   assert.match(auth, /clearNativeAccountState/);
   assert.match(auth, /suspendNativeLifecycleOwner/);
   assert.match(auth, /resumeLifecycleAfterBlockedLogout/);
+  assert.match(auth, /LogoutSingleFlight/);
+  assert.match(auth, /Promise<LogoutOutcome>/);
   assert.match(auth, /setNativeLifecycleAuthOwner\(null\)/);
   assert.match(auth, /runPushSafeSignOut/);
   assert.match(push, /preparePushLogout/);
@@ -1567,4 +1745,14 @@ test("authentication recovery and native lifecycle are connected without launch 
   assert.match(pushLib, /\.returning\(\{ id: pushTokensTable\.id \}\)/);
   assert.match(pushLib, /return affected\.length > 0/);
   assert.match(pushLib, /eloviaPushOwnerUserId: userId/);
+
+  const deletionOutcomeCheck = privacyData.indexOf(
+    'logoutOutcome.status !== "signed_out"',
+  );
+  const localClear = privacyData.indexOf("await AsyncStorage.clear()");
+  assert.match(privacyData, /operation: "account_deletion"/);
+  assert.match(privacyData, /beforeSignOut/);
+  assert.ok(deletionOutcomeCheck >= 0 && deletionOutcomeCheck < localClear);
+  assert.match(profileScreen, /outcome\.status === "blocked"/);
+  assert.match(profileScreen, /Sign-out needs a retry/);
 });

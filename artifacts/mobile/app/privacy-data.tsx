@@ -86,11 +86,31 @@ export default function PrivacyDataScreen() {
   const permanentlyDelete = async () => {
     setIsDeleting(true);
     try {
-      if (isAuthenticated) await deleteMyAccount();
+      const deletingAccount = isAuthenticated;
+      if (deletingAccount) {
+        const logoutOutcome = await logout({
+          operation: "account_deletion",
+          async beforeSignOut() {
+            const deletion = await deleteMyAccount();
+            if (!deletion.deleted) {
+              throw new Error("The server did not confirm account deletion.");
+            }
+          },
+        });
+        if (
+          logoutOutcome.status !== "signed_out" ||
+          logoutOutcome.operation !== "account_deletion"
+        ) {
+          throw new Error(
+            logoutOutcome.status === "blocked"
+              ? logoutOutcome.message
+              : "Account deletion did not complete. Please try again.",
+          );
+        }
+      }
       void trackEvent("account_deleted", {
-        source: isAuthenticated ? "account" : "device",
+        source: deletingAccount ? "account" : "device",
       });
-      if (isAuthenticated) await logout();
       await AsyncStorage.clear();
       Alert.alert(
         "Account deleted",
