@@ -438,7 +438,7 @@ export function createRevenueCatAuthProvisioningCallback(
       const needsRelink = pendingMatches.rows.some(
         (match) => match.local_user_id !== user.id,
       );
-      if (needsRelink) {
+      if (needsRelink || (aliasNeedsWrite && pendingMatches.rows.length > 0)) {
         await transaction.execute(sql`
           WITH relinked AS (
             UPDATE "revenuecat_event_subjects" AS subject
@@ -455,17 +455,25 @@ export function createRevenueCatAuthProvisioningCallback(
             event."next_attempt_at", clock_timestamp()
           )
           WHERE event."disposition" = 'pending'
-            AND event."event_id" IN (
-              SELECT relinked."event_id" FROM relinked
+            AND (
+              event."event_id" IN (
+                SELECT relinked."event_id" FROM relinked
+              )
+              OR (
+                ${aliasNeedsWrite}
+                AND EXISTS (
+                  SELECT 1 FROM "revenuecat_event_subjects" AS subject
+                  WHERE subject."event_id" = event."event_id"
+                    AND subject."subject_hash" = ${hash}
+                )
+              )
             )
         `);
       }
       const ownershipChanged = Boolean(displaced && displaced !== user.id);
-      await enqueueAuthenticatedOwner(
-        transaction,
-        user.id,
-        ownershipChanged || needsRelink,
-      );
+      if (aliasNeedsWrite || ownershipChanged || needsRelink) {
+        await enqueueAuthenticatedOwner(transaction, user.id, true);
+      }
       if (displaced && displaced !== user.id) {
         await enqueueAuthenticatedOwner(transaction, displaced, true);
       }
@@ -1275,6 +1283,7 @@ async function satisfyThirtyDayEntitlementPhase(
         WHERE "event_id" = ${eventId}
           AND "disposition" = 'pending'
           AND "type" <> 'TRANSFER'
+          AND "entitlement_required"
           AND "entitlement_applied_at" IS NULL
           AND "received_at" <= clock_timestamp() - interval '30 days'
           AND (
@@ -1338,6 +1347,7 @@ async function satisfyThirtyDayEntitlementPhase(
         WHERE "event_id" = ${eventId}
           AND "disposition" = 'pending'
           AND "type" <> 'TRANSFER'
+          AND "entitlement_required"
           AND "entitlement_applied_at" IS NULL
           AND (
             "processing_lease_until" IS NULL
@@ -1376,6 +1386,7 @@ async function runThirtyDayCleanup(): Promise<void> {
       FROM "revenuecat_webhook_events"
       WHERE "disposition" = 'pending'
         AND "type" <> 'TRANSFER'
+        AND "entitlement_required"
         AND "entitlement_applied_at" IS NULL
         AND "received_at" <= clock_timestamp() - interval '30 days'
         AND "event_id" COLLATE "C" > ${cursor} COLLATE "C"

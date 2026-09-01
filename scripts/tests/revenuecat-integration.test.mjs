@@ -3943,7 +3943,7 @@ integrationTest(
 );
 
 integrationTest(
-  "new and existing authenticated users enqueue once while tombstoned auth writes no RevenueCat state",
+  "webhook authentication transitions wake backed-off recovery once while exact repeats and tombstones stay inert",
   async () => {
     const suffix = Date.now();
     const active = `auth-state-active-${suffix}`;
@@ -4005,65 +4005,23 @@ integrationTest(
     );
     await scopedPool.query(
       `UPDATE revenuecat_customer_aliases
-       SET updated_at='2026-09-02T01:15:02Z' WHERE alias_hash=$1`,
-      [hash],
-    );
-    const before = (
-      await scopedPool.query(
-        `SELECT state.reconcile_reason,state.reconcile_after,
-                state.updated_at AS state_updated_at,
-                alias.updated_at AS alias_updated_at,
-                event.next_attempt_at AS event_next_attempt_at,
-                subject.local_user_id
-         FROM revenuecat_customer_state AS state
-         JOIN revenuecat_customer_aliases AS alias ON alias.local_user_id=state.user_id
-         JOIN revenuecat_webhook_events AS event ON event.event_id=$2
-         JOIN revenuecat_event_subjects AS subject
-           ON subject.event_id=event.event_id AND subject.subject_hash=alias.alias_hash
-         WHERE state.user_id=$1`,
-        [active, noOpEvent],
-      )
-    ).rows[0];
-    assert.equal(
-      await provisionAuthenticatedUserIfActive(
-        activeUser,
-        createRevenueCatAuthProvisioningCallback(activeUser, processorConfig),
-      ),
-      "active",
-    );
-    assert.deepEqual(
-      (
-        await scopedPool.query(
-          `SELECT state.reconcile_reason,state.reconcile_after,
-                  state.updated_at AS state_updated_at,
-                  alias.updated_at AS alias_updated_at,
-                  event.next_attempt_at AS event_next_attempt_at,
-                  subject.local_user_id
-           FROM revenuecat_customer_state AS state
-           JOIN revenuecat_customer_aliases AS alias ON alias.local_user_id=state.user_id
-           JOIN revenuecat_webhook_events AS event ON event.event_id=$2
-           JOIN revenuecat_event_subjects AS subject
-             ON subject.event_id=event.event_id AND subject.subject_hash=alias.alias_hash
-           WHERE state.user_id=$1`,
-          [active, noOpEvent],
-        )
-      ).rows[0],
-      before,
-    );
-    await scopedPool.query(
-      `UPDATE revenuecat_customer_aliases
        SET alias_kind='ordinary',ownership_source='webhook',
            source_event_at='2026-09-01T01:15:00Z',
-           source_event_id=$2,updated_at=clock_timestamp()
+           source_event_id=$2,authenticated_at=NULL,
+           updated_at='2026-09-02T01:15:02Z'
        WHERE alias_hash=$1`,
       [hash, `auth_same_owner_provenance_${suffix}`],
     );
-    const sameOwnerBefore = (
+    const transitionBefore = (
       await scopedPool.query(
-        `SELECT state.updated_at AS state_updated_at,
+        `SELECT state.reconcile_after AS state_reconcile_after,
+                state.updated_at AS state_updated_at,
+                alias.updated_at AS alias_updated_at,
                 event.next_attempt_at AS event_next_attempt_at,
-                subject.local_user_id
+                subject.local_user_id,subject.xmin::text AS subject_xmin
          FROM revenuecat_customer_state AS state
+         JOIN revenuecat_customer_aliases AS alias
+           ON alias.alias_hash=$3 AND alias.local_user_id=state.user_id
          JOIN revenuecat_webhook_events AS event ON event.event_id=$2
          JOIN revenuecat_event_subjects AS subject
            ON subject.event_id=event.event_id AND subject.subject_hash=$3
@@ -4072,6 +4030,75 @@ integrationTest(
       )
     ).rows[0];
     assert.equal(
+      transitionBefore.state_reconcile_after.toISOString(),
+      "2099-01-01T00:00:00.000Z",
+    );
+    assert.equal(
+      transitionBefore.event_next_attempt_at.toISOString(),
+      "2099-01-01T00:00:00.000Z",
+    );
+    assert.equal(
+      await provisionAuthenticatedUserIfActive(
+        activeUser,
+        createRevenueCatAuthProvisioningCallback(activeUser, processorConfig),
+      ),
+      "active",
+    );
+    const afterTransition = (
+      await scopedPool.query(
+        `SELECT state.reconcile_reason,
+                state.reconcile_after<=clock_timestamp() AS state_due,
+                state.updated_at AS state_updated_at,
+                alias.alias_kind,alias.ownership_source,
+                alias.source_event_at,alias.source_event_id,
+                alias.updated_at AS alias_updated_at,
+                event.next_attempt_at<=clock_timestamp() AS event_due,
+                event.next_attempt_at AS event_next_attempt_at,
+                subject.local_user_id,subject.xmin::text AS subject_xmin
+         FROM revenuecat_customer_state AS state
+         JOIN revenuecat_customer_aliases AS alias
+           ON alias.alias_hash=$3 AND alias.local_user_id=state.user_id
+         JOIN revenuecat_webhook_events AS event ON event.event_id=$2
+         JOIN revenuecat_event_subjects AS subject
+           ON subject.event_id=event.event_id AND subject.subject_hash=$3
+         WHERE state.user_id=$1`,
+        [active, noOpEvent, hash],
+      )
+    ).rows[0];
+    assert.deepEqual(
+      {
+        reconcile_reason: afterTransition.reconcile_reason,
+        state_due: afterTransition.state_due,
+        alias_kind: afterTransition.alias_kind,
+        ownership_source: afterTransition.ownership_source,
+        source_event_at: afterTransition.source_event_at,
+        source_event_id: afterTransition.source_event_id,
+        event_due: afterTransition.event_due,
+        local_user_id: afterTransition.local_user_id,
+        subject_xmin: afterTransition.subject_xmin,
+      },
+      {
+        reconcile_reason: "authenticated",
+        state_due: true,
+        alias_kind: "authenticated",
+        ownership_source: "authenticated",
+        source_event_at: null,
+        source_event_id: null,
+        event_due: true,
+        local_user_id: active,
+        subject_xmin: transitionBefore.subject_xmin,
+      },
+    );
+    assert.notEqual(
+      afterTransition.state_updated_at.getTime(),
+      transitionBefore.state_updated_at.getTime(),
+    );
+    assert.notEqual(
+      afterTransition.alias_updated_at.getTime(),
+      transitionBefore.alias_updated_at.getTime(),
+    );
+
+    assert.equal(
       await provisionAuthenticatedUserIfActive(
         activeUser,
         createRevenueCatAuthProvisioningCallback(activeUser, processorConfig),
@@ -4081,10 +4108,18 @@ integrationTest(
     assert.deepEqual(
       (
         await scopedPool.query(
-          `SELECT state.updated_at AS state_updated_at,
+          `SELECT state.reconcile_reason,
+                  state.reconcile_after<=clock_timestamp() AS state_due,
+                  state.updated_at AS state_updated_at,
+                  alias.alias_kind,alias.ownership_source,
+                  alias.source_event_at,alias.source_event_id,
+                  alias.updated_at AS alias_updated_at,
+                  event.next_attempt_at<=clock_timestamp() AS event_due,
                   event.next_attempt_at AS event_next_attempt_at,
-                  subject.local_user_id
+                  subject.local_user_id,subject.xmin::text AS subject_xmin
            FROM revenuecat_customer_state AS state
+           JOIN revenuecat_customer_aliases AS alias
+             ON alias.alias_hash=$3 AND alias.local_user_id=state.user_id
            JOIN revenuecat_webhook_events AS event ON event.event_id=$2
            JOIN revenuecat_event_subjects AS subject
              ON subject.event_id=event.event_id AND subject.subject_hash=$3
@@ -4092,24 +4127,7 @@ integrationTest(
           [active, noOpEvent, hash],
         )
       ).rows[0],
-      sameOwnerBefore,
-    );
-    assert.deepEqual(
-      (
-        await scopedPool.query(
-          `SELECT alias_kind,ownership_source,local_user_id,
-                  source_event_at,source_event_id
-           FROM revenuecat_customer_aliases WHERE alias_hash=$1`,
-          [hash],
-        )
-      ).rows[0],
-      {
-        alias_kind: "authenticated",
-        ownership_source: "authenticated",
-        local_user_id: active,
-        source_event_at: null,
-        source_event_id: null,
-      },
+      afterTransition,
     );
 
     await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [deleted]);
@@ -5935,6 +5953,7 @@ integrationTest(
   async () => {
     const suffix = Date.now();
     const userId = `cleanup-live-${suffix}`;
+    const identityOnly = `cleanup_a_identity_only_${suffix}`;
     const ordinary = `cleanup_ordinary_${suffix}`;
     const transfer = `cleanup_transfer_${suffix}`;
     const pruned = `cleanup_pruned_${suffix}`;
@@ -5947,6 +5966,17 @@ integrationTest(
                'worker:cleanup_1234',clock_timestamp(),'scheduled','2099-01-01T00:00:00Z')`,
       [userId],
     );
+    await insertEvent(scopedPool, {
+      eventId: identityOnly,
+      type: "PRODUCT_CHANGE",
+      eventAt: "2026-05-01T00:00:00Z",
+      receivedAt: "2026-05-01T00:00:01Z",
+      identityCount: 1,
+      identityRequired: true,
+      entitlementRequired: false,
+      nextAttemptAt: "2099-01-01T00:00:00Z",
+      retentionUntil: "2026-11-01T00:00:00Z",
+    });
     for (const [eventId, type] of [
       [ordinary, "INITIAL_PURCHASE"],
       [transfer, "TRANSFER"],
@@ -5967,8 +5997,16 @@ integrationTest(
     await scopedPool.query(
       `INSERT INTO revenuecat_event_subjects
        (event_id,subject_hash,role_mask,local_user_id) VALUES
-       ($1,$2,1,$3),($4,$5,24,$3)`,
-      [ordinary, "a".repeat(64), userId, transfer, "b".repeat(64)],
+       ($1,$2,1,$3),($4,$5,1,$3),($6,$7,24,$3)`,
+      [
+        identityOnly,
+        "0".repeat(64),
+        userId,
+        ordinary,
+        "a".repeat(64),
+        transfer,
+        "b".repeat(64),
+      ],
     );
     await scopedPool.query(
       `INSERT INTO revenuecat_event_subjects
@@ -5982,11 +6020,19 @@ integrationTest(
               entitlement_applied_at IS NOT NULL AS entitlement_done
        FROM revenuecat_webhook_events
        WHERE event_id=ANY($1::text[]) ORDER BY event_id`,
-      [[ordinary, transfer]],
+      [[identityOnly, ordinary, transfer]],
     );
     assert.deepEqual(
       new Map(states.rows.map((row) => [row.event_id, row])),
       new Map([
+        [
+          identityOnly,
+          {
+            event_id: identityOnly,
+            identity_done: false,
+            entitlement_done: false,
+          },
+        ],
         [
           ordinary,
           { event_id: ordinary, identity_done: false, entitlement_done: true },
