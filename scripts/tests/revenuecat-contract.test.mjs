@@ -185,6 +185,16 @@ test("TRANSFER uses its official sides without requiring app_user_id", () => {
   assert.equal("userId" in parsed.value, false);
 });
 
+test("rejects TRANSFER deliveries with an empty identity side", () => {
+  for (const field of ["transferred_from", "transferred_to"]) {
+    const body = structuredClone(transfer);
+    body.event[field] = [];
+    const parsed = parseRevenueCatDelivery(body);
+    assert.equal(parsed.ok, false, field);
+    assert.equal(parsed.code, "malformed_event", field);
+  }
+});
+
 test("PURCHASE_REDEEMED models every official redemption outcome", () => {
   for (const outcome of ["alias", "transfer", "redeemer_owns"]) {
     const parsed = parseRevenueCatDelivery(purchaseRedeemed(outcome));
@@ -202,6 +212,22 @@ test("PURCHASE_REDEEMED models every official redemption outcome", () => {
     ]);
     assert.equal(parsed.value.requiresReconciliation, true);
     assert.equal("userId" in parsed.value, false);
+  }
+});
+
+test("PURCHASE_REDEEMED accepts an omitted or null redeemed_from", () => {
+  for (const redeemedFrom of [undefined, null]) {
+    const body = purchaseRedeemed();
+    if (redeemedFrom === undefined) delete body.event.redeemed_from;
+    else body.event.redeemed_from = redeemedFrom;
+    const parsed = parseRevenueCatDelivery(body);
+    assert.equal(parsed.ok, true, String(redeemedFrom));
+    assert.equal(parsed.value.kind, "purchase_redeemed");
+    assert.deepEqual(parsed.value.redeemedFrom, []);
+    assert.deepEqual(parsed.value.redeemedBy, [
+      "firebase-redeemer",
+      "shared-redemption",
+    ]);
   }
 });
 
@@ -231,6 +257,57 @@ test("accepts 256 combined identities and acknowledges larger identity sets", ()
   const rawRejected = parseRevenueCatDelivery(excessiveRawVolume);
   assert.equal(rawRejected.ok, false);
   assert.equal(rawRejected.code, "ignored_identity_volume");
+});
+
+test("bounds identity strings by Unicode code points", () => {
+  const astral256 = "😀".repeat(256);
+  const astral257 = `${astral256}😀`;
+
+  const ordinary = structuredClone(valid);
+  ordinary.event.app_user_id = astral256;
+  ordinary.event.original_app_user_id = null;
+  ordinary.event.aliases = ["ordinary-alias"];
+  const acceptedOrdinary = parseRevenueCatDelivery(ordinary);
+  assert.equal(acceptedOrdinary.ok, true);
+  assert.equal(acceptedOrdinary.value.userId, astral256);
+
+  ordinary.event.app_user_id = astral257;
+  const rejectedOrdinary = parseRevenueCatDelivery(ordinary);
+  assert.equal(rejectedOrdinary.ok, false);
+  assert.equal(rejectedOrdinary.code, "malformed_event");
+
+  const ordinaryAlias = structuredClone(valid);
+  ordinaryAlias.event.original_app_user_id = null;
+  ordinaryAlias.event.aliases = [astral256];
+  const acceptedAlias = parseRevenueCatDelivery(ordinaryAlias);
+  assert.equal(acceptedAlias.ok, true);
+  assert.deepEqual(acceptedAlias.value.aliases, [astral256]);
+
+  ordinaryAlias.event.aliases = [astral257];
+  const rejectedAlias = parseRevenueCatDelivery(ordinaryAlias);
+  assert.equal(rejectedAlias.ok, false);
+  assert.equal(rejectedAlias.code, "malformed_event");
+
+  const specialCases = [
+    { body: structuredClone(transfer), field: "transferred_from" },
+    { body: purchaseRedeemed(), field: "redeemed_by" },
+  ];
+  for (const { body, field } of specialCases) {
+    body.event[field] = [astral256];
+    const accepted = parseRevenueCatDelivery(body);
+    assert.equal(accepted.ok, true, `${body.event.type} 256`);
+    assert.deepEqual(
+      accepted.value[
+        field === "transferred_from" ? "transferredFrom" : "redeemedBy"
+      ],
+      [astral256],
+    );
+
+    body.event[field] = [astral257];
+    const rejected = parseRevenueCatDelivery(body);
+    assert.equal(rejected.ok, false, `${body.event.type} 257`);
+    assert.equal(rejected.code, "malformed_event", body.event.type);
+  }
 });
 
 test("applies identity-volume bounds to transfer and redemption branches", () => {

@@ -94,6 +94,12 @@ function boundedString(value: unknown, maxLength: number): string | null {
     : bounded;
 }
 
+function codePointLength(value: string): number {
+  let length = 0;
+  for (const _codePoint of value) length += 1;
+  return length;
+}
+
 function parseIdentityArray(value: unknown): IdentityArrayResult {
   if (!Array.isArray(value)) {
     return {
@@ -121,7 +127,7 @@ function parseIdentityArray(value: unknown): IdentityArrayResult {
       };
     }
     const identity = rawIdentity.trim();
-    if (!identity || identity.length > MAX_IDENTITIES) {
+    if (!identity || codePointLength(identity) > MAX_IDENTITIES) {
       return {
         ok: false,
         code: "malformed_event",
@@ -221,6 +227,16 @@ export function parseRevenueCatDelivery(body: unknown): RevenueCatParseResult {
     const transferredTo = parseIdentityArray(event.transferred_to);
     if (!transferredTo.ok) return transferredTo;
     if (
+      transferredFrom.values.length === 0 ||
+      transferredTo.values.length === 0
+    ) {
+      return {
+        ok: false,
+        code: "malformed_event",
+        message: "Transfer identity sides must not be empty",
+      };
+    }
+    if (
       exceedsCombinedIdentityVolume(
         transferredFrom.values,
         transferredTo.values,
@@ -260,7 +276,10 @@ export function parseRevenueCatDelivery(body: unknown): RevenueCatParseResult {
         message: "Missing redemption recipient",
       };
     }
-    const redeemedFrom = parseIdentityArray(event.redeemed_from);
+    const redeemedFrom: IdentityArrayResult =
+      event.redeemed_from == null
+        ? { ok: true, values: [] }
+        : parseIdentityArray(event.redeemed_from);
     if (!redeemedFrom.ok) return redeemedFrom;
     const redeemedBy = parseIdentityArray(event.redeemed_by);
     if (!redeemedBy.ok) return redeemedBy;
@@ -289,7 +308,11 @@ export function parseRevenueCatDelivery(body: unknown): RevenueCatParseResult {
 
   const userId =
     typeof event.app_user_id === "string" ? event.app_user_id.trim() : "";
-  if (!userId || userId.length > 256 || !isWellFormedString(userId)) {
+  if (
+    !userId ||
+    !isWellFormedString(userId) ||
+    codePointLength(userId) > MAX_IDENTITIES
+  ) {
     return {
       ok: false,
       code: "malformed_event",
