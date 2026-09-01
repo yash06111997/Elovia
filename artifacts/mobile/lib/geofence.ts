@@ -317,25 +317,50 @@ export async function syncGeofences(): Promise<boolean> {
   }
 }
 
-export async function stopAllGeofences(): Promise<void> {
+async function isGeofenceRegistrationActive(
+  Location: LocationModule,
+  TaskManager: TaskManagerModule,
+): Promise<boolean | null> {
+  try {
+    const taskRegistered =
+      await TaskManager.isTaskRegisteredAsync(GEOFENCE_TASK);
+    const locationStarted =
+      typeof Location.hasStartedGeofencingAsync === "function"
+        ? await Location.hasStartedGeofencingAsync(GEOFENCE_TASK)
+        : taskRegistered;
+    return taskRegistered || locationStarted;
+  } catch {
+    return null;
+  }
+}
+
+export async function stopAllGeofences(): Promise<boolean> {
   const Location = loadLocation();
   const TaskManager = loadTaskManager();
-  if (!Location || !TaskManager) return;
+  if (Platform.OS === "web") return true;
+  if (!Location || !TaskManager) return false;
 
   try {
-    await serializeGeofenceOperation(async () => {
+    return await serializeGeofenceOperation(async () => {
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        if (!(await TaskManager.isTaskRegisteredAsync(GEOFENCE_TASK))) return;
+        const active = await isGeofenceRegistrationActive(
+          Location,
+          TaskManager,
+        );
+        if (active === false) return true;
+        if (active === null) return false;
         try {
           await Location.stopGeofencingAsync(GEOFENCE_TASK);
-          return;
         } catch {
-          // A bounded retry handles transient native task-manager failures.
+          // Verification is authoritative; retry only if native state remains.
         }
       }
+      return (
+        (await isGeofenceRegistrationActive(Location, TaskManager)) === false
+      );
     });
   } catch {
-    // Already stopped.
+    return false;
   }
 }
 

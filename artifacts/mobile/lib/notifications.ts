@@ -228,21 +228,22 @@ function toRestorableTrigger(
   return null;
 }
 
-async function cancelOwnedReminders(N: NotificationsModule): Promise<void> {
-  const scheduled = await N.getAllScheduledNotificationsAsync();
-  for (const notification of scheduled) {
-    if (isEloviaReminderNotification(notification)) {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        try {
-          await N.cancelScheduledNotificationAsync(notification.identifier);
-          break;
-        } catch {
-          // Retry once, then continue so one bad identifier never prevents the
-          // rest of the previous account's reminders from being removed.
-        }
+async function cancelOwnedReminders(N: NotificationsModule): Promise<boolean> {
+  for (let pass = 0; pass < 2; pass += 1) {
+    const scheduled = await N.getAllScheduledNotificationsAsync();
+    const owned = scheduled.filter(isEloviaReminderNotification);
+    if (owned.length === 0) return true;
+    for (const notification of owned) {
+      try {
+        await N.cancelScheduledNotificationAsync(notification.identifier);
+      } catch {
+        // Verification below is authoritative: native calls can reject after
+        // completing, while resolved cancellation can also be delayed.
       }
     }
   }
+  const remaining = await N.getAllScheduledNotificationsAsync();
+  return !remaining.some(isEloviaReminderNotification);
 }
 
 /**
@@ -361,13 +362,14 @@ export async function reconcileReminderSchedule(
   });
 }
 
-export async function cancelAllReminders(): Promise<void> {
+export async function cancelAllReminders(): Promise<boolean> {
   const N = loadNotifications();
-  if (!N) return;
+  if (Platform.OS === "web") return true;
+  if (!N) return false;
   try {
-    await serializeReminderOperation(() => cancelOwnedReminders(N));
+    return await serializeReminderOperation(() => cancelOwnedReminders(N));
   } catch {
-    // Nothing scheduled, or the module is unavailable.
+    return false;
   }
 }
 

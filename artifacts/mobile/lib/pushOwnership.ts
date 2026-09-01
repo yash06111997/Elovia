@@ -3,6 +3,19 @@ export interface PushOwnership {
   token: string;
 }
 
+export const PUSH_REGISTRATION_STATE_VERSION = 1;
+
+export type PersistedPushRegistrationState =
+  | {
+      status: "owned";
+      ownership: PushOwnership;
+      /** False only for the short-lived Task 6 pre-versioned upgrade shape. */
+      versioned: boolean;
+    }
+  | { status: "detached" }
+  | { status: "legacy-token"; token: string }
+  | { status: "unknown" };
+
 export interface PushLogoutDetachmentOutcome {
   serverDetached: boolean;
   nativeDetached: boolean;
@@ -101,26 +114,126 @@ function isExpoPushToken(value: unknown): value is string {
   );
 }
 
-export function parseCachedPushOwnership(
+/**
+ * Decode the complete durable push state.
+ *
+ * Absence, corruption, and the pre-Task 6 raw-token format are deliberately
+ * distinct from a verified detached marker. An upgrade must never infer that
+ * the backend has no token simply because the new ownership object is absent.
+ */
+export function parsePersistedPushRegistrationState(
   raw: string | null,
-): PushOwnership | null {
-  if (!raw) return null;
+): PersistedPushRegistrationState {
+  if (raw === null) return { status: "unknown" };
+  if (isExpoPushToken(raw)) return { status: "legacy-token", token: raw };
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return null;
+      return { status: "unknown" };
     }
     const candidate = parsed as Record<string, unknown>;
     if (
-      !isNonEmptyBoundedString(candidate.userId, 256) ||
-      !isExpoPushToken(candidate.token)
+      candidate.version === PUSH_REGISTRATION_STATE_VERSION &&
+      candidate.status === "detached"
     ) {
-      return null;
+      return { status: "detached" };
     }
-    return { userId: candidate.userId, token: candidate.token };
+    if (
+      candidate.version === PUSH_REGISTRATION_STATE_VERSION &&
+      candidate.status === "owned" &&
+      isNonEmptyBoundedString(candidate.userId, 256) &&
+      isExpoPushToken(candidate.token)
+    ) {
+      return {
+        status: "owned",
+        ownership: { userId: candidate.userId, token: candidate.token },
+        versioned: true,
+      };
+    }
+    // Upgrade compatibility for ownership objects written by earlier Task 6
+    // builds. They are known ownership, but are rewritten versioned next time.
+    if (
+      candidate.version === undefined &&
+      isNonEmptyBoundedString(candidate.userId, 256) &&
+      isExpoPushToken(candidate.token)
+    ) {
+      return {
+        status: "owned",
+        ownership: { userId: candidate.userId, token: candidate.token },
+        versioned: false,
+      };
+    }
   } catch {
-    return null;
+    // Invalid state is unknown, never detached.
   }
+  return { status: "unknown" };
+}
+
+export function serializeOwnedPushRegistrationState(
+  ownership: PushOwnership,
+): string {
+  return JSON.stringify({
+    version: PUSH_REGISTRATION_STATE_VERSION,
+    status: "owned",
+    ...ownership,
+  });
+}
+
+export function serializeDetachedPushRegistrationState(): string {
+  return JSON.stringify({
+    version: PUSH_REGISTRATION_STATE_VERSION,
+    status: "detached",
+  });
+}
+
+export function hasVerifiedServerDetachment(
+  state: PersistedPushRegistrationState,
+  authenticatedUnregisterSucceeded: boolean,
+): boolean {
+  return authenticatedUnregisterSucceeded || state.status === "detached";
+}
+
+export interface PushServerCleanupPlan {
+  alreadyDetached: boolean;
+  ownershipConflict: boolean;
+  candidates: PushOwnership[];
+}
+
+/** Resolve upgrade and journal state into user-authorized unregister targets. */
+export function planPushServerCleanup(
+  state: PersistedPushRegistrationState,
+  expectedUserId: string,
+  pending: readonly PushOwnership[],
+): PushServerCleanupPlan {
+  if (state.status === "detached") {
+    return { alreadyDetached: true, ownershipConflict: false, candidates: [] };
+  }
+  if (state.status === "owned" && state.ownership.userId !== expectedUserId) {
+    return { alreadyDetached: false, ownershipConflict: true, candidates: [] };
+  }
+  const candidates = new Map<string, PushOwnership>();
+  if (state.status === "owned") {
+    candidates.set(state.ownership.token, state.ownership);
+  } else if (state.status === "legacy-token") {
+    candidates.set(state.token, { userId: expectedUserId, token: state.token });
+  }
+  for (const ownership of pending) {
+    if (ownership.userId === expectedUserId) {
+      candidates.set(ownership.token, ownership);
+    }
+  }
+  return {
+    alreadyDetached: false,
+    ownershipConflict: false,
+    candidates: [...candidates.values()],
+  };
+}
+
+export function parseCachedPushOwnership(
+  raw: string | null,
+): PushOwnership | null {
+  const state = parsePersistedPushRegistrationState(raw);
+  return state.status === "owned" ? state.ownership : null;
 }
 
 /**

@@ -30,27 +30,17 @@ import {
 } from "./pushOwnership";
 import { cancelAllReminders } from "./notifications";
 import { stopAllGeofences } from "./geofence";
+import {
+  canCompleteNativeStateLogout,
+  clearNativeAccountState,
+  resumeNativeLifecycleOwner,
+  setNativeLifecycleAuthOwner,
+  suspendNativeLifecycleOwner,
+  type NativeCleanupOutcome,
+} from "./nativeLifecycleCleanup";
 
 function generateUUID(): string {
   return Crypto.randomUUID();
-}
-
-async function settleWithin<T>(
-  operation: Promise<T>,
-  timeoutMs: number,
-  fallback: T,
-): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  try {
-    return await Promise.race([
-      operation,
-      new Promise<T>((resolve) => {
-        timeout = setTimeout(() => resolve(fallback), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
 }
 
 interface User {
@@ -190,6 +180,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         unsubscribe = onAuthStateChanged(firebaseAuth, (fbUser) => {
           if (!mounted) return;
           const nextUser = fbUser ? firebaseUserToUser(fbUser) : null;
+          setNativeLifecycleAuthOwner(nextUser?.id ?? null);
           setAccountStorageAuthScope(nextUser?.id ?? null, false);
           setUser(nextUser);
           setIsLoading(false);
@@ -197,6 +188,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       .catch(() => {
         if (mounted) {
+          setNativeLifecycleAuthOwner(null);
           setAccountStorageAuthScope(null, false);
           setIsLoading(false);
         }
@@ -271,6 +263,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    let suspendedOwnerUserId: string | null = null;
     try {
       const firebaseAuth = await getFirebaseAuth();
       let pushDetachment: PushLogoutDetachmentOutcome = {
@@ -278,24 +271,48 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         nativeDetached: false,
         cleanupPending: false,
       };
-      if (firebaseAuth.currentUser?.uid) {
-        pushDetachment = await unregisterFromPush(firebaseAuth.currentUser.uid);
+      const ownerUserId = firebaseAuth.currentUser?.uid ?? null;
+      if (ownerUserId) {
+        suspendNativeLifecycleOwner(ownerUserId);
+        suspendedOwnerUserId = ownerUserId;
       }
-      if (!canCompletePushLogout(pushDetachment)) {
+      let nativeCleanup: NativeCleanupOutcome = {
+        remindersCleared: true,
+        geofencesCleared: true,
+        verified: true,
+      };
+      if (ownerUserId) {
+        pushDetachment = await unregisterFromPush(ownerUserId);
+        nativeCleanup = await clearNativeAccountState({
+          ownerUserId,
+          cancelReminders: cancelAllReminders,
+          stopGeofences: stopAllGeofences,
+        });
+      }
+      if (
+        !canCompletePushLogout(pushDetachment) ||
+        !canCompleteNativeStateLogout(nativeCleanup)
+      ) {
+        const failedNativeState = [
+          !nativeCleanup.remindersCleared ? "reminders" : null,
+          !nativeCleanup.geofencesCleared ? "saved-place triggers" : null,
+        ].filter(Boolean);
         const message =
-          "Elovia could not safely disconnect notifications. You are still signed in; check your connection and try signing out again.";
+          failedNativeState.length > 0
+            ? `Elovia could not verify removal of ${failedNativeState.join(" and ")}. You are still signed in; try signing out again.`
+            : "Elovia could not safely disconnect push notifications. You are still signed in; check your connection and try signing out again.";
         setAuthError(message);
         if (Platform.OS !== "web") {
           Alert.alert("Sign-out needs a retry", message);
         }
+        if (suspendedOwnerUserId) {
+          resumeNativeLifecycleOwner(suspendedOwnerUserId);
+          suspendedOwnerUserId = null;
+        }
         return;
       }
-      await settleWithin<unknown>(
-        Promise.allSettled([cancelAllReminders(), stopAllGeofences()]),
-        2_500,
-        null,
-      );
       await runPushSafeSignOut(pushDetachment, () => signOut(firebaseAuth));
+      setNativeLifecycleAuthOwner(null);
       setAccountStorageAuthScope(null, false);
       setUser(null);
       const cleanupMessage = pushDetachment.cleanupPending
@@ -306,6 +323,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         Alert.alert("Signed out safely", cleanupMessage);
       }
     } catch (err) {
+      if (suspendedOwnerUserId) {
+        resumeNativeLifecycleOwner(suspendedOwnerUserId);
+      }
       console.error("Logout error:", err);
       const msg = getErrorMessage(err);
       setAuthError(msg);

@@ -18,6 +18,11 @@ import { reconcilePushRegistration } from "@/lib/push";
 import { onDataRestored } from "@/lib/syncEvents";
 import { reportClientError } from "@/lib/telemetry";
 import { runNativeReconciliationWithRetry } from "@/lib/nativeReconciliationRetry";
+import {
+  clearNativeAccountState,
+  isNativeLifecycleOwnerCurrent,
+  reconcileNativeAccountState,
+} from "@/lib/nativeLifecycleCleanup";
 
 let pendingArrivalOperation: Promise<void> = Promise.resolve();
 
@@ -68,24 +73,67 @@ export function NativeLifecycleCoordinator() {
     }
 
     if (!isAuthenticated || !userId) {
-      void Promise.allSettled([cancelAllReminders(), stopAllGeofences()]);
+      const cleanupWaits = new Set<{
+        timer: ReturnType<typeof setTimeout>;
+        resolve(): void;
+      }>();
+      const wait = (delayMs: number) =>
+        new Promise<void>((resolve) => {
+          const pending = {
+            timer: setTimeout(() => {
+              cleanupWaits.delete(pending);
+              resolve();
+            }, delayMs),
+            resolve,
+          };
+          cleanupWaits.add(pending);
+        });
+      void runNativeReconciliationWithRetry({
+        isCurrent: () => active && generation.current === run,
+        async reconcile() {
+          const outcome = await clearNativeAccountState({
+            ownerUserId: null,
+            cancelReminders: cancelAllReminders,
+            stopGeofences: stopAllGeofences,
+          });
+          return outcome.verified;
+        },
+        wait,
+        retryDelayMs: 1_000,
+        onFailure: (_attempt, willRetry) => {
+          reportLifecycleFailure(
+            willRetry ? "NativeCleanupRetryError" : "NativeCleanupPendingError",
+          );
+        },
+      });
       return () => {
         active = false;
         generation.current += 1;
+        for (const pending of cleanupWaits) {
+          clearTimeout(pending.timer);
+          pending.resolve();
+        }
+        cleanupWaits.clear();
       };
     }
 
     const reconcileNativeState = async () => {
-      const reminderOk = await reconcileReminderSchedule({
-        expectedUserId: userId,
+      const reconciled = await reconcileNativeAccountState({
+        ownerUserId: userId,
+        isCurrent: () =>
+          active &&
+          generation.current === run &&
+          isNativeLifecycleOwnerCurrent(userId),
+        cancelReminders: cancelAllReminders,
+        stopGeofences: stopAllGeofences,
+        reconcileReminders: () =>
+          reconcileReminderSchedule({ expectedUserId: userId }),
+        reconcileGeofences: () => reconcileGeofences(userId),
       });
-      if (!active || generation.current !== run) return false;
-      const geofenceOk = await reconcileGeofences(userId);
-      if (!active || generation.current !== run) return false;
-      if (!reminderOk) {
-        reportLifecycleFailure("ReminderReconciliationError");
+      if (!reconciled && active && generation.current === run) {
+        reportLifecycleFailure("NativeOwnerReconciliationError");
       }
-      return reminderOk && geofenceOk;
+      return reconciled;
     };
 
     const nativeRetryWaits = new Set<{
@@ -248,7 +296,6 @@ export function NativeLifecycleCoordinator() {
       if (activeLeaseId) {
         void releasePendingArrival(userId, activeLeaseId);
       }
-      void Promise.allSettled([cancelAllReminders(), stopAllGeofences()]);
     };
   }, [isAuthenticated, isLoading, rootNavigationState?.key, router, user?.id]);
 

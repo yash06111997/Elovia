@@ -2,12 +2,18 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  canCompletePushLogout,
+  hasVerifiedServerDetachment,
   parseCachedPushOwnership,
+  parsePersistedPushRegistrationState,
   persistPushOwnershipOrCompensate,
   planPushOwnershipTransition,
+  planPushServerCleanup,
   resolvePushPermission,
   runPushSafeSignOut,
   runPushOwnershipMutation,
+  serializeDetachedPushRegistrationState,
+  serializeOwnedPushRegistrationState,
 } from "../../artifacts/mobile/lib/pushOwnership.ts";
 import {
   PushCleanupStore,
@@ -31,6 +37,16 @@ import {
   onPendingArrivalRecorded,
 } from "../../artifacts/mobile/lib/pendingArrivalSignal.ts";
 import { runNativeReconciliationWithRetry } from "../../artifacts/mobile/lib/nativeReconciliationRetry.ts";
+import {
+  canCompleteNativeStateLogout,
+  isNativeLifecycleOwnerCurrent,
+  NativeLifecycleStateStore,
+  resumeNativeLifecycleOwner,
+  runNativeOwnerReconciliation,
+  runVerifiedNativeCleanup,
+  setNativeLifecycleAuthOwner,
+  suspendNativeLifecycleOwner,
+} from "../../artifacts/mobile/lib/nativeLifecycleCleanup.ts";
 import {
   emitDataRestored,
   onDataRestored,
@@ -199,6 +215,80 @@ test("push ownership transitions never unregister another account with the curre
     ),
     { action: "transfer-owner" },
   );
+});
+
+test("push logout requires explicit versioned detachment evidence across upgrades", () => {
+  const ownership = {
+    userId: "user-a",
+    token: "ExponentPushToken[versioned]",
+  };
+  assert.deepEqual(
+    parsePersistedPushRegistrationState(
+      serializeOwnedPushRegistrationState(ownership),
+    ),
+    { status: "owned", ownership, versioned: true },
+  );
+
+  const legacy = parsePersistedPushRegistrationState(
+    "ExponentPushToken[legacy]",
+  );
+  assert.deepEqual(legacy, {
+    status: "legacy-token",
+    token: "ExponentPushToken[legacy]",
+  });
+  assert.deepEqual(planPushServerCleanup(legacy, "user-a", []), {
+    alreadyDetached: false,
+    ownershipConflict: false,
+    candidates: [{ userId: "user-a", token: "ExponentPushToken[legacy]" }],
+  });
+  const missing = parsePersistedPushRegistrationState(null);
+  const corrupt = parsePersistedPushRegistrationState("not-json-or-token");
+  assert.deepEqual(missing, { status: "unknown" });
+  assert.deepEqual(corrupt, { status: "unknown" });
+  assert.deepEqual(planPushServerCleanup(missing, "user-a", []), {
+    alreadyDetached: false,
+    ownershipConflict: false,
+    candidates: [],
+  });
+  assert.deepEqual(planPushServerCleanup(corrupt, "user-a", []), {
+    alreadyDetached: false,
+    ownershipConflict: false,
+    candidates: [],
+  });
+
+  for (const state of [legacy, missing, corrupt]) {
+    assert.equal(hasVerifiedServerDetachment(state, false), false);
+    assert.equal(
+      canCompletePushLogout({
+        serverDetached: hasVerifiedServerDetachment(state, false),
+        nativeDetached: false,
+        cleanupPending: true,
+      }),
+      false,
+      "unknown upgrade state plus failed native revocation must block logout",
+    );
+    assert.equal(
+      canCompletePushLogout({
+        serverDetached: hasVerifiedServerDetachment(state, false),
+        nativeDetached: true,
+        cleanupPending: true,
+      }),
+      true,
+      "verified native revocation is independently safe",
+    );
+  }
+
+  const detached = parsePersistedPushRegistrationState(
+    serializeDetachedPushRegistrationState(),
+  );
+  assert.deepEqual(detached, { status: "detached" });
+  assert.deepEqual(planPushServerCleanup(detached, "user-a", []), {
+    alreadyDetached: true,
+    ownershipConflict: false,
+    candidates: [],
+  });
+  assert.equal(hasVerifiedServerDetachment(detached, false), true);
+  assert.equal(hasVerifiedServerDetachment(legacy, true), true);
 });
 
 test("stale push registration compensates with the captured account credential before the next retry", async () => {
@@ -468,6 +558,162 @@ test("push-safe signout blocks both-failed detachment and allows either verified
     1,
     "native-only logout retains durable server cleanup",
   );
+});
+
+test("logout requires verified reminder and geofence cleanup independently", async () => {
+  const scenarios = [
+    { reminders: false, geofences: false },
+    { reminders: false, geofences: true },
+    { reminders: true, geofences: false },
+    { reminders: true, geofences: true },
+  ];
+  for (const scenario of scenarios) {
+    const store = new NativeLifecycleStateStore(new MemoryKeyValueStorage());
+    const outcome = await runVerifiedNativeCleanup({
+      store,
+      ownerUserId: "user-a",
+      cancelReminders: async () => scenario.reminders,
+      stopGeofences: async () => scenario.geofences,
+    });
+    assert.equal(outcome.remindersCleared, scenario.reminders);
+    assert.equal(outcome.geofencesCleared, scenario.geofences);
+    assert.equal(
+      canCompleteNativeStateLogout(outcome),
+      scenario.reminders && scenario.geofences,
+    );
+    assert.equal(
+      (await store.read()).status,
+      scenario.reminders && scenario.geofences ? "clean" : "pending",
+    );
+  }
+});
+
+test("signed-out cleanup journal retries after remount and settles only when verified", async () => {
+  const storage = new MemoryKeyValueStorage();
+  const firstStore = new NativeLifecycleStateStore(storage);
+  assert.equal(
+    (
+      await runVerifiedNativeCleanup({
+        store: firstStore,
+        ownerUserId: "user-a",
+        cancelReminders: async () => false,
+        stopGeofences: async () => true,
+      })
+    ).verified,
+    false,
+  );
+  assert.equal((await firstStore.read()).status, "pending");
+
+  const remountedStore = new NativeLifecycleStateStore(storage);
+  assert.equal(
+    (
+      await runVerifiedNativeCleanup({
+        store: remountedStore,
+        ownerUserId: null,
+        cancelReminders: async () => true,
+        stopGeofences: async () => true,
+      })
+    ).verified,
+    true,
+  );
+  assert.equal((await remountedStore.read()).status, "clean");
+});
+
+test("account transition clears the previous native owner before rebuilding", async () => {
+  const storage = new MemoryKeyValueStorage();
+  const store = new NativeLifecycleStateStore(storage);
+  const initial = await runNativeOwnerReconciliation({
+    store,
+    ownerUserId: "user-a",
+    isCurrent: () => true,
+    cancelReminders: async () => true,
+    stopGeofences: async () => true,
+    reconcileReminders: async () => true,
+    reconcileGeofences: async () => true,
+  });
+  assert.equal(initial, true);
+  assert.deepEqual(await store.read(), {
+    status: "owned",
+    ownerUserId: "user-a",
+    generation: 2,
+  });
+
+  const blockedCalls = [];
+  const blocked = await runNativeOwnerReconciliation({
+    store,
+    ownerUserId: "user-b",
+    isCurrent: () => true,
+    cancelReminders: async () => {
+      blockedCalls.push("cancel-a-reminders");
+      return false;
+    },
+    stopGeofences: async () => {
+      blockedCalls.push("stop-a-geofences");
+      return true;
+    },
+    reconcileReminders: async () => {
+      blockedCalls.push("schedule-b-reminders");
+      return true;
+    },
+    reconcileGeofences: async () => {
+      blockedCalls.push("start-b-geofences");
+      return true;
+    },
+  });
+  assert.equal(blocked, false);
+  assert.deepEqual(blockedCalls.sort(), [
+    "cancel-a-reminders",
+    "stop-a-geofences",
+  ]);
+  assert.equal((await store.read()).status, "pending");
+
+  const retryCalls = [];
+  const retried = await runNativeOwnerReconciliation({
+    store,
+    ownerUserId: "user-b",
+    isCurrent: () => true,
+    cancelReminders: async () => {
+      retryCalls.push("cancel-old-reminders");
+      return true;
+    },
+    stopGeofences: async () => {
+      retryCalls.push("stop-old-geofences");
+      return true;
+    },
+    reconcileReminders: async () => {
+      retryCalls.push("schedule-b-reminders");
+      return true;
+    },
+    reconcileGeofences: async () => {
+      retryCalls.push("start-b-geofences");
+      return true;
+    },
+  });
+  assert.equal(retried, true);
+  assert.deepEqual(retryCalls.slice(0, 2).sort(), [
+    "cancel-old-reminders",
+    "stop-old-geofences",
+  ]);
+  assert.deepEqual(retryCalls.slice(2), [
+    "schedule-b-reminders",
+    "start-b-geofences",
+  ]);
+  assert.equal((await store.read()).ownerUserId, "user-b");
+});
+
+test("logout suspension closes the auth-to-native transition race", () => {
+  setNativeLifecycleAuthOwner("user-a");
+  assert.equal(isNativeLifecycleOwnerCurrent("user-a"), true);
+  suspendNativeLifecycleOwner("user-a");
+  assert.equal(isNativeLifecycleOwnerCurrent("user-a"), false);
+  resumeNativeLifecycleOwner("user-a");
+  assert.equal(isNativeLifecycleOwnerCurrent("user-a"), true);
+
+  setNativeLifecycleAuthOwner("user-b");
+  assert.equal(isNativeLifecycleOwnerCurrent("user-a"), false);
+  assert.equal(isNativeLifecycleOwnerCurrent("user-b"), true);
+  setNativeLifecycleAuthOwner(null);
+  assert.equal(isNativeLifecycleOwnerCurrent("user-b"), false);
 });
 
 test("lifecycle push permission observation cannot invoke the optional prompt", async () => {
@@ -972,6 +1218,8 @@ test("authentication recovery and native lifecycle are connected without launch 
   assert.match(coordinator, /readPendingArrival/);
   assert.match(coordinator, /onPendingArrivalRecorded/);
   assert.match(coordinator, /runNativeReconciliationWithRetry/);
+  assert.match(coordinator, /clearNativeAccountState/);
+  assert.match(coordinator, /reconcileNativeAccountState/);
   assert.doesNotMatch(coordinator, /NativeRestoreReconciliationFailed/);
   assert.match(coordinator, /arrivalLeaseId/);
   assert.doesNotMatch(coordinator, /clearPendingArrival/);
@@ -987,15 +1235,21 @@ test("authentication recovery and native lifecycle are connected without launch 
   assert.doesNotMatch(reconcileBody, /requestPermissionsAsync/);
   assert.match(notifications, /cancelScheduledNotificationAsync/);
   assert.doesNotMatch(notifications, /cancelAllScheduledNotificationsAsync/);
-  assert.match(auth, /if \(!canCompletePushLogout\(pushDetachment\)\)/);
+  assert.match(auth, /!canCompletePushLogout\(pushDetachment\)/);
+  assert.match(auth, /!canCompleteNativeStateLogout\(nativeCleanup\)/);
+  assert.match(auth, /clearNativeAccountState/);
+  assert.match(auth, /suspendNativeLifecycleOwner/);
+  assert.match(auth, /setNativeLifecycleAuthOwner\(null\)/);
   assert.match(auth, /runPushSafeSignOut/);
   assert.match(push, /preparePushLogout/);
   assert.match(push, /nativeDetached/);
+  assert.doesNotMatch(auth, /Promise\.allSettled/);
   assert.match(
-    auth,
-    /Promise\.allSettled\(\[cancelAllReminders\(\), stopAllGeofences\(\)\]\)/,
+    notifications,
+    /remaining\.some\(isEloviaReminderNotification\)/,
   );
   assert.match(geofence, /runGeofenceReconciliation/);
+  assert.match(geofence, /hasStartedGeofencingAsync/);
   assert.match(geofence, /emitPendingArrivalRecorded/);
   assert.match(geofenceTask, /eloviaGeofence/);
   assert.match(geofenceTask, /ELOVIA_GEOFENCE_OWNER_KEY/);

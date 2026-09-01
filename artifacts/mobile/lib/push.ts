@@ -8,11 +8,15 @@ import {
   type PushCleanupIntent,
 } from "./pushCleanup";
 import {
+  hasVerifiedServerDetachment,
   persistPushOwnershipOrCompensate,
-  parseCachedPushOwnership,
+  parsePersistedPushRegistrationState,
+  planPushServerCleanup,
   planPushOwnershipTransition,
   resolvePushPermission,
   runPushOwnershipMutation,
+  serializeDetachedPushRegistrationState,
+  serializeOwnedPushRegistrationState,
   type PushLogoutDetachmentOutcome,
   type PushOwnership,
 } from "./pushOwnership";
@@ -87,6 +91,24 @@ export const TOKEN_CACHE_KEY = "@elovia_push_token";
 
 export function isPushPresentationBlocked(userId: string): boolean {
   return pushPresentationBlockedUsers.has(userId);
+}
+
+async function readPersistedPushState() {
+  return parsePersistedPushRegistrationState(
+    await AsyncStorage.getItem(TOKEN_CACHE_KEY),
+  );
+}
+
+async function persistVerifiedDetachedState(): Promise<boolean> {
+  try {
+    await AsyncStorage.setItem(
+      TOKEN_CACHE_KEY,
+      serializeDetachedPushRegistrationState(),
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function getProjectId(): string | undefined {
@@ -249,42 +271,59 @@ async function retryPendingCleanup(session: AuthSession): Promise<{
 async function disableCachedOwnershipForCurrentUser(
   expectedUserId?: string,
 ): Promise<void> {
-  const cached = parseCachedPushOwnership(
-    await AsyncStorage.getItem(TOKEN_CACHE_KEY),
-  );
-  if (!cached || (expectedUserId && cached.userId !== expectedUserId)) return;
-  const session = await getAuthSession(cached.userId);
+  const state = await readPersistedPushState();
+  const ownership =
+    state.status === "owned"
+      ? state.ownership
+      : state.status === "legacy-token" && expectedUserId
+        ? { userId: expectedUserId, token: state.token }
+        : null;
+  if (!ownership || (expectedUserId && ownership.userId !== expectedUserId)) {
+    return;
+  }
+  const session = await getAuthSession(ownership.userId);
   if (!session) return;
-  if (await postPushOwnership("unregister", session, cached.token)) {
-    await AsyncStorage.removeItem(TOKEN_CACHE_KEY);
+  if (await postPushOwnership("unregister", session, ownership.token)) {
+    await pushCleanup.remove(ownership);
+    await persistVerifiedDetachedState();
   }
 }
 
 async function preparePushLogout(expectedUserId: string): Promise<boolean> {
   pushPresentationBlockedUsers.add(expectedUserId);
+  let cleanupDurable = false;
   try {
-    const cached = parseCachedPushOwnership(
-      await AsyncStorage.getItem(TOKEN_CACHE_KEY),
-    );
-    if (cached?.userId === expectedUserId) {
-      const journaled = await pushCleanup.record(cached);
-      if (journaled) {
-        const raw = await AsyncStorage.getItem(TOKEN_CACHE_KEY);
-        const currentCache = parseCachedPushOwnership(raw);
-        if (
-          currentCache?.userId === cached.userId &&
-          currentCache.token === cached.token
-        ) {
-          await AsyncStorage.removeItem(TOKEN_CACHE_KEY);
-        }
-      }
+    const state = await readPersistedPushState();
+    const ownership =
+      state.status === "owned" && state.ownership.userId === expectedUserId
+        ? state.ownership
+        : state.status === "legacy-token"
+          ? { userId: expectedUserId, token: state.token }
+          : null;
+    if (ownership) {
+      cleanupDurable = await pushCleanup.record(ownership);
     }
   } catch {
-    // Keep the cache as a durable fallback when the journal cannot be written.
+    cleanupDurable = false;
   }
   // This runs before entering the serialized network queue so a slow in-flight
   // registration cannot postpone local privacy protection during logout.
-  return disableNativePushDelivery();
+  const nativeDetached = await disableNativePushDelivery();
+  if (nativeDetached) {
+    const state = await readPersistedPushState().catch(() => ({
+      status: "unknown" as const,
+    }));
+    // Preserve a known token when its cleanup intent could not be journaled.
+    // Otherwise native revocation is authoritative and can be marked durably.
+    if (
+      state.status === "unknown" ||
+      state.status === "detached" ||
+      cleanupDurable
+    ) {
+      await persistVerifiedDetachedState();
+    }
+  }
+  return nativeDetached;
 }
 
 async function registerPushOwnership(
@@ -328,9 +367,9 @@ async function registerPushOwnership(
     const { data: token } = await N.getExpoPushTokenAsync({ projectId });
     if (!token) return { ok: false, reason: "unsupported" };
 
-    const cached = parseCachedPushOwnership(
-      await AsyncStorage.getItem(TOKEN_CACHE_KEY),
-    );
+    const persistedState = await readPersistedPushState();
+    const cached =
+      persistedState.status === "owned" ? persistedState.ownership : null;
     // A crash can leave both the cache and its write-ahead cleanup intent.
     // Treat that token as unregistered even if cleanup failed: registration is
     // an idempotent upsert and restores the desired current-account state.
@@ -387,7 +426,8 @@ async function registerPushOwnership(
         };
       }
       const ownership: PushOwnership = { userId: session.userId, token };
-      const serializedOwnership = JSON.stringify(ownership);
+      const serializedOwnership =
+        serializeOwnedPushRegistrationState(ownership);
       await pushCleanup.record(ownership);
       const persistence = await persistPushOwnershipOrCompensate({
         session,
@@ -418,7 +458,7 @@ async function registerPushOwnership(
         if (
           (await AsyncStorage.getItem(TOKEN_CACHE_KEY)) === serializedOwnership
         ) {
-          await AsyncStorage.removeItem(TOKEN_CACHE_KEY);
+          if (compensated) await persistVerifiedDetachedState();
         }
         if (compensated) {
           await pushCleanup.remove(ownership);
@@ -433,6 +473,19 @@ async function registerPushOwnership(
       await pushCleanup.removeToken(token);
       if (cached?.userId === session.userId && cached.token !== token) {
         await pushCleanup.removeToken(cached.token);
+      }
+    } else if (
+      mutation.status === "noop" &&
+      persistedState.status === "owned" &&
+      !persistedState.versioned
+    ) {
+      try {
+        await AsyncStorage.setItem(
+          TOKEN_CACHE_KEY,
+          serializeOwnedPushRegistrationState(persistedState.ownership),
+        );
+      } catch {
+        return { ok: false, reason: "network" };
       }
     }
     const remainingCleanup = await pushCleanup.read();
@@ -476,82 +529,64 @@ async function serverPushCleanupForLogout(
   expectedUserId: string,
 ): Promise<ServerPushCleanupOutcome> {
   try {
-    const cached = parseCachedPushOwnership(
-      await AsyncStorage.getItem(TOKEN_CACHE_KEY),
-    );
-    if (cached && cached.userId !== expectedUserId) {
+    const state = await readPersistedPushState();
+    const pending = await pushCleanup.read();
+    const pendingForUser =
+      pending?.filter((intent) => intent.userId === expectedUserId) ?? [];
+    const plan = planPushServerCleanup(state, expectedUserId, pendingForUser);
+
+    if (plan.alreadyDetached) {
+      return {
+        serverDetached: hasVerifiedServerDetachment(state, false),
+        cleanupPending: pending === null || pendingForUser.length > 0,
+      };
+    }
+    if (plan.ownershipConflict) {
       return { serverDetached: false, cleanupPending: true };
     }
 
-    if (cached) {
-      const session = await getAuthSession(expectedUserId);
-      if (!session) return { serverDetached: false, cleanupPending: true };
-      const journaled = await pushCleanup.record(cached);
+    if (plan.candidates.length === 0) {
+      // Missing/corrupt state plus an empty journal is not evidence that a
+      // pre-upgrade backend token never existed.
+      return { serverDetached: false, cleanupPending: true };
+    }
+
+    const session = await getAuthSession(expectedUserId);
+    if (!session) return { serverDetached: false, cleanupPending: true };
+    let cleanupPending = pending === null;
+    const primaryOwnership =
+      state.status === "owned"
+        ? state.ownership
+        : state.status === "legacy-token"
+          ? { userId: expectedUserId, token: state.token }
+          : null;
+    if (primaryOwnership) {
+      cleanupPending =
+        !(await pushCleanup.record(primaryOwnership)) || cleanupPending;
+    }
+    for (const ownership of plan.candidates) {
       let detached = false;
       for (let attempt = 0; attempt < 2 && !detached; attempt += 1) {
         try {
           detached = await postPushOwnership(
             "unregister",
             session,
-            cached.token,
+            ownership.token,
             4_000,
           );
         } catch {
           detached = false;
         }
       }
-      if (!detached) return { serverDetached: false, cleanupPending: true };
-      const journalRemoved = await pushCleanup.remove(cached);
-      try {
-        const current = parseCachedPushOwnership(
-          await AsyncStorage.getItem(TOKEN_CACHE_KEY),
-        );
-        if (
-          current?.userId === cached.userId &&
-          current.token === cached.token
-        ) {
-          await AsyncStorage.removeItem(TOKEN_CACHE_KEY);
-        }
-      } catch {
-        // Server detachment is authoritative even if local cleanup must retry.
+      if (!detached) {
+        return { serverDetached: false, cleanupPending: true };
       }
-      return {
-        serverDetached: true,
-        cleanupPending: !journaled || !journalRemoved,
-      };
+      cleanupPending = !(await pushCleanup.remove(ownership)) || cleanupPending;
     }
-
-    const pending = await pushCleanup.read();
-    if (pending === null) {
-      return { serverDetached: false, cleanupPending: true };
-    }
-    const currentIntents = pending.filter(
-      (intent) => intent.userId === expectedUserId,
-    );
-    if (currentIntents.length === 0) {
-      return { serverDetached: true, cleanupPending: false };
-    }
-
-    const session = await getAuthSession(expectedUserId);
-    if (!session) return { serverDetached: false, cleanupPending: true };
-    const intent = currentIntents[0];
-    if (!intent) return { serverDetached: false, cleanupPending: true };
-    let detached = false;
-    try {
-      detached = await postPushOwnership(
-        "unregister",
-        session,
-        intent.token,
-        4_000,
-      );
-    } catch {
-      detached = false;
-    }
-    if (!detached) return { serverDetached: false, cleanupPending: true };
-    const removed = await pushCleanup.remove(intent);
+    const detachedStatePersisted = await persistVerifiedDetachedState();
     return {
-      serverDetached: currentIntents.length === 1,
-      cleanupPending: currentIntents.length > 1 || !removed,
+      serverDetached: hasVerifiedServerDetachment(state, true),
+      cleanupPending: cleanupPending || !detachedStatePersisted,
     };
   } catch {
     return { serverDetached: false, cleanupPending: true };
