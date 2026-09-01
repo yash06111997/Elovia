@@ -88,6 +88,7 @@ let scopedPool;
 let workspacePool;
 let db;
 let saveUserData;
+let sql;
 let loadUserData;
 let runMigrations;
 let claimPendingAccountDeletionIdentities;
@@ -96,6 +97,8 @@ let finalizeClaimedAccountDeletionIdentity;
 let provisionAuthenticatedUserIfActive;
 let rescheduleClaimedAccountDeletionIdentity;
 let tombstoneAndDeleteAccountData;
+let withAccountLock;
+let withAccountLocks;
 let unregisterTsx;
 let routeServer;
 let routeBaseUrl;
@@ -261,6 +264,7 @@ if (testDatabaseUrl) {
     const databaseModule = await import("../../lib/db/src/index.ts");
     db = databaseModule.db;
     workspacePool = databaseModule.pool;
+    ({ sql } = requireFromDatabasePackage("drizzle-orm"));
     ({ loadUserData, saveUserData } =
       await import("../../artifacts/api-server/src/services/userDataStore.ts"));
     ({
@@ -270,6 +274,8 @@ if (testDatabaseUrl) {
       provisionAuthenticatedUserIfActive,
       rescheduleClaimedAccountDeletionIdentity,
       tombstoneAndDeleteAccountData,
+      withAccountLock,
+      withAccountLocks,
     } = await import("../../artifacts/api-server/src/lib/accountDeletion.ts"));
 
     await scopedPool.query("INSERT INTO users (id) VALUES ('route-user')");
@@ -833,6 +839,68 @@ integrationTest(
       results.find((result) => result.kind === "conflict").currentRevision,
       1,
     );
+  },
+);
+
+integrationTest(
+  "neutral account locks run for missing and deleted accounts and reject empty identities",
+  async () => {
+    const missing = await withAccountLock(
+      "neutral-lock-missing",
+      async (transaction) => {
+        const result = await transaction.execute(sql`
+        SELECT count(*)::integer AS count
+        FROM users WHERE id='neutral-lock-missing'
+      `);
+        return result.rows[0].count;
+      },
+    );
+    assert.equal(missing, 0);
+
+    await scopedPool.query(
+      "INSERT INTO users (id) VALUES ('neutral-lock-deleted')",
+    );
+    await tombstoneAndDeleteAccountData(
+      "neutral-lock-deleted",
+      "neutral-lock-request",
+    );
+    assert.equal(
+      await withAccountLock("neutral-lock-deleted", async () => "callback-ran"),
+      "callback-ran",
+    );
+    await assert.rejects(
+      withAccountLock("", async () => undefined),
+      /account id must not be empty/i,
+    );
+    await assert.rejects(
+      withAccountLocks(["valid-lock", ""], async () => undefined),
+      /account id must not be empty/i,
+    );
+  },
+);
+
+integrationTest(
+  "multi-account locks dedupe exact strings and remain deadlock-free in UTF-8 byte order",
+  async () => {
+    let firstCallbacks = 0;
+    let secondCallbacks = 0;
+    const run = Promise.all([
+      withAccountLocks(["z-lock", "é-lock", "z-lock"], async (transaction) => {
+        firstCallbacks += 1;
+        const locks = await transaction.execute(sql`
+          SELECT count(*)::integer AS count
+          FROM pg_locks
+          WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND granted
+        `);
+        assert.equal(locks.rows[0].count, 2);
+      }),
+      withAccountLocks(["é-lock", "z-lock"], async () => {
+        secondCallbacks += 1;
+      }),
+    ]);
+    await withTimeout(run, "neutral account lock ordering deadlocked", 2_000);
+    assert.equal(firstCallbacks, 1);
+    assert.equal(secondCallbacks, 1);
   },
 );
 

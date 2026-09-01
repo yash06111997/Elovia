@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -184,6 +185,18 @@ const revenuecatMigrationUrl = new URL(
   "../../lib/db/migrations/0004_revenuecat_entitlement_integrity.sql",
   import.meta.url,
 );
+const processorUrl = new URL(
+  "../../artifacts/api-server/src/lib/revenuecatProcessor.ts",
+  import.meta.url,
+);
+const reconcilerUrl = new URL(
+  "../../artifacts/api-server/src/lib/revenuecatReconciler.ts",
+  import.meta.url,
+);
+const accountDeletionUrl = new URL(
+  "../../artifacts/api-server/src/lib/accountDeletion.ts",
+  import.meta.url,
+);
 const requireFromDatabasePackage = createRequire(
   new URL("../../lib/db/package.json", import.meta.url),
 );
@@ -199,6 +212,8 @@ let db;
 let eq;
 let usersTable;
 let revenuecatSchema;
+let processRevenueCatDelivery;
+let applyTrustedSnapshot;
 let runMigrations;
 let unregisterTsx;
 let temporaryDatabaseCounter = 0;
@@ -275,6 +290,115 @@ async function insertEvent(pool, overrides = {}) {
   );
 }
 
+const processorConfig = Object.freeze({
+  webhookSecret: "webhook-secret",
+  apiKey: "api-key",
+  subjectHashKey: "s".repeat(32),
+  proEntitlementId: "elovia_pro",
+  coachingEntitlementId: "elovia_coaching",
+  proProducts: Object.freeze([
+    Object.freeze({ id: "pro_monthly", kind: "auto_renewing" }),
+  ]),
+  coachingProducts: Object.freeze([
+    Object.freeze({ id: "coaching_monthly", kind: "auto_renewing" }),
+  ]),
+  environment: "sandbox",
+  normalizedReads: "strict",
+});
+
+function delivery(overrides = {}) {
+  return {
+    eventId: `processor_${String(Math.random()).slice(2, 14)}`,
+    type: "INITIAL_PURCHASE",
+    eventAt: new Date("2026-09-01T10:00:00.000Z"),
+    disposition: "pending",
+    requiresReconciliation: true,
+    metadata: { environment: "SANDBOX" },
+    kind: "ordinary",
+    userId: "processor-user",
+    originalUserId: null,
+    aliases: [],
+    ...overrides,
+  };
+}
+
+function snapshot(at, options = {}) {
+  const expires = options.expires ?? "2026-10-01T10:00:00.000Z";
+  const subscriptions = Object.create(null);
+  if (options.pro !== false) {
+    subscriptions.pro_monthly = {
+      productId: "pro_monthly",
+      purchaseDate: new Date("2026-08-01T10:00:00.000Z"),
+      originalPurchaseDate: new Date("2026-08-01T10:00:00.000Z"),
+      expiresDate: new Date(expires),
+      gracePeriodExpiresDate: null,
+      billingIssuesDetectedAt: null,
+      unsubscribeDetectedAt: null,
+      refundedAt: null,
+      autoResumeDate: null,
+      isSandbox: true,
+      store: "test_store",
+      ownershipType: "purchased",
+      periodType: "normal",
+    };
+  }
+  if (options.coaching === true) {
+    subscriptions.coaching_monthly = {
+      ...subscriptions.pro_monthly,
+      productId: "coaching_monthly",
+    };
+  }
+  return Object.freeze({
+    sourceSnapshotAt: new Date(at),
+    entitlements: Object.freeze(Object.create(null)),
+    subscriptions: Object.freeze(subscriptions),
+    nonSubscriptions: Object.freeze(Object.create(null)),
+  });
+}
+
+function fakeClient(lookup, calls) {
+  return {
+    async getSubscriber(uid) {
+      calls.push(uid);
+      return typeof lookup === "function" ? lookup(uid) : lookup;
+    },
+  };
+}
+
+function subjectHash(raw) {
+  return createHmac("sha256", processorConfig.subjectHashKey)
+    .update(raw, "utf8")
+    .digest("hex");
+}
+
+test("processor source contract is fenced, privacy-minimized, and provisioning-neutral", async () => {
+  const [processorSource, reconcilerSource, accountDeletionSource] =
+    await Promise.all([
+      readFile(processorUrl, "utf8"),
+      readFile(reconcilerUrl, "utf8"),
+      readFile(accountDeletionUrl, "utf8"),
+    ]);
+  assert.match(
+    processorSource,
+    /export async function processRevenueCatDelivery/,
+  );
+  assert.match(processorSource, /createHmac\("sha256"/);
+  assert.match(processorSource, /processing_lease_id/);
+  assert.match(processorSource, /pruned_identity_count/);
+  assert.match(processorSource, /COLLATE "C"/);
+  assert.doesNotMatch(processorSource, /insert\s+into\s+["']?users/i);
+  assert.doesNotMatch(
+    processorSource,
+    /console\.|JSON\.stringify\(.*delivery|rawPayload/i,
+  );
+  assert.match(reconcilerSource, /export async function applyTrustedSnapshot/);
+  assert.match(reconcilerSource, /"source_operation_id" COLLATE "C"/);
+  assert.match(reconcilerSource, /subscriptions/);
+  assert.match(accountDeletionSource, /export async function withAccountLocks/);
+  assert.match(accountDeletionSource, /Buffer\.compare/);
+  assert.match(accountDeletionSource, /2_026_090_101/);
+});
+
 test("the forward-only RevenueCat migration contract is present", async () => {
   let sql;
   try {
@@ -335,6 +459,10 @@ if (testDatabaseUrl) {
     ({ usersTable } = await import("../../lib/db/src/schema/auth.ts"));
     ({ eq } = requireFromDatabasePackage("drizzle-orm"));
     revenuecatSchema = await import("../../lib/db/src/schema/revenuecat.ts");
+    ({ processRevenueCatDelivery } =
+      await import("../../artifacts/api-server/src/lib/revenuecatProcessor.ts"));
+    ({ applyTrustedSnapshot } =
+      await import("../../artifacts/api-server/src/lib/revenuecatReconciler.ts"));
     scopedPool = new Pool({ connectionString: databaseUrl });
   });
 
@@ -348,6 +476,420 @@ if (testDatabaseUrl) {
     await adminPool?.end();
   });
 }
+
+integrationTest(
+  "twenty concurrent duplicate deliveries have one fetch owner and one terminal projection",
+  async () => {
+    const userId = `duplicate-user-${Date.now()}`;
+    const event = delivery({ eventId: `duplicate_${Date.now()}`, userId });
+    await scopedPool.query(
+      "INSERT INTO users (id, created_at) VALUES ($1, now())",
+      [userId],
+    );
+    const calls = [];
+    const client = fakeClient(
+      { lookup: "existing", snapshot: snapshot("2026-09-01T10:00:02.000Z") },
+      calls,
+    );
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        processRevenueCatDelivery({
+          delivery: event,
+          config: processorConfig,
+          client,
+          poll: async () => new Promise((resolve) => setTimeout(resolve, 5)),
+        }),
+      ),
+    );
+    assert.equal(calls.length, 1);
+    assert.equal(
+      results.every((result) => result.status === 200),
+      true,
+    );
+    const persisted = await scopedPool.query(
+      `SELECT disposition,attempt_count,identity_applied_at IS NOT NULL AS identity_done,
+              entitlement_applied_at IS NOT NULL AS entitlement_done
+       FROM revenuecat_webhook_events WHERE event_id=$1`,
+      [event.eventId],
+    );
+    assert.deepEqual(persisted.rows[0], {
+      disposition: "applied",
+      attempt_count: 1,
+      identity_done: true,
+      entitlement_done: true,
+    });
+  },
+);
+
+integrationTest(
+  "ordinary resolution fails closed for zero or multiple owners without persistence or GET",
+  async () => {
+    const calls = [];
+    const client = fakeClient(
+      { lookup: "existing", snapshot: snapshot("2026-09-01T10:00:03.000Z") },
+      calls,
+    );
+    const unmapped = delivery({
+      eventId: `unmapped_${Date.now()}`,
+      userId: "not-local",
+    });
+    assert.deepEqual(
+      await processRevenueCatDelivery({
+        delivery: unmapped,
+        config: processorConfig,
+        client,
+      }),
+      { status: 200, disposition: "ignored_unmapped" },
+    );
+
+    const first = `conflict-a-${Date.now()}`;
+    const second = `conflict-b-${Date.now()}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1),($2)", [
+      first,
+      second,
+    ]);
+    const conflict = delivery({
+      eventId: `conflict_${Date.now()}`,
+      userId: first,
+      originalUserId: second,
+    });
+    assert.deepEqual(
+      await processRevenueCatDelivery({
+        delivery: conflict,
+        config: processorConfig,
+        client,
+      }),
+      { status: 200, disposition: "ignored_identity_conflict" },
+    );
+    assert.equal(calls.length, 0);
+    const count = await scopedPool.query(
+      "SELECT count(*)::integer AS count FROM revenuecat_webhook_events WHERE event_id=ANY($1::text[])",
+      [[unmapped.eventId, conflict.eventId]],
+    );
+    assert.equal(count.rows[0].count, 0);
+  },
+);
+
+integrationTest(
+  "unknown deliveries retain only an identifier-free terminal envelope",
+  async () => {
+    const event = delivery({
+      eventId: `unknown_${Date.now()}`,
+      type: "FUTURE_EVENT",
+      requiresReconciliation: false,
+      disposition: "ignored_unknown",
+      userId: "raw-subject-must-not-persist",
+      aliases: ["raw-alias-must-not-persist"],
+    });
+    const calls = [];
+    const result = await processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      client: fakeClient(null, calls),
+    });
+    assert.deepEqual(result, { status: 200, disposition: "ignored_unknown" });
+    assert.equal(calls.length, 0);
+    const row = await scopedPool.query(
+      `SELECT disposition,identity_count,metadata,
+              (SELECT count(*)::integer FROM revenuecat_event_subjects WHERE event_id=$1) AS subjects
+       FROM revenuecat_webhook_events WHERE event_id=$1`,
+      [event.eventId],
+    );
+    assert.deepEqual(row.rows[0], {
+      disposition: "ignored_unknown",
+      identity_count: 0,
+      metadata: { schemaVersion: 1, identityCount: 0 },
+      subjects: 0,
+    });
+  },
+);
+
+integrationTest(
+  "created customers and provider failures stay pending, durable, and enqueued",
+  async () => {
+    const userId = `pending-user-${Date.now()}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [userId]);
+    for (const [suffix, lookup] of [
+      [
+        "created",
+        { lookup: "created", snapshot: snapshot("2026-09-01T10:00:04.000Z") },
+      ],
+      ["failure", new Error("provider unavailable")],
+    ]) {
+      const event = delivery({
+        eventId: `pending_${suffix}_${Date.now()}`,
+        userId,
+      });
+      const client = {
+        async getSubscriber() {
+          if (lookup instanceof Error) throw lookup;
+          return lookup;
+        },
+      };
+      const result = await processRevenueCatDelivery({
+        delivery: event,
+        config: processorConfig,
+        client,
+      });
+      assert.equal(result.status, 503);
+      const persisted = await scopedPool.query(
+        `SELECT disposition,processing_lease_id,next_attempt_at > received_at AS backed_off
+         FROM revenuecat_webhook_events WHERE event_id=$1`,
+        [event.eventId],
+      );
+      assert.deepEqual(persisted.rows[0], {
+        disposition: "pending",
+        processing_lease_id: null,
+        backed_off: true,
+      });
+    }
+    const queue = await scopedPool.query(
+      "SELECT reconcile_reason FROM revenuecat_customer_state WHERE user_id=$1",
+      [userId],
+    );
+    assert.equal(queue.rows[0].reconcile_reason, "webhook_failure");
+  },
+);
+
+integrationTest(
+  "trusted projection keeps Pro and Coaching independent and ignores stale byte-ordered tuples",
+  async () => {
+    const userId = `projector-user-${Date.now()}`;
+    await scopedPool.query(
+      "INSERT INTO users (id, created_at) VALUES ($1,'2026-08-01T00:00:00Z')",
+      [userId],
+    );
+    const advanced = await db.transaction((transaction) =>
+      applyTrustedSnapshot(transaction, {
+        userId,
+        snapshot: snapshot("2026-09-01T10:00:05.000Z", { coaching: true }),
+        config: processorConfig,
+        operationId: "worker:sort_A000",
+      }),
+    );
+    assert.equal(advanced.advanced, true);
+    const stale = await db.transaction((transaction) =>
+      applyTrustedSnapshot(transaction, {
+        userId,
+        snapshot: snapshot("2026-09-01T10:00:05.000Z", {
+          pro: false,
+          coaching: false,
+        }),
+        config: processorConfig,
+        operationId: "worker:sort-0000",
+      }),
+    );
+    assert.equal(stale.advanced, false);
+    const rows = await scopedPool.query(
+      "SELECT entitlement_id,active FROM subscription_entitlements WHERE user_id=$1 ORDER BY entitlement_id",
+      [userId],
+    );
+    assert.deepEqual(rows.rows, [
+      { entitlement_id: "elovia_coaching", active: true },
+      { entitlement_id: "elovia_pro", active: true },
+    ]);
+    const compatibility = await scopedPool.query(
+      `SELECT revenuecat_user_id,entitlement_active,entitlement_id,status,tier,
+              trial_started_at,trial_ends_at,last_event
+       FROM subscriptions WHERE user_id=$1`,
+      [userId],
+    );
+    assert.deepEqual(compatibility.rows[0], {
+      revenuecat_user_id: userId,
+      entitlement_active: true,
+      entitlement_id: "elovia_coaching",
+      status: "active",
+      tier: null,
+      trial_started_at: null,
+      trial_ends_at: null,
+      last_event: null,
+    });
+  },
+);
+
+integrationTest(
+  "an authoritative transfer reconciles both sides atomically and moves aliases by event order",
+  async () => {
+    const suffix = Date.now();
+    const source = `transfer-source-${suffix}`;
+    const destination = `transfer-destination-${suffix}`;
+    const sourceAlias = `$RCAnonymousID:transfer-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1),($2)", [
+      source,
+      destination,
+    ]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_aliases
+       (alias_hash,local_user_id,alias_kind,ownership_source,source_event_at,source_event_id)
+       VALUES ($1,$2,'anonymous','webhook','2026-08-01T00:00:00Z','old_alias_123')`,
+      [subjectHash(sourceAlias), source],
+    );
+    const event = delivery({
+      eventId: `transfer_${suffix}`,
+      type: "TRANSFER",
+      kind: "transfer",
+      transferredFrom: [source, sourceAlias],
+      transferredTo: [destination],
+    });
+    delete event.userId;
+    delete event.originalUserId;
+    delete event.aliases;
+    const calls = [];
+    const client = fakeClient(
+      (uid) => ({
+        lookup: "existing",
+        snapshot:
+          uid === source
+            ? snapshot("2026-09-01T10:00:06.000Z", {
+                pro: false,
+                coaching: false,
+              })
+            : snapshot("2026-09-01T10:00:06.000Z"),
+      }),
+      calls,
+    );
+    assert.deepEqual(
+      await processRevenueCatDelivery({
+        delivery: event,
+        config: processorConfig,
+        client,
+      }),
+      { status: 200, disposition: "applied" },
+    );
+    assert.deepEqual(new Set(calls), new Set([source, destination]));
+    const moved = await scopedPool.query(
+      `SELECT local_user_id,source_event_id FROM revenuecat_customer_aliases
+       WHERE alias_hash=$1`,
+      [subjectHash(sourceAlias)],
+    );
+    assert.deepEqual(moved.rows[0], {
+      local_user_id: destination,
+      source_event_id: event.eventId,
+    });
+    const entitlements = await scopedPool.query(
+      `SELECT user_id,active FROM subscription_entitlements
+       WHERE entitlement_id=$1 AND user_id=ANY($2::text[]) ORDER BY user_id`,
+      [processorConfig.proEntitlementId, [source, destination]],
+    );
+    assert.deepEqual(
+      new Map(entitlements.rows.map((row) => [row.user_id, row.active])),
+      new Map([
+        [source, false],
+        [destination, true],
+      ]),
+    );
+  },
+);
+
+integrationTest(
+  "purchase redemption outcomes fetch only an existing redeemer and never transfer source ownership",
+  async () => {
+    const suffix = Date.now();
+    const redeemer = `redeemer-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [redeemer]);
+    for (const [index, outcome] of [
+      "alias",
+      "transfer",
+      "redeemer_owns",
+    ].entries()) {
+      const redeemerAlias = `redeemer-alias-${suffix}-${index}`;
+      const redeemedFrom = `redeemed-from-${suffix}-${index}`;
+      const event = delivery({
+        eventId: `redeemed_${index}_${suffix}`,
+        type: "PURCHASE_REDEEMED",
+        kind: "purchase_redeemed",
+        redeemedFrom: [redeemedFrom],
+        redeemedBy: [redeemer, redeemerAlias],
+        redemptionOutcome: outcome,
+      });
+      delete event.userId;
+      delete event.originalUserId;
+      delete event.aliases;
+      const calls = [];
+      const applied = await processRevenueCatDelivery({
+        delivery: event,
+        config: processorConfig,
+        client: fakeClient(
+          {
+            lookup: "existing",
+            snapshot: snapshot(`2026-09-01T10:00:0${7 + index}.000Z`),
+          },
+          calls,
+        ),
+      });
+      assert.equal(applied.status, 200);
+      assert.deepEqual(calls, [redeemer]);
+      const aliases = await scopedPool.query(
+        `SELECT local_user_id FROM revenuecat_customer_aliases
+         WHERE alias_hash=ANY($1::text[]) ORDER BY alias_hash`,
+        [[subjectHash(redeemerAlias), subjectHash(redeemedFrom)]],
+      );
+      assert.equal(
+        aliases.rows.some((row) => row.local_user_id !== redeemer),
+        false,
+      );
+      assert.equal(aliases.rowCount, outcome === "transfer" ? 0 : 1);
+    }
+  },
+);
+
+integrationTest(
+  "terminal pruned duplicates stay stable while an envelope collision is rejected",
+  async () => {
+    const suffix = Date.now();
+    const userId = `pruned-duplicate-${suffix}`;
+    const event = delivery({ eventId: `pruned_${suffix}`, userId });
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [userId]);
+    const firstCalls = [];
+    assert.equal(
+      (
+        await processRevenueCatDelivery({
+          delivery: event,
+          config: processorConfig,
+          client: fakeClient(
+            {
+              lookup: "existing",
+              snapshot: snapshot("2026-09-01T10:00:10.000Z"),
+            },
+            firstCalls,
+          ),
+        })
+      ).status,
+      200,
+    );
+    await scopedPool.query("DELETE FROM users WHERE id=$1", [userId]);
+    const duplicateCalls = [];
+    assert.deepEqual(
+      await processRevenueCatDelivery({
+        delivery: event,
+        config: processorConfig,
+        client: fakeClient(null, duplicateCalls),
+      }),
+      { status: 200, disposition: "applied" },
+    );
+    assert.equal(duplicateCalls.length, 0);
+    const pruned = await scopedPool.query(
+      `SELECT retained_identity_count,pruned_identity_count
+       FROM revenuecat_webhook_events WHERE event_id=$1`,
+      [event.eventId],
+    );
+    assert.deepEqual(pruned.rows[0], {
+      retained_identity_count: 0,
+      pruned_identity_count: 1,
+    });
+    assert.deepEqual(
+      await processRevenueCatDelivery({
+        delivery: {
+          ...event,
+          eventAt: new Date("2026-09-01T10:00:01.000Z"),
+        },
+        config: processorConfig,
+        client: fakeClient(null, duplicateCalls),
+      }),
+      { status: 400, disposition: "event_collision" },
+    );
+  },
+);
 
 integrationTest(
   "upgrading exact 0000-0003 scrubs hostile legacy data without granting access",

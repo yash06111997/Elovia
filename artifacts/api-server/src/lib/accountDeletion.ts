@@ -8,6 +8,10 @@ import { and, eq, sql } from "drizzle-orm";
 
 const ACCOUNT_DELETION_LOCK_SEED = 2_026_090_101;
 
+export type AccountLockTransaction = Parameters<
+  Parameters<typeof db.transaction>[0]
+>[0];
+
 export interface ProvisionedAuthUser {
   id: string;
   email: string | null;
@@ -17,12 +21,50 @@ export interface ProvisionedAuthUser {
 }
 
 async function lockAccount(
-  transaction: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  transaction: AccountLockTransaction,
   userId: string,
 ): Promise<void> {
   await transaction.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, ${ACCOUNT_DELETION_LOCK_SEED}))`,
   );
+}
+
+function byteCompare(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
+}
+
+function orderedAccountIds(userIds: readonly string[]): string[] {
+  for (const userId of userIds) {
+    if (typeof userId !== "string" || userId.length === 0) {
+      throw new Error("Account id must not be empty.");
+    }
+  }
+  return [...new Set(userIds)].sort(byteCompare);
+}
+
+/**
+ * Run a callback under neutral account locks. Locks exist independently of a
+ * users row, so deletion, provisioning, and provider reconciliation serialize
+ * for existing, missing, and tombstoned identities alike.
+ */
+export async function withAccountLocks<T>(
+  userIds: readonly string[],
+  callback: (transaction: AccountLockTransaction) => Promise<T>,
+): Promise<T> {
+  const ordered = orderedAccountIds(userIds);
+  return db.transaction(async (transaction) => {
+    for (const userId of ordered) {
+      await lockAccount(transaction, userId);
+    }
+    return callback(transaction);
+  });
+}
+
+export async function withAccountLock<T>(
+  userId: string,
+  callback: (transaction: AccountLockTransaction) => Promise<T>,
+): Promise<T> {
+  return withAccountLocks([userId], callback);
 }
 
 /**
@@ -33,8 +75,7 @@ async function lockAccount(
 export async function provisionAuthenticatedUserIfActive(
   user: ProvisionedAuthUser,
 ): Promise<"active" | "deleted"> {
-  return db.transaction(async (transaction) => {
-    await lockAccount(transaction, user.id);
+  return withAccountLock(user.id, async (transaction) => {
     const tombstone = await transaction
       .select({ userId: accountDeletionTombstonesTable.userId })
       .from(accountDeletionTombstonesTable)
@@ -196,8 +237,7 @@ export async function tombstoneAndDeleteAccountData(
   userId: string,
   requestId: string,
 ): Promise<AccountDeletionTombstone> {
-  return db.transaction(async (transaction) => {
-    await lockAccount(transaction, userId);
+  return withAccountLock(userId, async (transaction) => {
     await transaction
       .insert(accountDeletionTombstonesTable)
       .values({ userId, requestId })
@@ -218,8 +258,7 @@ export async function tombstoneAndDeleteAccountData(
 export async function finalizeAccountDeletion(
   userId: string,
 ): Promise<boolean> {
-  return db.transaction(async (transaction) => {
-    await lockAccount(transaction, userId);
+  return withAccountLock(userId, async (transaction) => {
     const finalizedAt = new Date();
     const affected = await transaction
       .update(accountDeletionTombstonesTable)
