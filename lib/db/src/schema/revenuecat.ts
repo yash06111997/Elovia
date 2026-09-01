@@ -48,6 +48,9 @@ export const revenuecatWebhookEventsTable = pgTable(
     disposition: varchar("disposition", { length: 32 }).notNull(),
     metadata: jsonb("metadata").notNull().default({}),
     identityCount: integer("identity_count").notNull(),
+    retainedIdentityCount: integer("retained_identity_count")
+      .notNull()
+      .default(0),
     prunedIdentityCount: integer("pruned_identity_count").notNull().default(0),
     identityRequired: boolean("identity_required").notNull(),
     identityAppliedAt: timestamp("identity_applied_at", { withTimezone: true }),
@@ -87,7 +90,7 @@ export const revenuecatWebhookEventsTable = pgTable(
     ),
     check(
       "revenuecat_event_identity_count_valid",
-      sql`${table.identityCount} BETWEEN 0 AND 256 AND ${table.prunedIdentityCount} BETWEEN 0 AND ${table.identityCount}`,
+      sql`${table.identityCount} BETWEEN 0 AND 256 AND ${table.retainedIdentityCount} BETWEEN 0 AND ${table.identityCount} AND ${table.prunedIdentityCount} BETWEEN 0 AND ${table.identityCount} AND ${table.retainedIdentityCount} + ${table.prunedIdentityCount} <= ${table.identityCount}`,
     ),
     check(
       "revenuecat_event_phase_fields_valid",

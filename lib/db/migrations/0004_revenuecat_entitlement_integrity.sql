@@ -7,6 +7,7 @@ CREATE TABLE "revenuecat_webhook_events" (
   "disposition" varchar(32) NOT NULL,
   "metadata" jsonb NOT NULL DEFAULT '{}'::jsonb,
   "identity_count" integer NOT NULL,
+  "retained_identity_count" integer NOT NULL DEFAULT 0,
   "pruned_identity_count" integer NOT NULL DEFAULT 0,
   "identity_required" boolean NOT NULL,
   "identity_applied_at" timestamptz,
@@ -30,7 +31,9 @@ CREATE TABLE "revenuecat_webhook_events" (
   CONSTRAINT "revenuecat_event_metadata_object" CHECK (jsonb_typeof("metadata") = 'object'),
   CONSTRAINT "revenuecat_event_identity_count_valid" CHECK (
     "identity_count" BETWEEN 0 AND 256 AND
-    "pruned_identity_count" BETWEEN 0 AND "identity_count"
+    "retained_identity_count" BETWEEN 0 AND "identity_count" AND
+    "pruned_identity_count" BETWEEN 0 AND "identity_count" AND
+    "retained_identity_count" + "pruned_identity_count" <= "identity_count"
   ),
   CONSTRAINT "revenuecat_event_phase_fields_valid" CHECK (
     "identity_required" = ("identity_count" > 0) AND
@@ -81,11 +84,85 @@ CREATE TABLE "revenuecat_event_subjects" (
 
 -- role_mask bits: primary=1, original=2, alias=4, transferred_from=8,
 -- transferred_to=16, redeemed_from=32, redeemed_by=64.
+CREATE FUNCTION "revenuecat_guard_event_capacity"() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF pg_trigger_depth() = 1 AND (
+    NEW."retained_identity_count" IS DISTINCT FROM OLD."retained_identity_count" OR
+    NEW."pruned_identity_count" IS DISTINCT FROM OLD."pruned_identity_count"
+  ) THEN
+    RAISE EXCEPTION 'RevenueCat event capacity counters are trigger-managed'
+      USING ERRCODE = '23514',
+            CONSTRAINT = 'revenuecat_event_capacity_counters_managed',
+            TABLE = 'revenuecat_webhook_events';
+  END IF;
+
+  IF NEW."retained_identity_count" + NEW."pruned_identity_count" > NEW."identity_count" THEN
+    RAISE EXCEPTION 'RevenueCat event identity capacity is below retained and pruned subjects'
+      USING ERRCODE = '23514',
+            CONSTRAINT = 'revenuecat_event_subject_capacity_valid',
+            TABLE = 'revenuecat_webhook_events';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER "TR_revenuecat_guard_event_capacity"
+BEFORE UPDATE OF "identity_count", "retained_identity_count", "pruned_identity_count"
+ON "revenuecat_webhook_events"
+FOR EACH ROW EXECUTE FUNCTION "revenuecat_guard_event_capacity"();
+
+CREATE FUNCTION "revenuecat_reserve_subject_capacity"() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF NEW."event_id" IS DISTINCT FROM OLD."event_id" OR
+       NEW."subject_hash" IS DISTINCT FROM OLD."subject_hash" THEN
+      RAISE EXCEPTION 'RevenueCat event subject identity is immutable'
+        USING ERRCODE = '23514',
+              CONSTRAINT = 'revenuecat_subject_identity_immutable',
+              TABLE = 'revenuecat_event_subjects';
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  PERFORM 1
+  FROM "revenuecat_webhook_events"
+  WHERE "event_id" = NEW."event_id"
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN NEW;
+  END IF;
+
+  UPDATE "revenuecat_webhook_events"
+  SET "retained_identity_count" = "retained_identity_count" + 1
+  WHERE "event_id" = NEW."event_id"
+    AND "retained_identity_count" + "pruned_identity_count" < "identity_count";
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'RevenueCat event subject capacity exceeded'
+      USING ERRCODE = '23514',
+            CONSTRAINT = 'revenuecat_subject_capacity_valid',
+            TABLE = 'revenuecat_event_subjects';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER "TR_revenuecat_reserve_subject_capacity"
+BEFORE INSERT OR UPDATE OF "event_id", "subject_hash"
+ON "revenuecat_event_subjects"
+FOR EACH ROW EXECUTE FUNCTION "revenuecat_reserve_subject_capacity"();
+
 CREATE FUNCTION "revenuecat_count_pruned_subject"() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
   UPDATE "revenuecat_webhook_events"
-  SET "pruned_identity_count" = "pruned_identity_count" + 1
+  SET "retained_identity_count" = "retained_identity_count" - 1,
+      "pruned_identity_count" = "pruned_identity_count" + 1
   WHERE "event_id" = OLD."event_id";
   RETURN OLD;
 END;
@@ -95,9 +172,10 @@ CREATE TRIGGER "TR_revenuecat_count_pruned_subject"
 AFTER DELETE ON "revenuecat_event_subjects"
 FOR EACH ROW EXECUTE FUNCTION "revenuecat_count_pruned_subject"();
 
--- Application SQL never updates pruned_identity_count directly. Account deletion's
--- subject cascade is the only surviving-parent path that advances it; parent event
--- deletion cascades after the parent is gone and therefore updates zero rows.
+-- Both counters are trigger-managed. Subject insertion reserves retained capacity
+-- while holding the parent row lock; deletion atomically converts one retained slot
+-- into one pruned slot. Parent event deletion cascades after the parent is gone and
+-- therefore updates zero rows without retaining deleted subject hashes.
 
 CREATE TABLE "revenuecat_customer_aliases" (
   "alias_hash" char(64) PRIMARY KEY,

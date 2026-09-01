@@ -107,6 +107,7 @@ const expectedColumns = {
     "disposition",
     "metadata",
     "identity_count",
+    "retained_identity_count",
     "pruned_identity_count",
     "identity_required",
     "identity_applied_at",
@@ -293,6 +294,13 @@ test("the forward-only RevenueCat migration contract is present", async () => {
     ],
   );
   assert.match(sql, /CREATE TRIGGER "TR_revenuecat_count_pruned_subject"/);
+  assert.match(sql, /"retained_identity_count" integer NOT NULL DEFAULT 0/);
+  assert.match(
+    sql,
+    /"retained_identity_count" \+ "pruned_identity_count" <= "identity_count"/,
+  );
+  assert.match(sql, /CREATE TRIGGER "TR_revenuecat_reserve_subject_capacity"/);
+  assert.match(sql, /CREATE TRIGGER "TR_revenuecat_guard_event_capacity"/);
   assert.doesNotMatch(sql, /INSERT INTO "revenuecat_webhook_events"/);
 });
 
@@ -654,23 +662,240 @@ integrationTest(
     assert.ok(collations.rows.every((row) => row.collation_name === "C"));
 
     const trigger = await scopedPool.query(`
-    SELECT trigger_record.tgname, procedure_record.proname,
-           pg_get_triggerdef(trigger_record.oid) AS definition
-    FROM pg_trigger trigger_record
-    JOIN pg_proc procedure_record ON procedure_record.oid = trigger_record.tgfoid
-    WHERE trigger_record.tgrelid = 'revenuecat_event_subjects'::regclass
-      AND NOT trigger_record.tgisinternal
-  `);
+      SELECT table_record.relname AS table_name, trigger_record.tgname,
+             procedure_record.proname,
+             pg_get_triggerdef(trigger_record.oid) AS definition
+      FROM pg_trigger trigger_record
+      JOIN pg_proc procedure_record ON procedure_record.oid = trigger_record.tgfoid
+      JOIN pg_class table_record ON table_record.oid = trigger_record.tgrelid
+      WHERE trigger_record.tgrelid IN (
+        'revenuecat_event_subjects'::regclass,
+        'revenuecat_webhook_events'::regclass
+      )
+        AND NOT trigger_record.tgisinternal
+      ORDER BY table_record.relname, trigger_record.tgname
+    `);
     assert.deepEqual(
-      trigger.rows.map((row) => [row.tgname, row.proname]),
+      trigger.rows.map((row) => [row.table_name, row.tgname, row.proname]),
       [
         [
+          "revenuecat_event_subjects",
           "TR_revenuecat_count_pruned_subject",
           "revenuecat_count_pruned_subject",
         ],
+        [
+          "revenuecat_event_subjects",
+          "TR_revenuecat_reserve_subject_capacity",
+          "revenuecat_reserve_subject_capacity",
+        ],
+        [
+          "revenuecat_webhook_events",
+          "TR_revenuecat_guard_event_capacity",
+          "revenuecat_guard_event_capacity",
+        ],
       ],
     );
-    assert.match(trigger.rows[0].definition, /AFTER DELETE/);
+    assert.match(
+      trigger.rows.find(
+        (row) => row.tgname === "TR_revenuecat_count_pruned_subject",
+      ).definition,
+      /AFTER DELETE/,
+    );
+    assert.match(
+      trigger.rows.find(
+        (row) => row.tgname === "TR_revenuecat_reserve_subject_capacity",
+      ).definition,
+      /BEFORE INSERT OR UPDATE OF event_id, subject_hash/,
+    );
+    assert.match(
+      trigger.rows.find(
+        (row) => row.tgname === "TR_revenuecat_guard_event_capacity",
+      ).definition,
+      /BEFORE UPDATE OF identity_count, retained_identity_count, pruned_identity_count/,
+    );
+  },
+);
+
+integrationTest(
+  "subject capacity is atomic, monotonic, and cannot block later account deletion",
+  async () => {
+    await scopedPool.query(
+      `INSERT INTO users (id) VALUES
+       ('capacity-user-one'), ('capacity-user-two'), ('capacity-user-three'),
+       ('capacity-zero-user'), ('capacity-race-one'), ('capacity-race-two')`,
+    );
+
+    await insertEvent(scopedPool, {
+      eventId: "event_capacity_2",
+      identityCount: 2,
+      identityRequired: true,
+    });
+    await scopedPool.query(
+      `INSERT INTO revenuecat_event_subjects
+       (event_id,subject_hash,role_mask,local_user_id) VALUES
+       ('event_capacity_2',$1,1,'capacity-user-one'),
+       ('event_capacity_2',$2,2,'capacity-user-two')`,
+      ["5".repeat(64), "6".repeat(64)],
+    );
+    await assert.rejects(
+      scopedPool.query(
+        `INSERT INTO revenuecat_event_subjects
+         (event_id,subject_hash,role_mask,local_user_id)
+         VALUES ('event_capacity_2',$1,4,'capacity-user-three')`,
+        ["7".repeat(64)],
+      ),
+      (error) => {
+        assert.equal(error.code, "23514");
+        assert.equal(error.constraint, "revenuecat_subject_capacity_valid");
+        return true;
+      },
+    );
+    await assert.rejects(
+      scopedPool.query(
+        `UPDATE revenuecat_webhook_events SET identity_count=1
+         WHERE event_id='event_capacity_2'`,
+      ),
+      (error) => {
+        assert.equal(error.code, "23514");
+        assert.equal(
+          error.constraint,
+          "revenuecat_event_subject_capacity_valid",
+        );
+        return true;
+      },
+    );
+
+    await insertEvent(scopedPool, {
+      eventId: "event_capacity_1",
+      identityCount: 1,
+      identityRequired: true,
+    });
+    await scopedPool.query(
+      `INSERT INTO revenuecat_event_subjects
+       (event_id,subject_hash,role_mask,local_user_id)
+       VALUES ('event_capacity_1',$1,1,'capacity-user-three')`,
+      ["b".repeat(64)],
+    );
+    await assert.rejects(
+      scopedPool.query(
+        `INSERT INTO revenuecat_event_subjects
+         (event_id,subject_hash,role_mask,local_user_id)
+         VALUES ('event_capacity_1',$1,2,'capacity-zero-user')`,
+        ["c".repeat(64)],
+      ),
+      (error) => {
+        assert.equal(error.code, "23514");
+        assert.equal(error.constraint, "revenuecat_subject_capacity_valid");
+        return true;
+      },
+    );
+
+    await insertEvent(scopedPool, {
+      eventId: "event_capacity_0",
+      identityCount: 0,
+      identityRequired: false,
+    });
+    await assert.rejects(
+      scopedPool.query(
+        `INSERT INTO revenuecat_event_subjects
+         (event_id,subject_hash,role_mask,local_user_id)
+         VALUES ('event_capacity_0',$1,1,'capacity-zero-user')`,
+        ["8".repeat(64)],
+      ),
+      (error) => {
+        assert.equal(error.code, "23514");
+        assert.equal(error.constraint, "revenuecat_subject_capacity_valid");
+        return true;
+      },
+    );
+
+    await db.delete(usersTable).where(eq(usersTable.id, "capacity-user-one"));
+    const pruned = await scopedPool.query(
+      `SELECT identity_count,retained_identity_count,pruned_identity_count
+       FROM revenuecat_webhook_events WHERE event_id='event_capacity_2'`,
+    );
+    assert.deepEqual(pruned.rows[0], {
+      identity_count: 2,
+      retained_identity_count: 1,
+      pruned_identity_count: 1,
+    });
+    await assert.rejects(
+      scopedPool.query(
+        `INSERT INTO revenuecat_event_subjects
+         (event_id,subject_hash,role_mask,local_user_id)
+         VALUES ('event_capacity_2',$1,4,'capacity-user-three')`,
+        ["7".repeat(64)],
+      ),
+      (error) => {
+        assert.equal(error.code, "23514");
+        assert.equal(error.constraint, "revenuecat_subject_capacity_valid");
+        return true;
+      },
+    );
+    await assert.rejects(
+      scopedPool.query(
+        `UPDATE revenuecat_webhook_events SET pruned_identity_count=0
+         WHERE event_id='event_capacity_2'`,
+      ),
+      (error) => {
+        assert.equal(error.code, "23514");
+        assert.equal(
+          error.constraint,
+          "revenuecat_event_capacity_counters_managed",
+        );
+        return true;
+      },
+    );
+    await db.delete(usersTable).where(eq(usersTable.id, "capacity-user-two"));
+    const fullyPruned = await scopedPool.query(
+      `SELECT retained_identity_count,pruned_identity_count
+       FROM revenuecat_webhook_events WHERE event_id='event_capacity_2'`,
+    );
+    assert.deepEqual(fullyPruned.rows[0], {
+      retained_identity_count: 0,
+      pruned_identity_count: 2,
+    });
+
+    await insertEvent(scopedPool, {
+      eventId: "event_capacity_race",
+      identityCount: 1,
+      identityRequired: true,
+    });
+    const concurrent = await Promise.allSettled([
+      scopedPool.query(
+        `INSERT INTO revenuecat_event_subjects
+         (event_id,subject_hash,role_mask,local_user_id)
+         VALUES ('event_capacity_race',$1,1,'capacity-race-one')`,
+        ["9".repeat(64)],
+      ),
+      scopedPool.query(
+        `INSERT INTO revenuecat_event_subjects
+         (event_id,subject_hash,role_mask,local_user_id)
+         VALUES ('event_capacity_race',$1,2,'capacity-race-two')`,
+        ["a".repeat(64)],
+      ),
+    ]);
+    assert.deepEqual(concurrent.map((result) => result.status).sort(), [
+      "fulfilled",
+      "rejected",
+    ]);
+    const rejected = concurrent.find((result) => result.status === "rejected");
+    assert.equal(rejected.reason.code, "23514");
+    assert.equal(
+      rejected.reason.constraint,
+      "revenuecat_subject_capacity_valid",
+    );
+    const raceState = await scopedPool.query(
+      `SELECT retained_identity_count,pruned_identity_count,
+              (SELECT count(*)::integer FROM revenuecat_event_subjects
+               WHERE event_id='event_capacity_race') AS subject_count
+       FROM revenuecat_webhook_events WHERE event_id='event_capacity_race'`,
+    );
+    assert.deepEqual(raceState.rows[0], {
+      retained_identity_count: 1,
+      pruned_identity_count: 0,
+      subject_count: 1,
+    });
   },
 );
 
@@ -682,7 +907,7 @@ integrationTest(
     );
     await insertEvent(scopedPool, {
       eventId: "event_phase_1",
-      identityCount: 1,
+      identityCount: 2,
       identityRequired: true,
     });
     const hash = "a".repeat(64);
@@ -897,9 +1122,13 @@ integrationTest(
     await db.delete(usersTable).where(eq(usersTable.id, "shared-user-one"));
 
     const eventState = await scopedPool.query(
-      `SELECT pruned_identity_count FROM revenuecat_webhook_events WHERE event_id='event_shared_1'`,
+      `SELECT retained_identity_count,pruned_identity_count
+       FROM revenuecat_webhook_events WHERE event_id='event_shared_1'`,
     );
-    assert.equal(eventState.rows[0].pruned_identity_count, 1);
+    assert.deepEqual(eventState.rows[0], {
+      retained_identity_count: 1,
+      pruned_identity_count: 1,
+    });
     const subjects = await scopedPool.query(
       `SELECT subject_hash,local_user_id FROM revenuecat_event_subjects WHERE event_id='event_shared_1'`,
     );
@@ -930,12 +1159,13 @@ integrationTest(
 
     await db.delete(usersTable).where(eq(usersTable.id, "shared-user-two"));
     const fullyPruned = await scopedPool.query(
-      `SELECT pruned_identity_count,
+      `SELECT retained_identity_count,pruned_identity_count,
               (SELECT count(*)::integer FROM revenuecat_event_subjects
                WHERE event_id='event_shared_1') AS retained_subjects
        FROM revenuecat_webhook_events WHERE event_id='event_shared_1'`,
     );
     assert.deepEqual(fullyPruned.rows[0], {
+      retained_identity_count: 0,
       pruned_identity_count: 2,
       retained_subjects: 0,
     });
