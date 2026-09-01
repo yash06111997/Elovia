@@ -409,6 +409,8 @@ test("processor source contract is fenced, privacy-minimized, and provisioning-n
   assert.match(processorSource, /clock_timestamp\(\)/);
   assert.match(processorSource, /bindExistingAliasToDirectSelf/);
   assert.match(processorSource, /conflictOwners/);
+  assert.match(processorSource, /RevenueCatFinalizationFenceLostError/);
+  assert.match(processorSource, /beforeFinalEventCommit/);
   assert.doesNotMatch(
     processorSource,
     /"processing_lease_until"\s*(?:>|<=)\s*now\(\)/,
@@ -2175,6 +2177,71 @@ integrationTest(
         blocker.release();
       }
     }
+  },
+);
+
+integrationTest(
+  "lease expiry after finalization writes rolls every projection and phase mutation back",
+  async () => {
+    const suffix = Date.now();
+    const owner = `finalization-expiry-${suffix}`;
+    const alias = `finalization-expiry-alias-${suffix}`;
+    const event = delivery({
+      eventId: `finalization_expiry_${suffix}`,
+      userId: owner,
+      aliases: [alias],
+    });
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [owner]);
+    let finalCommitHooks = 0;
+    const outcome = await processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      leaseDurationMs: 500,
+      beforeFinalEventCommit: async () => {
+        finalCommitHooks += 1;
+        await new Promise((resolve) => setTimeout(resolve, 650));
+      },
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-01T10:01:09.500Z"),
+        },
+        [],
+      ),
+    });
+    assert.equal(finalCommitHooks, 1, "writes must begin before lease expiry");
+    assert.deepEqual(outcome, {
+      status: 503,
+      disposition: "processing",
+      retryAfterSeconds: 1,
+    });
+    const persisted = await scopedPool.query(
+      `SELECT e.disposition,e.identity_applied_at,e.entitlement_applied_at,
+              e.processed_at,
+              cs.canonicalization_state,cs.source_kind,cs.last_snapshot_at,
+              (SELECT count(*)::integer FROM revenuecat_customer_aliases
+               WHERE alias_hash=$2) AS alias_count,
+              (SELECT count(*)::integer FROM subscription_entitlements
+               WHERE user_id=$3) AS entitlement_count,
+              (SELECT count(*)::integer FROM subscriptions
+               WHERE user_id=$3) AS compatibility_count
+       FROM revenuecat_webhook_events e
+       JOIN revenuecat_customer_state cs ON cs.user_id=$3
+       WHERE e.event_id=$1`,
+      [event.eventId, subjectHash(alias), owner],
+    );
+    assert.deepEqual(persisted.rows[0], {
+      disposition: "pending",
+      identity_applied_at: null,
+      entitlement_applied_at: null,
+      processed_at: null,
+      canonicalization_state: "pending",
+      source_kind: "none",
+      last_snapshot_at: null,
+      alias_count: 0,
+      entitlement_count: 0,
+      compatibility_count: 0,
+    });
   },
 );
 

@@ -25,6 +25,13 @@ const MAX_POLL_MS = 5_500;
 const POLL_INTERVAL_MS = 100;
 const MAX_IDENTITY_EXPANSIONS = 3;
 
+class RevenueCatFinalizationFenceLostError extends Error {
+  constructor() {
+    super("RevenueCat finalization fence was lost.");
+    this.name = "RevenueCatFinalizationFenceLostError";
+  }
+}
+
 type CountMetric = Readonly<{
   type:
     | "identity_set_changed"
@@ -68,6 +75,7 @@ export type RevenueCatProcessorInput = Readonly<{
   beforeClaimLocks?: () => Promise<void>;
   afterEventEnvelopeParentRead?: () => Promise<void>;
   leaseDurationMs?: number;
+  beforeFinalEventCommit?: () => Promise<void>;
 }>;
 
 export type RevenueCatParseProcessorInput = Readonly<{
@@ -994,7 +1002,7 @@ function transferSnapshotsAuthoritative(
   return true;
 }
 
-async function finalizeClaim(
+async function finalizeClaimTransaction(
   input: RevenueCatProcessorInput,
   claim: Claim,
   lookups: ReadonlyMap<
@@ -1028,7 +1036,7 @@ async function finalizeClaim(
           stored.event.processing_lease_id !== claim.leaseId ||
           !stored.event.lease_current
         ) {
-          return result(503, "processing", 1);
+          throw new RevenueCatFinalizationFenceLostError();
         }
       }
       const surviving = new Set(
@@ -1071,12 +1079,16 @@ async function finalizeClaim(
           stored.event.identity_applied_at === null &&
           stored.event.entitlement_applied_at === null
         ) {
-          await transaction.execute(sql`
+          const deleted = await transaction.execute<{ event_id: string }>(sql`
           DELETE FROM "revenuecat_webhook_events"
           WHERE "event_id" = ${input.delivery.eventId}
             AND "processing_lease_id" = ${claim.leaseId}
             AND "processing_lease_until" > clock_timestamp()
+          RETURNING "event_id"
         `);
+          if (deleted.rows.length !== 1) {
+            throw new RevenueCatFinalizationFenceLostError();
+          }
           input.metric?.({ type: "identity_conflict", count: 1 });
           return result(200, "ignored_identity_conflict");
         }
@@ -1086,12 +1098,16 @@ async function finalizeClaim(
         };
       }
       if (finalOwners.size === 0) {
-        await transaction.execute(sql`
+        const deleted = await transaction.execute<{ event_id: string }>(sql`
         DELETE FROM "revenuecat_webhook_events"
         WHERE "event_id" = ${input.delivery.eventId}
           AND "processing_lease_id" = ${claim.leaseId}
           AND "processing_lease_until" > clock_timestamp()
+        RETURNING "event_id"
       `);
+        if (deleted.rows.length !== 1) {
+          throw new RevenueCatFinalizationFenceLostError();
+        }
         return result(200, "ignored_deleted");
       }
       const outside = [...finalOwners].filter(
@@ -1142,10 +1158,17 @@ async function finalizeClaim(
             snapshot: ownerSnapshot,
             config: input.config,
             operationId: `webhook:${input.delivery.eventId}`,
-            fence: { eventId: input.delivery.eventId, leaseId: claim.leaseId },
+            fence: {
+              eventId: input.delivery.eventId,
+              leaseId: claim.leaseId,
+            },
           });
-          if (projected.deleted) return result(200, "ignored_deleted");
-          if (projected.fencedOut) return result(503, "processing", 1);
+          if (projected.deleted) {
+            throw new RevenueCatFinalizationFenceLostError();
+          }
+          if (projected.fencedOut) {
+            throw new RevenueCatFinalizationFenceLostError();
+          }
           advanced = projected.advanced || advanced;
         }
       }
@@ -1281,6 +1304,8 @@ async function finalizeClaim(
       `);
       }
 
+      await input.beforeFinalEventCommit?.();
+
       const disposition = advanced ? "applied" : "stale";
       const completed = await transaction.execute<{ event_id: string }>(sql`
       UPDATE "revenuecat_webhook_events"
@@ -1302,11 +1327,30 @@ async function finalizeClaim(
         AND "processing_lease_until" > clock_timestamp()
       RETURNING "event_id"
     `);
-      return completed.rows.length === 1
-        ? result(200, disposition)
-        : result(503, "processing", 1);
+      if (completed.rows.length !== 1) {
+        throw new RevenueCatFinalizationFenceLostError();
+      }
+      return result(200, disposition);
     },
   );
+}
+
+async function finalizeClaim(
+  input: RevenueCatProcessorInput,
+  claim: Claim,
+  lookups: ReadonlyMap<
+    string,
+    { lookup: "existing" | "created"; snapshot: CanonicalRevenueCatSnapshot }
+  >,
+): Promise<FinalizeResult> {
+  try {
+    return await finalizeClaimTransaction(input, claim, lookups);
+  } catch (error) {
+    if (error instanceof RevenueCatFinalizationFenceLostError) {
+      return result(503, "processing", 1);
+    }
+    throw error;
+  }
 }
 
 async function processOwnedClaim(
