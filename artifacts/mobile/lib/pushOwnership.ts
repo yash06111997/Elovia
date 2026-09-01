@@ -9,6 +9,29 @@ export type PushOwnershipTransition =
   | { action: "replace-current-token"; unregisterToken: string }
   | { action: "transfer-owner" };
 
+export type PushOwnershipMutationOutcome =
+  | { status: "registered" | "noop" }
+  | { status: "network" }
+  | { status: "stale"; compensated: boolean };
+
+export interface PushOwnershipMutationOperation<Session> {
+  session: Session;
+  token: string;
+  transition: PushOwnershipTransition;
+  isSessionCurrent(session: Session): Promise<boolean>;
+  register(session: Session, token: string): Promise<boolean>;
+  unregister(session: Session, token: string): Promise<boolean>;
+}
+
+export async function resolvePushPermission(
+  alreadyGranted: boolean,
+  requestPermission: boolean,
+  request: () => Promise<boolean>,
+): Promise<boolean> {
+  if (alreadyGranted) return true;
+  return requestPermission ? request() : false;
+}
+
 function isNonEmptyBoundedString(
   value: unknown,
   maximumLength: number,
@@ -72,4 +95,50 @@ export function planPushOwnershipTransition(
     action: "replace-current-token",
     unregisterToken: cached.token,
   };
+}
+
+/**
+ * Guard a push ownership mutation with the exact credential that began it.
+ *
+ * If registration finishes after an account transition, compensation uses
+ * that captured credential. The server's user+token predicate means it can
+ * remove only the stale owner's row and can never unregister a new owner.
+ */
+export async function runPushOwnershipMutation<Session>(
+  operation: PushOwnershipMutationOperation<Session>,
+): Promise<PushOwnershipMutationOutcome> {
+  const { session, token, transition } = operation;
+  if (!(await operation.isSessionCurrent(session))) {
+    return { status: "stale", compensated: true };
+  }
+  if (transition.action === "noop") return { status: "noop" };
+
+  if (transition.action === "replace-current-token") {
+    const unregistered = await operation.unregister(
+      session,
+      transition.unregisterToken,
+    );
+    if (!unregistered) return { status: "network" };
+    if (!(await operation.isSessionCurrent(session))) {
+      return { status: "stale", compensated: true };
+    }
+  }
+
+  if (!(await operation.isSessionCurrent(session))) {
+    return { status: "stale", compensated: true };
+  }
+  if (!(await operation.register(session, token))) {
+    return { status: "network" };
+  }
+  if (await operation.isSessionCurrent(session)) {
+    return { status: "registered" };
+  }
+
+  let compensated = false;
+  try {
+    compensated = await operation.unregister(session, token);
+  } catch {
+    compensated = false;
+  }
+  return { status: "stale", compensated };
 }

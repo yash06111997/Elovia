@@ -4,6 +4,7 @@ import {
   createGenerationGuardedCurrentUserResolver,
   readStableSynchronizedValue,
   readStableSynchronizedValueWithOwner,
+  STALE_CURRENT_USER,
   SyncStorageCoordinator,
   type CurrentUserId,
 } from "./cloudSyncStorage";
@@ -51,6 +52,8 @@ export interface AccountStorageOwnerToken {
 
 export interface AccountStorageSession {
   readonly ownerToken: AccountStorageOwnerToken;
+  /** Revalidates both Firebase identity and this exact auth generation. */
+  isCurrent(): Promise<boolean>;
   getItem(key: SyncKey): Promise<string | null>;
   setItem(key: SyncKey, value: string): Promise<void>;
   removeItem(key: SyncKey): Promise<void>;
@@ -180,6 +183,10 @@ export function captureAccountStorageSession(): AccountStorageSession {
 
   return {
     ownerToken,
+    async isCurrent() {
+      const current = await currentOwner();
+      return current !== STALE_CURRENT_USER && current === ownerToken.uid;
+    },
     async getItem(key) {
       const values = await read([key]);
       return values[0]?.[1] ?? null;

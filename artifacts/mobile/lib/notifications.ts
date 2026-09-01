@@ -1,5 +1,6 @@
 import { Platform } from "react-native";
 import { captureAccountStorageSession } from "./accountSyncStorage";
+import { runReminderReconciliation } from "./reminderReconciliation";
 import {
   buildReminderSchedule,
   DEFAULT_REMINDERS,
@@ -172,26 +173,6 @@ async function cancelOwnedReminders(N: NotificationsModule): Promise<void> {
   }
 }
 
-async function scheduleOwnedReminders(
-  N: NotificationsModule,
-  prefs: ReminderPreferences,
-): Promise<void> {
-  await ensureAndroidChannel(N);
-  for (const item of buildReminderSchedule(prefs)) {
-    await N.scheduleNotificationAsync({
-      content: {
-        title: item.title,
-        body: item.body,
-        data: {
-          eloviaOwner: ELOVIA_REMINDER_OWNER,
-          kind: item.kind,
-        },
-      },
-      trigger: toNativeTrigger(N, item.trigger),
-    });
-  }
-}
-
 /**
  * Rebuild the full notification schedule from preferences.
  *
@@ -205,35 +186,86 @@ export async function rescheduleAllReminders(
   if (!N || Platform.OS === "web") return false;
 
   try {
+    const accountStorage = captureAccountStorageSession();
     const normalized = normalizeReminderPreferences(prefs);
-    await saveReminderPreferences(normalized);
+    await accountStorage.setItem(PREFS_KEY, JSON.stringify(normalized));
     if (normalized.enabled && !(await requestNotificationPermission())) {
       return false;
     }
-    return reconcileReminderSchedule(normalized);
+    if (!(await accountStorage.isCurrent())) return false;
+    return reconcileReminderSchedule({
+      expectedUserId: accountStorage.ownerToken.uid,
+      preferences: normalized,
+    });
   } catch {
     return false;
   }
 }
 
+export interface ReconcileReminderScheduleOptions {
+  /** The authenticated owner that initiated this lifecycle run. */
+  expectedUserId?: string | null;
+  preferences?: ReminderPreferences;
+}
+
 /** Rebuild enabled reminders without ever prompting for optional permission. */
 export async function reconcileReminderSchedule(
-  providedPreferences?: ReminderPreferences,
+  options: ReconcileReminderScheduleOptions = {},
 ): Promise<boolean> {
   const N = loadNotifications();
   if (!N || Platform.OS === "web") return false;
 
   return serializeReminderOperation(async () => {
     try {
+      const accountStorage = captureAccountStorageSession();
+      if (
+        options.expectedUserId !== undefined &&
+        accountStorage.ownerToken.uid !== options.expectedUserId
+      ) {
+        return false;
+      }
+      const stored = options.preferences
+        ? null
+        : await accountStorage.getItem(PREFS_KEY);
       const prefs = normalizeReminderPreferences(
-        providedPreferences ?? (await loadReminderPreferences()),
+        options.preferences ??
+          (stored ? JSON.parse(stored) : DEFAULT_REMINDERS),
       );
-      await cancelOwnedReminders(N);
-      if (!prefs.enabled) return true;
-      const permission = await N.getPermissionsAsync();
-      if (!permission.granted) return false;
-      await scheduleOwnedReminders(N, prefs);
-      return true;
+      const schedule = prefs.enabled ? buildReminderSchedule(prefs) : [];
+      if (schedule.length > 0) {
+        await ensureAndroidChannel(N);
+      }
+
+      const outcome = await runReminderReconciliation({
+        isCurrent: () => accountStorage.isCurrent(),
+        async listOwnedIdentifiers() {
+          const scheduled = await N.getAllScheduledNotificationsAsync();
+          return scheduled
+            .filter(isEloviaReminderNotification)
+            .map((notification) => notification.identifier);
+        },
+        cancel: (identifier) => N.cancelScheduledNotificationAsync(identifier),
+        async permissionGranted() {
+          return (await N.getPermissionsAsync()).granted;
+        },
+        scheduleCount: schedule.length,
+        async schedule(index) {
+          const item = schedule[index];
+          if (!item) throw new Error("Reminder schedule changed unexpectedly.");
+          return N.scheduleNotificationAsync({
+            content: {
+              title: item.title,
+              body: item.body,
+              data: {
+                eloviaOwner: ELOVIA_REMINDER_OWNER,
+                kind: item.kind,
+              },
+            },
+            trigger: toNativeTrigger(N, item.trigger),
+          });
+        },
+      });
+      return outcome !== "stale";
     } catch {
       return false;
     }
@@ -270,13 +302,21 @@ export async function countScheduledReminders(): Promise<number> {
  */
 export async function suppressTodayStreakReminder(): Promise<void> {
   try {
-    const prefs = await loadReminderPreferences();
+    const accountStorage = captureAccountStorageSession();
+    const stored = await accountStorage.getItem(PREFS_KEY);
+    const prefs = normalizeReminderPreferences(
+      stored ? JSON.parse(stored) : DEFAULT_REMINDERS,
+    );
     const suppressed = normalizeReminderPreferences({
       ...prefs,
       streakSuppressedOn: localDateKey(new Date()),
     });
-    await saveReminderPreferences(suppressed);
-    await reconcileReminderSchedule(suppressed);
+    await accountStorage.setItem(PREFS_KEY, JSON.stringify(suppressed));
+    if (!(await accountStorage.isCurrent())) return;
+    await reconcileReminderSchedule({
+      expectedUserId: accountStorage.ownerToken.uid,
+      preferences: suppressed,
+    });
   } catch {
     // Best effort.
   }

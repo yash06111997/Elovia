@@ -1,9 +1,12 @@
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import type { User } from "firebase/auth";
 import { getFirebaseAuth } from "./firebase";
 import {
   parseCachedPushOwnership,
   planPushOwnershipTransition,
+  resolvePushPermission,
+  runPushOwnershipMutation,
   type PushOwnership,
 } from "./pushOwnership";
 
@@ -43,6 +46,7 @@ function getBaseUrl(): string {
 interface AuthSession {
   userId: string;
   authToken: string;
+  authUser: User;
 }
 
 async function getAuthSession(
@@ -55,16 +59,16 @@ async function getAuthSession(
       return null;
     }
     const authToken = await current.getIdToken();
-    if (!authToken || auth.currentUser?.uid !== current.uid) return null;
-    return { userId: current.uid, authToken };
+    if (!authToken || auth.currentUser !== current) return null;
+    return { userId: current.uid, authToken, authUser: current };
   } catch {
     return null;
   }
 }
 
-async function sessionStillOwns(userId: string): Promise<boolean> {
+async function sessionStillCurrent(session: AuthSession): Promise<boolean> {
   try {
-    return (await getFirebaseAuth())?.currentUser?.uid === userId;
+    return (await getFirebaseAuth())?.currentUser === session.authUser;
   } catch {
     return false;
   }
@@ -189,9 +193,11 @@ async function registerPushOwnership(
 
   try {
     const existing = await N.getPermissionsAsync();
-    const granted =
-      existing.granted ||
-      (requestPermission && (await N.requestPermissionsAsync()).granted);
+    const granted = await resolvePushPermission(
+      existing.granted,
+      requestPermission,
+      async () => (await N.requestPermissionsAsync()).granted,
+    );
     if (!granted) {
       await disableCachedOwnershipForCurrentUser(expectedUserId);
       return { ok: false, reason: "denied" };
@@ -214,28 +220,58 @@ async function registerPushOwnership(
       session.userId,
       token,
     );
-    if (transition.action === "noop") return { ok: true, token };
-
-    // Only the same account's rotated token can be unregistered here. An
-    // ownership change is transferred by the register upsert and never tries
-    // to authorize a previous user's unregister with a new session.
-    if (transition.action === "replace-current-token") {
-      await postPushOwnership(
-        "unregister",
-        session,
-        transition.unregisterToken,
-      );
-    }
-
-    if (!(await postPushOwnership("register", session, token))) {
+    const mutation = await runPushOwnershipMutation({
+      session,
+      token,
+      transition,
+      isSessionCurrent: sessionStillCurrent,
+      register: (capturedSession, value) =>
+        postPushOwnership("register", capturedSession, value),
+      unregister: (capturedSession, value) =>
+        postPushOwnership("unregister", capturedSession, value),
+    });
+    if (mutation.status === "network") {
       return { ok: false, reason: "network" };
     }
-    if (!(await sessionStillOwns(session.userId))) {
-      return { ok: false, reason: "unauthenticated" };
+    if (mutation.status === "stale") {
+      return {
+        ok: false,
+        reason: mutation.compensated ? "unauthenticated" : "network",
+      };
     }
 
-    const ownership: PushOwnership = { userId: session.userId, token };
-    await AsyncStorage.setItem(TOKEN_CACHE_KEY, JSON.stringify(ownership));
+    if (mutation.status === "registered") {
+      if (!(await sessionStillCurrent(session))) {
+        const compensated = await postPushOwnership(
+          "unregister",
+          session,
+          token,
+        );
+        return {
+          ok: false,
+          reason: compensated ? "unauthenticated" : "network",
+        };
+      }
+      const ownership: PushOwnership = { userId: session.userId, token };
+      const serializedOwnership = JSON.stringify(ownership);
+      await AsyncStorage.setItem(TOKEN_CACHE_KEY, serializedOwnership);
+      if (!(await sessionStillCurrent(session))) {
+        const compensated = await postPushOwnership(
+          "unregister",
+          session,
+          token,
+        );
+        if (
+          (await AsyncStorage.getItem(TOKEN_CACHE_KEY)) === serializedOwnership
+        ) {
+          await AsyncStorage.removeItem(TOKEN_CACHE_KEY);
+        }
+        return {
+          ok: false,
+          reason: compensated ? "unauthenticated" : "network",
+        };
+      }
+    }
     return { ok: true, token };
   } catch {
     return { ok: false, reason: "network" };

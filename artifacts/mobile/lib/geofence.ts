@@ -5,7 +5,11 @@ import {
   readStableBackgroundAccountValue,
   readStableBackgroundAccountValueWithOwner,
 } from "./accountSyncStorage";
-import { PendingArrivalStore, type PendingArrival } from "./pendingArrival";
+import {
+  PendingArrivalStore,
+  type PendingArrival,
+  type PendingArrivalReadResult,
+} from "./pendingArrival";
 
 export type { PendingArrival } from "./pendingArrival";
 
@@ -124,20 +128,22 @@ export async function savePlaces(places: SavedPlace[]): Promise<void> {
  */
 export async function readPendingArrival(
   userId: string,
-): Promise<PendingArrival | null> {
+): Promise<PendingArrivalReadResult> {
   return pendingArrivals.readForUser(userId);
 }
 
-export async function clearPendingArrival(
-  arrival: PendingArrival,
-): Promise<boolean> {
-  return pendingArrivals.complete(arrival);
+export async function acknowledgePendingArrival(
+  userId: string,
+  leaseId: string,
+): Promise<PendingArrival | null> {
+  return pendingArrivals.acknowledge(userId, leaseId);
 }
 
 export async function releasePendingArrival(
-  arrival: PendingArrival,
-): Promise<void> {
-  await pendingArrivals.release(arrival);
+  userId: string,
+  leaseId: string,
+): Promise<boolean> {
+  return pendingArrivals.release(userId, leaseId);
 }
 
 export async function recordPendingArrival(
