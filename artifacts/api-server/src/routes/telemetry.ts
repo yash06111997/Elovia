@@ -11,6 +11,7 @@ const ALLOWED_EVENTS = new Set([
   "client_error",
   "cloud_sync_failed",
   "account_exported",
+  "account_deletion_finalizing",
   "account_deleted",
 ]);
 

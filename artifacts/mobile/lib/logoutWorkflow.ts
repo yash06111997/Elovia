@@ -17,6 +17,8 @@ export type LogoutOutcome =
       operation: "account_deletion";
       reason:
         | "remote_delete_ambiguous"
+        | "pre_request_recovery_pending"
+        | "server_identity_pending"
         | "firebase_sign_out_failed"
         | "local_clear_failed";
       localSignOutComplete: boolean;
@@ -36,8 +38,14 @@ export interface LogoutPreparation {
 }
 
 export type BeforeSignOutOutcome =
-  | { status: "confirmed" }
-  | { status: "finalizing"; message: string };
+  | { status: "confirmed"; identityFinalizing?: false }
+  | {
+      status: "confirmed";
+      identityFinalizing: true;
+      message: string;
+    }
+  | { status: "pending_pre_request"; message: string }
+  | { status: "pending_remote"; message: string };
 
 function cleanupBlockReason(preparation: LogoutPreparation): LogoutBlockReason {
   if (!preparation.pushDetached && !preparation.nativeDetached) {
@@ -113,7 +121,25 @@ export async function runLogoutWorkflow(options: {
   let deletionFinalizingMessage: string | null = null;
   try {
     const beforeSignOut = await options.beforeSignOut?.();
-    if (beforeSignOut?.status === "finalizing") {
+    if (beforeSignOut?.status === "pending_pre_request") {
+      return {
+        status: "finalizing",
+        operation: "account_deletion",
+        reason: "pre_request_recovery_pending",
+        localSignOutComplete: false,
+        message: beforeSignOut.message,
+      };
+    }
+    if (beforeSignOut?.status === "pending_remote") {
+      return {
+        status: "finalizing",
+        operation: "account_deletion",
+        reason: "remote_delete_ambiguous",
+        localSignOutComplete: false,
+        message: beforeSignOut.message,
+      };
+    }
+    if (beforeSignOut?.identityFinalizing) {
       deletionFinalizingMessage = beforeSignOut.message;
     }
   } catch (error) {
@@ -154,7 +180,7 @@ export async function runLogoutWorkflow(options: {
     return {
       status: "finalizing",
       operation: "account_deletion",
-      reason: "remote_delete_ambiguous",
+      reason: "server_identity_pending",
       localSignOutComplete: true,
       message: deletionFinalizingMessage,
     };

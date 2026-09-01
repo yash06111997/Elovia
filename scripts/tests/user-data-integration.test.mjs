@@ -85,8 +85,11 @@ let db;
 let saveUserData;
 let loadUserData;
 let runMigrations;
+let claimPendingAccountDeletionIdentities;
 let finalizeAccountDeletion;
+let finalizeClaimedAccountDeletionIdentity;
 let provisionAuthenticatedUserIfActive;
+let rescheduleClaimedAccountDeletionIdentity;
 let tombstoneAndDeleteAccountData;
 let unregisterTsx;
 let routeServer;
@@ -256,8 +259,11 @@ if (testDatabaseUrl) {
     ({ loadUserData, saveUserData } =
       await import("../../artifacts/api-server/src/services/userDataStore.ts"));
     ({
+      claimPendingAccountDeletionIdentities,
       finalizeAccountDeletion,
+      finalizeClaimedAccountDeletionIdentity,
       provisionAuthenticatedUserIfActive,
+      rescheduleClaimedAccountDeletionIdentity,
       tombstoneAndDeleteAccountData,
     } = await import("../../artifacts/api-server/src/lib/accountDeletion.ts"));
 
@@ -308,6 +314,7 @@ integrationTest(
         "0000_baseline.sql",
         "0001_user_data_sync_integrity.sql",
         "0002_account_deletion_tombstones.sql",
+        "0003_account_deletion_identity_outbox.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -330,6 +337,10 @@ integrationTest(
           },
           {
             name: "0002_account_deletion_tombstones.sql",
+            application_count: 1,
+          },
+          {
+            name: "0003_account_deletion_identity_outbox.sql",
             application_count: 1,
           },
         ]);
@@ -360,6 +371,7 @@ integrationTest(
         "0000_baseline.sql",
         "0001_user_data_sync_integrity.sql",
         "0002_account_deletion_tombstones.sql",
+        "0003_account_deletion_identity_outbox.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -380,6 +392,10 @@ integrationTest(
             name: "0002_account_deletion_tombstones.sql",
             application_count: 1,
           },
+          {
+            name: "0003_account_deletion_identity_outbox.sql",
+            application_count: 1,
+          },
         ]);
       } finally {
         await pool.end();
@@ -398,6 +414,7 @@ integrationTest(
       "0000_baseline.sql",
       "0001_user_data_sync_integrity.sql",
       "0002_account_deletion_tombstones.sql",
+      "0003_account_deletion_identity_outbox.sql",
     ];
 
     try {
@@ -747,6 +764,7 @@ integrationTest(
         "0000_baseline.sql",
         "0001_user_data_sync_integrity.sql",
         "0002_account_deletion_tombstones.sql",
+        "0003_account_deletion_identity_outbox.sql",
       ],
     );
 
@@ -863,6 +881,82 @@ integrationTest(
     assert.deepEqual(finalized.rows[0], {
       status: "finalized",
       finalized: true,
+    });
+  },
+);
+
+integrationTest(
+  "account identity outbox leases once, rejects stale ownership, and finalizes durably",
+  async () => {
+    const userId = "deletion-outbox-user";
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [userId]);
+    await tombstoneAndDeleteAccountData(userId, "deletion-outbox-request");
+
+    const firstClaims = await claimPendingAccountDeletionIdentities({
+      leaseId: "deletion-lease-first",
+      limit: 5,
+      leaseSeconds: 120,
+    });
+    assert.equal(firstClaims.length, 1);
+    assert.equal(firstClaims[0].userId, userId);
+    assert.equal(firstClaims[0].attemptCount, 1);
+    assert.deepEqual(
+      await claimPendingAccountDeletionIdentities({
+        leaseId: "deletion-lease-overlap",
+        limit: 5,
+        leaseSeconds: 120,
+      }),
+      [],
+    );
+    assert.equal(
+      await rescheduleClaimedAccountDeletionIdentity(
+        { ...firstClaims[0], leaseId: "stale-lease" },
+        new Date(0),
+      ),
+      false,
+    );
+    assert.equal(
+      await rescheduleClaimedAccountDeletionIdentity(
+        firstClaims[0],
+        new Date(0),
+      ),
+      true,
+    );
+
+    const retryClaims = await claimPendingAccountDeletionIdentities({
+      leaseId: "deletion-lease-retry",
+      limit: 5,
+      leaseSeconds: 120,
+    });
+    assert.equal(retryClaims.length, 1);
+    assert.equal(retryClaims[0].attemptCount, 2);
+    assert.equal(
+      await finalizeClaimedAccountDeletionIdentity(firstClaims[0]),
+      false,
+      "an expired worker cannot finalize a newer lease",
+    );
+    assert.equal(
+      await finalizeClaimedAccountDeletionIdentity(retryClaims[0]),
+      true,
+    );
+    assert.deepEqual(
+      await claimPendingAccountDeletionIdentities({
+        leaseId: "deletion-lease-after-finalize",
+        limit: 5,
+        leaseSeconds: 120,
+      }),
+      [],
+    );
+
+    const persisted = await scopedPool.query(
+      `SELECT status, identity_attempt_count, identity_lease_id
+       FROM account_deletions WHERE user_id = $1`,
+      [userId],
+    );
+    assert.deepEqual(persisted.rows[0], {
+      status: "finalized",
+      identity_attempt_count: 2,
+      identity_lease_id: null,
     });
   },
 );

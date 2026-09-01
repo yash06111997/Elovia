@@ -22,7 +22,10 @@ declare global {
 }
 
 function isAccountDeletionRequest(req: Request): boolean {
-  return req.method === "DELETE" && req.path === "/api/account";
+  return (
+    (req.method === "DELETE" && req.path === "/api/account") ||
+    (req.method === "GET" && req.path === "/api/account/deletion-status")
+  );
 }
 
 function errorType(error: unknown): string {

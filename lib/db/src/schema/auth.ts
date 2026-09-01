@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, jsonb, pgTable, timestamp, varchar } from "drizzle-orm/pg-core";
+import { check, index, integer, jsonb, pgTable, timestamp, varchar } from "drizzle-orm/pg-core";
 
 // (IMPORTANT) This table is mandatory for Replit Auth, don't drop it.
 export const sessionsTable = pgTable(
@@ -46,9 +46,29 @@ export const accountDeletionTombstonesTable = pgTable(
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
+    identityAttemptCount: integer("identity_attempt_count")
+      .notNull()
+      .default(0),
+    identityNextAttemptAt: timestamp("identity_next_attempt_at", {
+      withTimezone: true,
+    })
+      .notNull()
+      .defaultNow(),
+    identityLeaseId: varchar("identity_lease_id", { length: 128 }),
+    identityLeaseUntil: timestamp("identity_lease_until", {
+      withTimezone: true,
+    }),
+    identityLastAttemptAt: timestamp("identity_last_attempt_at", {
+      withTimezone: true,
+    }),
   },
   (table) => [
     index("IDX_account_deletions_status").on(table.status),
+    index("IDX_account_deletions_identity_retry").on(
+      table.status,
+      table.identityNextAttemptAt,
+      table.identityLeaseUntil,
+    ),
     check(
       "account_deletions_status_valid",
       sql`${table.status} IN ('identity_pending', 'finalized')`,

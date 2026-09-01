@@ -52,8 +52,11 @@ import {
 import {
   AccountDeletionRecoveryStore,
   isAccountDeletionFinalizing,
+  isProvablyPreDeletionBoundaryError,
+  prepareAccountDeletionRequest,
   recoverAccountDeletionFinalization,
 } from "./accountDeletionRecovery";
+import { deleteMyAccount, getAccountDeletionStatus } from "@/utils/api";
 
 export type { LogoutOutcome } from "./logoutWorkflow";
 
@@ -244,6 +247,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const recovery = await recoverAccountDeletionFinalization({
           store: accountDeletionStore.current!,
           currentUserId: firebaseAuth.currentUser?.uid ?? null,
+          async confirmRemote(marker) {
+            if (
+              marker.phase === "request_started" &&
+              marker.requestId &&
+              firebaseAuth.currentUser?.uid === marker.ownerUserId
+            ) {
+              try {
+                const deletion = await deleteMyAccount(marker.requestId);
+                return deletion.deleted || deletion.finalizing
+                  ? { status: "confirmed" as const }
+                  : { status: "not_started" as const };
+              } catch (error) {
+                if (!marker.ownerUserId) throw error;
+                const status = await getAccountDeletionStatus(
+                  marker.requestId,
+                  marker.ownerUserId,
+                );
+                return status.started
+                  ? { status: "confirmed" as const }
+                  : { status: "not_started" as const };
+              }
+            }
+            const status = await getAccountDeletionStatus(
+              marker.requestId,
+              marker.ownerUserId,
+            );
+            return status.started
+              ? { status: "confirmed" as const }
+              : { status: "not_started" as const };
+          },
           signOut: () => signOut(firebaseAuth),
         });
         if (!mounted) return;
@@ -427,22 +460,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           options.operation === "account_deletion"
             ? async () => {
                 const store = accountDeletionStore.current!;
-                await store.begin(ownerUserId, deletionRequestId);
-                try {
-                  await store.advance(
-                    ownerUserId,
-                    deletionRequestId,
-                    "request_started",
-                  );
-                } catch (error) {
-                  const aborted = await store
-                    .abortPrepared(ownerUserId, deletionRequestId)
-                    .catch(() => false);
-                  if (aborted) throw error;
+                const preparation = await prepareAccountDeletionRequest(
+                  store,
+                  ownerUserId,
+                  deletionRequestId,
+                );
+                if (preparation === "prepared_pending") {
                   return {
-                    status: "finalizing" as const,
+                    status: "pending_pre_request" as const,
                     message:
-                      "Account deletion is finalizing. Elovia will remain signed out while the device finishes cleanup.",
+                      "Elovia could not safely start the deletion request. Reopen the app to restore this account without losing local data.",
                   };
                 }
 
@@ -450,12 +477,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                   const remote = await options.beforeSignOut({
                     requestId: deletionRequestId,
                   });
-                  if (!remote.deleted) {
-                    return {
-                      status: "finalizing" as const,
-                      message:
-                        "Account deletion is finalizing on the server. Local Elovia data will be removed after sign-out completes.",
-                    };
+                  if (!remote.deleted && !remote.finalizing) {
+                    throw new Error(
+                      "The server did not confirm the deletion boundary.",
+                    );
                   }
                   try {
                     await store.advance(
@@ -464,25 +489,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                       "remote_confirmed",
                     );
                   } catch {
-                    return {
-                      status: "finalizing" as const,
-                      message:
-                        "Account deletion was accepted, and Elovia is finalizing device cleanup.",
-                    };
+                    return remote.finalizing
+                      ? {
+                          status: "confirmed" as const,
+                          identityFinalizing: true as const,
+                          message:
+                            "Your Elovia data was deleted. Server identity removal is finishing in the background.",
+                        }
+                      : { status: "confirmed" as const };
                   }
-                  return { status: "confirmed" as const };
+                  return remote.finalizing
+                    ? {
+                        status: "confirmed" as const,
+                        identityFinalizing: true as const,
+                        message:
+                          "Your Elovia data was deleted. Server identity removal is finishing in the background.",
+                      }
+                    : { status: "confirmed" as const };
                 } catch (error) {
-                  const errorCode =
-                    error && typeof error === "object" && "code" in error
-                      ? error.code
-                      : null;
-                  if (
-                    [
-                      "account_deletion_failed",
-                      "authentication_unavailable",
-                      "unauthenticated",
-                    ].includes(typeof errorCode === "string" ? errorCode : "")
-                  ) {
+                  if (isProvablyPreDeletionBoundaryError(error)) {
                     const aborted = await store
                       .abortBeforeRemoteCommit(ownerUserId, deletionRequestId)
                       .catch(() => false);
@@ -493,9 +518,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                       error instanceof Error ? error.name : "UnknownError",
                   });
                   return {
-                    status: "finalizing" as const,
+                    status: "pending_remote" as const,
                     message:
-                      "The server response was interrupted after deletion started. Elovia will stay signed out and finish local cleanup safely.",
+                      "The server response was interrupted after deletion started. Reopen Elovia while online so it can safely confirm the deletion before signing out.",
                   };
                 }
               }

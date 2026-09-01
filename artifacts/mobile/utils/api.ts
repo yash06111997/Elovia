@@ -381,10 +381,84 @@ export function exportMyData(): Promise<AccountDataExport> {
   return getAuthed<AccountDataExport>("/api/privacy/export");
 }
 
-export function deleteMyAccount(requestId: string): Promise<{ deleted: boolean; finalizing: boolean }> {
-  return sendAuthed<{ deleted: boolean; finalizing: boolean }>("/api/account", "DELETE", undefined, {
+export async function deleteMyAccount(requestId: string): Promise<{ deleted: boolean; finalizing: boolean }> {
+  const response = await sendAuthed<unknown>("/api/account", "DELETE", undefined, {
     "X-Elovia-Deletion-Request-ID": requestId,
   });
+  if (
+    !response ||
+    typeof response !== "object" ||
+    Array.isArray(response) ||
+    typeof (response as { deleted?: unknown }).deleted !== "boolean" ||
+    typeof (response as { finalizing?: unknown }).finalizing !== "boolean" ||
+    (response as { deleted: boolean }).deleted ===
+      (response as { finalizing: boolean }).finalizing
+  ) {
+    throw new ApiError("Invalid account deletion response", 502, "unknown");
+  }
+  return response as { deleted: boolean; finalizing: boolean };
+}
+
+export interface AccountDeletionStatus {
+  started: boolean;
+  finalized: boolean;
+  finalizing: boolean;
+  requestIdMatches: boolean | null;
+}
+
+function parseAccountDeletionStatus(value: unknown): AccountDeletionStatus {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ApiError("Invalid deletion status response", 502, "unknown");
+  }
+  const candidate = value as Partial<AccountDeletionStatus>;
+  if (
+    typeof candidate.started !== "boolean" ||
+    typeof candidate.finalized !== "boolean" ||
+    typeof candidate.finalizing !== "boolean" ||
+    (candidate.requestIdMatches !== null &&
+      typeof candidate.requestIdMatches !== "boolean") ||
+    (candidate.finalized && candidate.finalizing) ||
+    (candidate.started && !candidate.finalized && !candidate.finalizing) ||
+    (!candidate.started && (candidate.finalized || candidate.finalizing))
+  ) {
+    throw new ApiError("Invalid deletion status response", 502, "unknown");
+  }
+  return candidate as AccountDeletionStatus;
+}
+
+export async function getAccountDeletionStatus(
+  requestId: string | null,
+  ownerUserId: string | null = null,
+): Promise<AccountDeletionStatus> {
+  if (requestId && ownerUserId) {
+    const response = await fetchOrOffline(
+      `${getBaseUrl()}/api/account/deletion-status`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: ownerUserId, requestId }),
+      },
+    );
+    if (!response.ok) {
+      const payload = await response
+        .json()
+        .catch(() => ({ error: "Unknown error" }));
+      throw new ApiError(
+        payload.error || "Request failed",
+        response.status,
+        payload.code || "unknown",
+      );
+    }
+    return parseAccountDeletionStatus(await response.json());
+  }
+  return parseAccountDeletionStatus(
+    await sendAuthed<unknown>(
+      "/api/account/deletion-status",
+      "GET",
+      undefined,
+      requestId ? { "X-Elovia-Deletion-Request-ID": requestId } : undefined,
+    ),
+  );
 }
 
 export interface SocialProfile {

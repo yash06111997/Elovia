@@ -4,7 +4,7 @@ import {
   usersTable,
   type AccountDeletionTombstone,
 } from "@workspace/db";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 const ACCOUNT_DELETION_LOCK_SEED = 2_026_090_101;
 
@@ -76,6 +76,121 @@ export async function findAccountDeletionTombstone(
   return rows[0] ?? null;
 }
 
+export async function findAccountDeletionTombstoneByRequest(
+  userId: string,
+  requestId: string,
+): Promise<AccountDeletionTombstone | null> {
+  const rows = await db
+    .select()
+    .from(accountDeletionTombstonesTable)
+    .where(
+      and(
+        eq(accountDeletionTombstonesTable.userId, userId),
+        eq(accountDeletionTombstonesTable.requestId, requestId),
+      ),
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export interface AccountDeletionIdentityClaim {
+  userId: string;
+  requestId: string;
+  leaseId: string;
+  attemptCount: number;
+}
+
+/**
+ * Lease durable identity-deletion work. SKIP LOCKED lets every API replica run
+ * the worker without processing the same account concurrently. A lease ID
+ * prevents a slow expired worker from releasing a newer worker's claim.
+ */
+export async function claimPendingAccountDeletionIdentities(options: {
+  leaseId: string;
+  limit: number;
+  leaseSeconds: number;
+}): Promise<AccountDeletionIdentityClaim[]> {
+  const claimed = await db.execute<{
+    user_id: string;
+    request_id: string;
+    identity_attempt_count: number;
+  }>(sql`
+    WITH candidates AS (
+      SELECT "user_id"
+      FROM "account_deletions"
+      WHERE "status" = 'identity_pending'
+        AND "identity_next_attempt_at" <= now()
+        AND ("identity_lease_until" IS NULL OR "identity_lease_until" <= now())
+      ORDER BY "identity_next_attempt_at", "requested_at"
+      FOR UPDATE SKIP LOCKED
+      LIMIT ${options.limit}
+    )
+    UPDATE "account_deletions" AS deletion
+    SET
+      "identity_lease_id" = ${options.leaseId},
+      "identity_lease_until" = now() + (${options.leaseSeconds} * interval '1 second'),
+      "identity_last_attempt_at" = now(),
+      "identity_attempt_count" = deletion."identity_attempt_count" + 1,
+      "updated_at" = now()
+    FROM candidates
+    WHERE deletion."user_id" = candidates."user_id"
+    RETURNING deletion."user_id", deletion."request_id", deletion."identity_attempt_count"
+  `);
+  return claimed.rows.map((row) => ({
+    userId: row.user_id,
+    requestId: row.request_id,
+    leaseId: options.leaseId,
+    attemptCount: row.identity_attempt_count,
+  }));
+}
+
+export async function finalizeClaimedAccountDeletionIdentity(
+  claim: AccountDeletionIdentityClaim,
+): Promise<boolean> {
+  const finalizedAt = new Date();
+  const affected = await db
+    .update(accountDeletionTombstonesTable)
+    .set({
+      status: "finalized",
+      finalizedAt,
+      identityLeaseId: null,
+      identityLeaseUntil: null,
+      updatedAt: finalizedAt,
+    })
+    .where(
+      and(
+        eq(accountDeletionTombstonesTable.userId, claim.userId),
+        eq(accountDeletionTombstonesTable.status, "identity_pending"),
+        eq(accountDeletionTombstonesTable.identityLeaseId, claim.leaseId),
+      ),
+    )
+    .returning({ userId: accountDeletionTombstonesTable.userId });
+  return affected.length === 1;
+}
+
+export async function rescheduleClaimedAccountDeletionIdentity(
+  claim: AccountDeletionIdentityClaim,
+  nextAttemptAt: Date,
+): Promise<boolean> {
+  const affected = await db
+    .update(accountDeletionTombstonesTable)
+    .set({
+      identityNextAttemptAt: nextAttemptAt,
+      identityLeaseId: null,
+      identityLeaseUntil: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(accountDeletionTombstonesTable.userId, claim.userId),
+        eq(accountDeletionTombstonesTable.status, "identity_pending"),
+        eq(accountDeletionTombstonesTable.identityLeaseId, claim.leaseId),
+      ),
+    )
+    .returning({ userId: accountDeletionTombstonesTable.userId });
+  return affected.length === 1;
+}
+
 /** Insert the permanent tombstone and cascade-delete account data atomically. */
 export async function tombstoneAndDeleteAccountData(
   userId: string,
@@ -111,6 +226,8 @@ export async function finalizeAccountDeletion(
       .set({
         status: "finalized",
         finalizedAt,
+        identityLeaseId: null,
+        identityLeaseUntil: null,
         updatedAt: finalizedAt,
       })
       .where(eq(accountDeletionTombstonesTable.userId, userId))

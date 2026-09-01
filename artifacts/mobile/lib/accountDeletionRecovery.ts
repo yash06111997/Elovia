@@ -194,6 +194,46 @@ export class AccountDeletionRecoveryStore {
     return true;
   }
 
+  /**
+   * Convert an ambiguous/request-started marker only after the server has
+   * authoritatively confirmed its permanent tombstone.
+   */
+  async confirmRemoteBoundary(
+    ownerUserId: string,
+    requestId: string | null,
+  ): Promise<void> {
+    const marker = await this.read();
+    if (
+      !marker ||
+      !["request_started", "unknown"].includes(marker.phase) ||
+      (marker.ownerUserId !== null && marker.ownerUserId !== ownerUserId) ||
+      (marker.requestId !== null && marker.requestId !== requestId)
+    ) {
+      throw new Error("Account deletion marker ownership changed.");
+    }
+    const next: AccountDeletionMarker = {
+      ...marker,
+      ownerUserId,
+      requestId: marker.requestId ?? requestId,
+      phase: "remote_confirmed",
+      updatedAt: this.now().toISOString(),
+    };
+    await this.storage.setItem(
+      ACCOUNT_DELETION_MARKER_KEY,
+      JSON.stringify(next),
+    );
+    publishMarker(next);
+  }
+
+  /** A corrupt/legacy marker may be released only after a server no-tombstone response. */
+  async abortUnconfirmedUnknown(): Promise<boolean> {
+    const marker = await this.read();
+    if (!marker || marker.phase !== "unknown") return false;
+    await this.storage.removeItem(ACCOUNT_DELETION_MARKER_KEY);
+    publishMarker(null);
+    return true;
+  }
+
   /** Clear all device data, but remove the recovery marker last. */
   async completeLocalFinalization(): Promise<void> {
     const keys = await this.storage.getAllKeys();
@@ -206,17 +246,108 @@ export class AccountDeletionRecoveryStore {
 
 export type AccountDeletionRecoveryOutcome =
   | { status: "none" }
+  | { status: "aborted" }
   | { status: "finalized" }
   | { status: "pending"; error: unknown };
+
+export type AccountDeletionRemoteConfirmation =
+  | { status: "confirmed" }
+  | { status: "not_started" };
+
+export async function prepareAccountDeletionRequest(
+  store: AccountDeletionRecoveryStore,
+  ownerUserId: string,
+  requestId: string,
+): Promise<"request_started" | "prepared_pending"> {
+  await store.begin(ownerUserId, requestId);
+  try {
+    await store.advance(ownerUserId, requestId, "request_started");
+    return "request_started";
+  } catch (error) {
+    const aborted = await store
+      .abortPrepared(ownerUserId, requestId)
+      .catch(() => false);
+    if (aborted) throw error;
+    return "prepared_pending";
+  }
+}
+
+export function isProvablyPreDeletionBoundaryError(error: unknown): boolean {
+  const code =
+    error && typeof error === "object" && "code" in error ? error.code : null;
+  return ["authentication_unavailable", "unauthenticated"].includes(
+    typeof code === "string" ? code : "",
+  );
+}
 
 export async function recoverAccountDeletionFinalization(options: {
   store: AccountDeletionRecoveryStore;
   currentUserId: string | null;
+  confirmRemote(
+    marker: AccountDeletionMarker,
+  ): Promise<AccountDeletionRemoteConfirmation>;
   signOut(): Promise<void>;
 }): Promise<AccountDeletionRecoveryOutcome> {
   const marker = await options.store.read();
   if (!marker) return { status: "none" };
+
+  // `prepared` is written before crossing the HTTP boundary. A process death
+  // here proves the destructive request was never sent, so resuming the
+  // authenticated account is both safe and preferable to a false deletion.
+  if (marker.phase === "prepared") {
+    try {
+      const aborted = await options.store.abortPrepared(
+        marker.ownerUserId ?? "",
+        marker.requestId ?? "",
+      );
+      if (aborted) return { status: "aborted" };
+      return {
+        status: "pending",
+        error: new Error("Prepared deletion marker could not be released."),
+      };
+    } catch (error) {
+      return { status: "pending", error };
+    }
+  }
+
+  if (
+    options.currentUserId !== null &&
+    marker.ownerUserId !== null &&
+    marker.ownerUserId !== options.currentUserId
+  ) {
+    return {
+      status: "pending",
+      error: new Error(
+        "Account deletion recovery cannot clear a different signed-in account.",
+      ),
+    };
+  }
+
   try {
+    if (marker.phase === "request_started" || marker.phase === "unknown") {
+      const confirmation = await options.confirmRemote(marker);
+      if (confirmation.status === "not_started") {
+        if (marker.phase !== "unknown") {
+          throw new Error(
+            "Account deletion request is not yet durably confirmed.",
+          );
+        }
+        const aborted = await options.store.abortUnconfirmedUnknown();
+        if (!aborted) {
+          throw new Error("Unconfirmed deletion marker could not be released.");
+        }
+        return { status: "aborted" };
+      }
+      const confirmedOwner = marker.ownerUserId ?? options.currentUserId;
+      if (!confirmedOwner) {
+        throw new Error("Account deletion marker has no recoverable owner.");
+      }
+      await options.store.confirmRemoteBoundary(
+        confirmedOwner,
+        marker.requestId,
+      );
+    }
+
     if (options.currentUserId !== null) await options.signOut();
     await options.store.completeLocalFinalization();
     return { status: "finalized" };

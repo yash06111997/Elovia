@@ -23,10 +23,13 @@ import { requireAuth } from "../middlewares/aiGate";
 import { deleteFirebaseUser } from "../lib/auth";
 import { resolveEntitlement } from "../lib/entitlements";
 import {
+  findAccountDeletionTombstone,
+  findAccountDeletionTombstoneByRequest,
   finalizeAccountDeletion,
   tombstoneAndDeleteAccountData,
 } from "../lib/accountDeletion";
 import { runAccountDeletionWorkflow } from "../lib/accountDeletionWorkflow";
+import { rateLimit } from "../lib/rateLimit";
 
 const router: IRouter = Router();
 
@@ -237,6 +240,64 @@ router.get(
       req.log.error({ error }, "Privacy export failed");
       res.status(500).json({ error: "Could not export account data" });
     }
+  },
+);
+
+function deletionStatusResponse(
+  tombstone: Awaited<ReturnType<typeof findAccountDeletionTombstone>>,
+  requestId: string | null,
+) {
+  return {
+    started: tombstone !== null,
+    finalized: tombstone?.status === "finalized",
+    finalizing: tombstone?.status === "identity_pending",
+    requestIdMatches:
+      requestId === null || tombstone === null
+        ? null
+        : tombstone.requestId === requestId,
+  };
+}
+
+router.get(
+  "/account/deletion-status",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const requestId = req.get("X-Elovia-Deletion-Request-ID")?.trim() ?? null;
+    res.setHeader("Cache-Control", "no-store");
+    const tombstone = await findAccountDeletionTombstone(req.user!.id);
+    res.status(200).json(deletionStatusResponse(tombstone, requestId));
+  },
+);
+
+// A high-entropy request ID acts as a recovery capability after Firebase has
+// already removed the local identity. The response reveals only whether this
+// exact UID/request pair crossed the permanent server tombstone boundary.
+router.post(
+  "/account/deletion-status",
+  rateLimit({
+    windowMs: 60_000,
+    max: 30,
+    keyPrefix: "account-deletion-status",
+  }),
+  async (req: Request, res: Response) => {
+    const userId =
+      typeof req.body?.userId === "string" ? req.body.userId.trim() : "";
+    const requestId =
+      typeof req.body?.requestId === "string" ? req.body.requestId.trim() : "";
+    if (
+      userId.length < 1 ||
+      userId.length > 256 ||
+      !/^[A-Za-z0-9_-]{8,128}$/.test(requestId)
+    ) {
+      res.status(400).json({ error: "Invalid deletion recovery request" });
+      return;
+    }
+    res.setHeader("Cache-Control", "no-store");
+    const tombstone = await findAccountDeletionTombstoneByRequest(
+      userId,
+      requestId,
+    );
+    res.status(200).json(deletionStatusResponse(tombstone, requestId));
   },
 );
 
