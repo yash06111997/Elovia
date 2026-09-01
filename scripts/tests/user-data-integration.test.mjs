@@ -47,9 +47,14 @@ const expectedApplicationTables = [
   "friendships",
   "kudos",
   "push_tokens",
+  "revenuecat_customer_aliases",
+  "revenuecat_customer_state",
+  "revenuecat_event_subjects",
+  "revenuecat_webhook_events",
   "sessions",
   "shared_activities",
   "social_profiles",
+  "subscription_entitlements",
   "subscriptions",
   "supplements",
   "user_data",
@@ -315,6 +320,7 @@ integrationTest(
         "0001_user_data_sync_integrity.sql",
         "0002_account_deletion_tombstones.sql",
         "0003_account_deletion_identity_outbox.sql",
+        "0004_revenuecat_entitlement_integrity.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -341,6 +347,10 @@ integrationTest(
           },
           {
             name: "0003_account_deletion_identity_outbox.sql",
+            application_count: 1,
+          },
+          {
+            name: "0004_revenuecat_entitlement_integrity.sql",
             application_count: 1,
           },
         ]);
@@ -372,6 +382,7 @@ integrationTest(
         "0001_user_data_sync_integrity.sql",
         "0002_account_deletion_tombstones.sql",
         "0003_account_deletion_identity_outbox.sql",
+        "0004_revenuecat_entitlement_integrity.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -396,6 +407,10 @@ integrationTest(
             name: "0003_account_deletion_identity_outbox.sql",
             application_count: 1,
           },
+          {
+            name: "0004_revenuecat_entitlement_integrity.sql",
+            application_count: 1,
+          },
         ]);
       } finally {
         await pool.end();
@@ -415,6 +430,7 @@ integrationTest(
       "0001_user_data_sync_integrity.sql",
       "0002_account_deletion_tombstones.sql",
       "0003_account_deletion_identity_outbox.sql",
+      "0004_revenuecat_entitlement_integrity.sql",
     ];
 
     try {
@@ -467,7 +483,7 @@ integrationTest(
           `);
           assert.deepEqual(state.rows[0], {
             partial_table: null,
-            migration_count: 3,
+            migration_count: 4,
           });
         } finally {
           await pool.end();
@@ -765,6 +781,7 @@ integrationTest(
         "0001_user_data_sync_integrity.sql",
         "0002_account_deletion_tombstones.sql",
         "0003_account_deletion_identity_outbox.sql",
+        "0004_revenuecat_entitlement_integrity.sql",
       ],
     );
 
