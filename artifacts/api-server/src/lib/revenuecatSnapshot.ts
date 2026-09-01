@@ -333,7 +333,10 @@ export function parseCanonicalRevenueCatSnapshot(
     256,
   );
 
-  const entitlements: Record<string, CanonicalEntitlementPointer> = {};
+  const entitlements = Object.create(null) as Record<
+    string,
+    CanonicalEntitlementPointer
+  >;
   for (const [entitlementId, pointer] of Object.entries(rawEntitlements)) {
     boundedString(entitlementId, 128);
     entitlements[entitlementId] = normalizePointer(
@@ -343,7 +346,10 @@ export function parseCanonicalRevenueCatSnapshot(
     );
   }
 
-  const subscriptions: Record<string, CanonicalSubscription> = {};
+  const subscriptions = Object.create(null) as Record<
+    string,
+    CanonicalSubscription
+  >;
   for (const [productId, candidate] of Object.entries(rawSubscriptions)) {
     boundedString(productId, 256);
     subscriptions[productId] = normalizeSubscription(
@@ -354,7 +360,10 @@ export function parseCanonicalRevenueCatSnapshot(
   }
 
   let totalPurchases = 0;
-  const nonSubscriptions: Record<string, readonly CanonicalPurchase[]> = {};
+  const nonSubscriptions = Object.create(null) as Record<
+    string,
+    readonly CanonicalPurchase[]
+  >;
   for (const [productId, rawPurchases] of Object.entries(rawNonSubscriptions)) {
     boundedString(productId, 256);
     if (!Array.isArray(rawPurchases) || rawPurchases.length > 256) invalid();
@@ -531,6 +540,15 @@ function byteCompare(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
+function ownValue<T>(
+  record: Readonly<Record<string, T>>,
+  key: string,
+): T | undefined {
+  return Object.prototype.hasOwnProperty.call(record, key)
+    ? record[key]
+    : undefined;
+}
+
 function chooseCandidate(candidates: readonly Candidate[]): Candidate | null {
   if (candidates.length === 0) return null;
   return [...candidates].sort((left, right) => {
@@ -582,7 +600,7 @@ function projectEntitlement(
 ): NormalizedRevenueCatEntitlement {
   const { sourceKind, sourceTriggerEventId } = operationSource(operationId);
   const configuredIds = new Set(products.map((product) => product.id));
-  const pointer = snapshot.entitlements[entitlementId];
+  const pointer = ownValue(snapshot.entitlements, entitlementId);
   if (
     pointer?.productIdentifier !== null &&
     pointer?.productIdentifier !== undefined &&
@@ -594,46 +612,59 @@ function projectEntitlement(
   const snapshotMs = snapshot.sourceSnapshotAt.getTime();
   const candidates: Candidate[] = [];
   for (const product of products) {
-    const subscription = snapshot.subscriptions[product.id];
-    const purchases = snapshot.nonSubscriptions[product.id];
+    const subscription = ownValue(snapshot.subscriptions, product.id);
+    const purchases = ownValue(snapshot.nonSubscriptions, product.id);
     const subscriptionKind =
       product.kind === "auto_renewing" ||
       product.kind === "prepaid" ||
       product.kind === "promotional";
 
-    if (!subscriptionKind && subscription !== undefined) mismatch();
-    if (subscriptionKind && purchases !== undefined) mismatch();
-
-    if (
+    const relevantSubscription =
       subscription !== undefined &&
       appliesToEnvironment(
         subscription.isSandbox,
         subscription.store,
         config.environment,
       )
-    ) {
-      if (product.kind === "prepaid" && subscription.periodType !== "prepaid") {
-        mismatch();
-      }
-      if (
-        product.kind === "promotional" &&
-        subscription.periodType !== "promotional" &&
-        subscription.store !== "promotional"
-      ) {
-        mismatch();
-      }
-      candidates.push(subscriptionCandidate(product, subscription, snapshotMs));
-    }
-
-    if (purchases !== undefined) {
-      const relevant = purchases.filter((purchase) =>
+        ? subscription
+        : undefined;
+    const relevantPurchases =
+      purchases?.filter((purchase) =>
         appliesToEnvironment(
           purchase.isSandbox,
           purchase.store,
           config.environment,
         ),
+      ) ?? [];
+
+    if (!subscriptionKind && relevantSubscription !== undefined) mismatch();
+    if (subscriptionKind && relevantPurchases.length > 0) mismatch();
+
+    if (relevantSubscription !== undefined) {
+      if (
+        product.kind === "prepaid" &&
+        relevantSubscription.periodType !== "prepaid"
+      ) {
+        mismatch();
+      }
+      if (
+        product.kind === "promotional" &&
+        relevantSubscription.periodType !== "promotional" &&
+        relevantSubscription.store !== "promotional"
+      ) {
+        mismatch();
+      }
+      candidates.push(
+        subscriptionCandidate(product, relevantSubscription, snapshotMs),
       );
-      const candidate = purchaseCandidate(product, relevant, snapshotMs);
+    }
+
+    if (!subscriptionKind && relevantPurchases.length > 0) {
+      const candidate = purchaseCandidate(
+        product,
+        relevantPurchases,
+        snapshotMs,
+      );
       if (candidate !== null) candidates.push(candidate);
     }
   }

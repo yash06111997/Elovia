@@ -644,7 +644,7 @@ test("RevenueCat client returns typed sanitized status, network, and timeout fai
   const cases = [
     [400, "revenuecat_request_invalid", false],
     [401, "revenuecat_configuration_invalid", false],
-    [404, "canonical_response_invalid", true],
+    [418, "canonical_response_invalid", true],
     [429, "revenuecat_unavailable", true],
     [500, "revenuecat_unavailable", true],
   ];
@@ -660,7 +660,7 @@ test("RevenueCat client returns typed sanitized status, network, and timeout fai
         assert.equal(error instanceof RevenueCatClientError, true);
         assert.equal(error.code, code);
         assert.equal(error.retryable, retryable);
-        assert.doesNotMatch(error.message, /private|subscriber_not_found|404 body/i);
+        assert.doesNotMatch(error.message, /private|subscriber_not_found/i);
         return true;
       },
     );
@@ -752,6 +752,10 @@ test("RevenueCat client rejects content type, UTF-8, JSON, and schema without re
   assert.doesNotMatch(source, /\.json\s*\(/);
   assert.doesNotMatch(source, /attributes/);
   assert.doesNotMatch(source, /subscriber_not_found/);
+  assert.match(
+    source,
+    /return new RevenueCatClientError\("canonical_response_invalid", true, status\)/,
+  );
   assert.match(source, /getSubscriber\(uid: TrustedLocalUid\)/);
   assert.match(source, /unique symbol/);
   assert.doesNotMatch(source, /getSubscriber\(uid: string\)/);
@@ -821,6 +825,124 @@ test("snapshot projection enforces pointers, environment, source class, and peri
   } }));
   assert.equal(filtered[0].active, false);
   assert.equal(filtered[0].productId, null);
+});
+
+test("snapshot projection filters environment before wrong-collection mapping checks", () => {
+  const purchase = (isSandbox, store) => ({
+    id: `${store}-purchase`,
+    purchase_date: new Date(SNAPSHOT_MS - DAY).toISOString(),
+    is_sandbox: isSandbox,
+    store,
+  });
+  const irrelevantWrongCollections = [
+    [
+      {},
+      rawSnapshot({
+        subscriptions: {
+          pro_lifetime: subscription({ is_sandbox: true, store: "test_store" }),
+        },
+        non_subscriptions: {
+          pro_auto: [purchase(true, "test_store")],
+        },
+      }),
+    ],
+    [
+      { REVENUECAT_ENVIRONMENT: "sandbox" },
+      rawSnapshot({
+        subscriptions: {
+          pro_lifetime: subscription({ is_sandbox: false, store: "app_store" }),
+        },
+        non_subscriptions: {
+          pro_auto: [purchase(false, "app_store")],
+        },
+      }),
+    ],
+  ];
+  for (const [configOverrides, raw] of irrelevantWrongCollections) {
+    const [row] = projected(raw, configOverrides);
+    assert.deepEqual(
+      [row.active, row.status, row.productId],
+      [false, "expired", null],
+    );
+  }
+
+  const relevantWrongCollections = [
+    rawSnapshot({
+      subscriptions: { pro_lifetime: subscription() },
+      non_subscriptions: { pro_auto: [purchase(false, "app_store")] },
+    }),
+    rawSnapshot({
+      subscriptions: {
+        pro_lifetime: subscription({ is_sandbox: true, store: "test_store" }),
+      },
+      non_subscriptions: { pro_auto: [purchase(true, "test_store")] },
+    }),
+  ];
+  assert.throws(
+    () => projected(relevantWrongCollections[0]),
+    (error) => error.code === "canonical_mapping_mismatch",
+  );
+  assert.throws(
+    () => projected(relevantWrongCollections[1], { REVENUECAT_ENVIRONMENT: "sandbox" }),
+    (error) => error.code === "canonical_mapping_mismatch",
+  );
+});
+
+test("snapshot projection treats prototype-like entitlement and product IDs as own keys only", () => {
+  const scenarios = [
+    ["__proto__", "constructor", "toString", "__proto__"],
+    ["toString", "__proto__", "constructor", "toString"],
+  ];
+  for (const [proEntitlement, coachingEntitlement, proProduct, coachingProduct] of scenarios) {
+    const specialConfig = {
+      REVENUECAT_PRO_ENTITLEMENT_ID: proEntitlement,
+      REVENUECAT_COACHING_ENTITLEMENT_ID: coachingEntitlement,
+      REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([
+        { id: proProduct, kind: "auto_renewing" },
+      ]),
+      REVENUECAT_COACHING_PRODUCTS_JSON: JSON.stringify([
+        { id: coachingProduct, kind: "auto_renewing" },
+      ]),
+    };
+
+    const absent = projected(rawSnapshot(), specialConfig);
+    assert.deepEqual(
+      absent.map((row) => [row.entitlementId, row.active, row.productId]),
+      [
+        [proEntitlement, false, null],
+        [coachingEntitlement, false, null],
+      ],
+    );
+
+    const parsedPresent = parseSnapshot(rawSnapshot({
+      entitlements: Object.fromEntries([
+        [proEntitlement, { product_identifier: proProduct }],
+        [coachingEntitlement, { product_identifier: coachingProduct }],
+      ]),
+      subscriptions: Object.fromEntries([
+        [proProduct, subscription()],
+        [coachingProduct, subscription()],
+      ]),
+    }));
+    assert.equal(Object.getPrototypeOf(parsedPresent.entitlements), null);
+    assert.equal(Object.getPrototypeOf(parsedPresent.subscriptions), null);
+    assert.equal(Object.getPrototypeOf(parsedPresent.nonSubscriptions), null);
+    assert.equal(Object.isFrozen(parsedPresent.subscriptions), true);
+
+    const present = projectRevenueCatSnapshot({
+      snapshot: parsedPresent,
+      config: config(specialConfig),
+      operationId: "worker:lease-12345678",
+    });
+    assert.deepEqual(
+      present.map((row) => [row.entitlementId, row.active, row.productId]),
+      [
+        [proEntitlement, true, proProduct],
+        [coachingEntitlement, true, coachingProduct],
+      ],
+    );
+    assert.equal(Object.getPrototypeOf(present[0]), Object.prototype);
+  }
 });
 
 test("snapshot projector implements subscription truth-table precedence", () => {
