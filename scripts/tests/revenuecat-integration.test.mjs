@@ -391,12 +391,65 @@ test("processor source contract is fenced, privacy-minimized, and provisioning-n
     processorSource,
     /console\.|JSON\.stringify\(.*delivery|rawPayload/i,
   );
+  assert.doesNotMatch(
+    processorSource,
+    /Math\.min\(deletedHashes\.size,\s*existing\.event\.pruned_identity_count\)/,
+  );
   assert.match(reconcilerSource, /export async function applyTrustedSnapshot/);
   assert.match(reconcilerSource, /"source_operation_id" COLLATE "C"/);
   assert.match(reconcilerSource, /subscriptions/);
   assert.match(accountDeletionSource, /export async function withAccountLocks/);
   assert.match(accountDeletionSource, /Buffer\.compare/);
   assert.match(accountDeletionSource, /2_026_090_101/);
+});
+
+test("unsupported parsed deliveries are acknowledged without PostgreSQL, identities, or provider access", async () => {
+  const previousDatabaseUrl = process.env.DATABASE_URL;
+  process.env.DATABASE_URL ??= "postgresql://unused:unused@127.0.0.1:1/unused";
+  const { register } = requireFromScriptsPackage("tsx/esm/api");
+  const unregister = register();
+  try {
+    const processor = await import(
+      `${processorUrl.href}?unsupported=${Date.now()}`
+    );
+    for (const code of [
+      "ignored_identity_volume",
+      "unsupported_redemption_shape",
+    ]) {
+      const metrics = [];
+      assert.deepEqual(
+        await processor.processRevenueCatParseResult({
+          parsed: { ok: false, code, message: "bounded outcome" },
+          metric: (metric) => metrics.push(metric),
+          client: new Proxy(
+            {},
+            {
+              get() {
+                assert.fail(
+                  "unsupported parse outcomes must not access a client",
+                );
+              },
+            },
+          ),
+        }),
+        { status: 200, disposition: code },
+      );
+      assert.deepEqual(metrics, [{ type: code, count: 1 }]);
+    }
+    const malformedMetrics = [];
+    assert.deepEqual(
+      await processor.processRevenueCatParseResult({
+        parsed: { ok: false, code: "malformed_event", message: "bad" },
+        metric: (metric) => malformedMetrics.push(metric),
+      }),
+      { status: 400, disposition: "malformed_event" },
+    );
+    assert.deepEqual(malformedMetrics, []);
+  } finally {
+    await unregister();
+    if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previousDatabaseUrl;
+  }
 });
 
 test("the forward-only RevenueCat migration contract is present", async () => {
@@ -888,6 +941,1030 @@ integrationTest(
       }),
       { status: 400, disposition: "event_collision" },
     );
+    const unrelatedDeleted = `pruned-collision-${suffix}`;
+    await scopedPool.query(
+      "INSERT INTO account_deletions (user_id,request_id) VALUES ($1,$2)",
+      [unrelatedDeleted, `delete-pruned-collision-${suffix}`],
+    );
+    assert.deepEqual(
+      await processRevenueCatDelivery({
+        delivery: { ...event, aliases: [unrelatedDeleted] },
+        config: processorConfig,
+        client: fakeClient(null, duplicateCalls),
+      }),
+      { status: 400, disposition: "event_collision" },
+    );
+  },
+);
+
+integrationTest(
+  "tombstoned transfer identities are excluded before claim, hashing persistence, and GET",
+  async () => {
+    const suffix = Date.now();
+    const tombstonedSource = `tomb-source-${suffix}`;
+    const tombstonedDestination = `tomb-destination-${suffix}`;
+    const liveSource = `live-source-${suffix}`;
+    const liveDestination = `live-destination-${suffix}`;
+    await scopedPool.query(
+      "INSERT INTO users (id) VALUES ($1),($2),($3),($4)",
+      [tombstonedSource, tombstonedDestination, liveSource, liveDestination],
+    );
+    await scopedPool.query(
+      `INSERT INTO account_deletions (user_id,request_id)
+       VALUES ($1,$2),($3,$4)`,
+      [
+        tombstonedSource,
+        `delete-source-${suffix}`,
+        tombstonedDestination,
+        `delete-destination-${suffix}`,
+      ],
+    );
+    await scopedPool.query("DELETE FROM users WHERE id=ANY($1::text[])", [
+      [tombstonedSource, tombstonedDestination],
+    ]);
+
+    const cases = [
+      {
+        name: "deleted source",
+        from: [tombstonedSource],
+        to: [liveDestination],
+        calls: [liveDestination],
+        retained: [liveDestination],
+      },
+      {
+        name: "deleted destination",
+        from: [liveSource],
+        to: [tombstonedDestination],
+        calls: [liveSource],
+        retained: [liveSource],
+      },
+      {
+        name: "both deleted",
+        from: [tombstonedSource],
+        to: [tombstonedDestination],
+        calls: [],
+        retained: [],
+      },
+    ];
+    for (const [index, scenario] of cases.entries()) {
+      const event = delivery({
+        eventId: `tomb_transfer_${index}_${suffix}`,
+        type: "TRANSFER",
+        kind: "transfer",
+        transferredFrom: scenario.from,
+        transferredTo: scenario.to,
+      });
+      delete event.userId;
+      delete event.originalUserId;
+      delete event.aliases;
+      const calls = [];
+      const outcome = await processRevenueCatDelivery({
+        delivery: event,
+        config: processorConfig,
+        client: fakeClient(
+          (uid) => ({
+            lookup: "existing",
+            snapshot:
+              uid === liveSource
+                ? snapshot("2026-09-01T10:01:00.000Z", {
+                    pro: false,
+                    coaching: false,
+                  })
+                : snapshot("2026-09-01T10:01:00.000Z"),
+          }),
+          calls,
+        ),
+      });
+      assert.equal(outcome.status, 200, scenario.name);
+      assert.deepEqual(calls, scenario.calls, scenario.name);
+      const persisted = await scopedPool.query(
+        `SELECT e.identity_count,s.subject_hash,s.local_user_id
+         FROM revenuecat_webhook_events e
+         LEFT JOIN revenuecat_event_subjects s ON s.event_id=e.event_id
+         WHERE e.event_id=$1 ORDER BY s.subject_hash`,
+        [event.eventId],
+      );
+      if (scenario.retained.length === 0) {
+        assert.equal(persisted.rowCount, 0, scenario.name);
+      } else {
+        assert.equal(
+          persisted.rows[0].identity_count,
+          scenario.retained.length,
+        );
+        assert.deepEqual(
+          persisted.rows.map((row) => row.subject_hash),
+          scenario.retained.map(subjectHash).sort(),
+          scenario.name,
+        );
+      }
+      assert.equal(
+        persisted.rows.some((row) =>
+          [tombstonedSource, tombstonedDestination]
+            .map(subjectHash)
+            .includes(row.subject_hash),
+        ),
+        false,
+        scenario.name,
+      );
+    }
+  },
+);
+
+integrationTest(
+  "transfer relinking preserves direct self ownership and never maps a missing destination to source",
+  async () => {
+    const suffix = Date.now();
+    const source = `direct-source-${suffix}`;
+    const destination = `direct-destination-${suffix}`;
+    const missingDestination = `missing-destination-${suffix}`;
+    const movableAlias = `$RCAnonymousID:movable-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1),($2)", [
+      source,
+      destination,
+    ]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_aliases
+       (alias_hash,local_user_id,alias_kind,ownership_source,source_event_at,source_event_id)
+       VALUES ($1,$2,'anonymous','webhook','2026-08-01T00:00:00Z','direct_old_123')`,
+      [subjectHash(movableAlias), source],
+    );
+    const first = delivery({
+      eventId: `direct_transfer_${suffix}`,
+      type: "TRANSFER",
+      kind: "transfer",
+      transferredFrom: [source, movableAlias],
+      transferredTo: [destination],
+    });
+    delete first.userId;
+    delete first.originalUserId;
+    delete first.aliases;
+    await processRevenueCatDelivery({
+      delivery: first,
+      config: processorConfig,
+      client: fakeClient(
+        (uid) => ({
+          lookup: "existing",
+          snapshot:
+            uid === source
+              ? snapshot("2026-09-01T10:01:01.000Z", {
+                  pro: false,
+                  coaching: false,
+                })
+              : snapshot("2026-09-01T10:01:01.000Z"),
+        }),
+        [],
+      ),
+    });
+    const directRows = await scopedPool.query(
+      `SELECT subject_hash,local_user_id FROM revenuecat_event_subjects
+       WHERE event_id=$1 ORDER BY subject_hash`,
+      [first.eventId],
+    );
+    assert.deepEqual(
+      new Map(
+        directRows.rows.map((row) => [row.subject_hash, row.local_user_id]),
+      ),
+      new Map([
+        [subjectHash(source), source],
+        [subjectHash(destination), destination],
+        [subjectHash(movableAlias), destination],
+      ]),
+    );
+    const forbiddenDirectAliases = await scopedPool.query(
+      `SELECT count(*)::integer AS count FROM revenuecat_customer_aliases
+       WHERE alias_hash=ANY($1::text[])`,
+      [[subjectHash(source), subjectHash(destination)]],
+    );
+    assert.equal(forbiddenDirectAliases.rows[0].count, 0);
+
+    const second = delivery({
+      eventId: `missing_to_${suffix}`,
+      type: "TRANSFER",
+      kind: "transfer",
+      transferredFrom: [source],
+      transferredTo: [missingDestination],
+    });
+    delete second.userId;
+    delete second.originalUserId;
+    delete second.aliases;
+    await processRevenueCatDelivery({
+      delivery: second,
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-01T10:01:02.000Z", {
+            pro: false,
+            coaching: false,
+          }),
+        },
+        [],
+      ),
+    });
+    const missingTo = await scopedPool.query(
+      `SELECT local_user_id FROM revenuecat_event_subjects
+       WHERE event_id=$1 AND subject_hash=$2`,
+      [second.eventId, subjectHash(missingDestination)],
+    );
+    assert.equal(missingTo.rows[0].local_user_id, null);
+  },
+);
+
+integrationTest(
+  "ordinary recovery executes only the missing identity or entitlement phase",
+  async () => {
+    const suffix = Date.now();
+    const owner = `phase-owner-${suffix}`;
+    const identityAlias = `phase-alias-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [owner]);
+
+    const identityPending = delivery({
+      eventId: `identity_pending_${suffix}`,
+      userId: owner,
+      aliases: [identityAlias],
+    });
+    await processRevenueCatDelivery({
+      delivery: identityPending,
+      config: processorConfig,
+      client: {
+        async getSubscriber() {
+          throw new Error("crash");
+        },
+      },
+    });
+    await db.transaction((transaction) =>
+      applyTrustedSnapshot(transaction, {
+        userId: owner,
+        snapshot: snapshot("2026-09-01T10:01:03.000Z"),
+        config: processorConfig,
+        operationId: "worker:phase_entitlement_1",
+      }),
+    );
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET entitlement_applied_at=now(),next_attempt_at=now(),
+           processing_lease_id=NULL,processing_lease_until=NULL
+       WHERE event_id=$1`,
+      [identityPending.eventId],
+    );
+    let forbiddenGets = 0;
+    const identityRecovered = await processRevenueCatDelivery({
+      delivery: identityPending,
+      config: processorConfig,
+      client: {
+        async getSubscriber() {
+          forbiddenGets += 1;
+          throw new Error("entitlement phase must not refetch");
+        },
+      },
+    });
+    assert.equal(identityRecovered.status, 200);
+    assert.equal(forbiddenGets, 0);
+    const recoveredAlias = await scopedPool.query(
+      `SELECT local_user_id FROM revenuecat_customer_aliases WHERE alias_hash=$1`,
+      [subjectHash(identityAlias)],
+    );
+    assert.equal(recoveredAlias.rows[0].local_user_id, owner);
+
+    const entitlementPending = delivery({
+      eventId: `entitlement_pending_${suffix}`,
+      userId: owner,
+      aliases: [`must-not-repeat-${suffix}`],
+    });
+    await processRevenueCatDelivery({
+      delivery: entitlementPending,
+      config: processorConfig,
+      client: {
+        async getSubscriber() {
+          throw new Error("crash");
+        },
+      },
+    });
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET identity_applied_at=now(),next_attempt_at=now(),
+           processing_lease_id=NULL,processing_lease_until=NULL
+       WHERE event_id=$1`,
+      [entitlementPending.eventId],
+    );
+    const existingAlias = await scopedPool.query(
+      `SELECT count(*)::integer AS count FROM revenuecat_customer_aliases
+       WHERE alias_hash=$1`,
+      [subjectHash(`must-not-repeat-${suffix}`)],
+    );
+    assert.equal(existingAlias.rows[0].count, 0);
+    const calls = [];
+    const entitlementRecovered = await processRevenueCatDelivery({
+      delivery: entitlementPending,
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-01T10:01:04.000Z"),
+        },
+        calls,
+      ),
+    });
+    assert.equal(entitlementRecovered.status, 200);
+    assert.deepEqual(calls, [owner]);
+    const repeatedAlias = await scopedPool.query(
+      `SELECT count(*)::integer AS count FROM revenuecat_customer_aliases
+       WHERE alias_hash=$1`,
+      [subjectHash(`must-not-repeat-${suffix}`)],
+    );
+    assert.equal(repeatedAlias.rows[0].count, 0);
+  },
+);
+
+integrationTest(
+  "a conflict after either phase committed remains pending with identity_set_changed",
+  async () => {
+    const suffix = Date.now();
+    const first = `phase-conflict-a-${suffix}`;
+    const second = `phase-conflict-b-${suffix}`;
+    const alias = `phase-conflict-alias-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1),($2)", [
+      first,
+      second,
+    ]);
+    const event = delivery({
+      eventId: `phase_conflict_${suffix}`,
+      userId: first,
+      aliases: [alias],
+    });
+    await processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      client: {
+        async getSubscriber() {
+          throw new Error("pending");
+        },
+      },
+    });
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET entitlement_applied_at=now(),next_attempt_at=now(),
+           processing_lease_id=NULL,processing_lease_until=NULL
+       WHERE event_id=$1`,
+      [event.eventId],
+    );
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_aliases
+       (alias_hash,local_user_id,alias_kind,ownership_source,source_event_at,source_event_id)
+       VALUES ($1,$2,'ordinary','webhook','2026-09-01T10:01:05Z','conflict_alias_1')`,
+      [subjectHash(alias), second],
+    );
+    const metrics = [];
+    const outcome = await processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      client: fakeClient(null, []),
+      metric: (metric) => metrics.push(metric),
+    });
+    assert.deepEqual(outcome, {
+      status: 503,
+      disposition: "identity_set_changed",
+      retryAfterSeconds: 1,
+    });
+    assert.equal(
+      metrics.some((metric) => metric.type === "identity_set_changed"),
+      true,
+    );
+    const pending = await scopedPool.query(
+      `SELECT disposition,processed_at,next_attempt_at>now() AS backed_off
+       FROM revenuecat_webhook_events WHERE event_id=$1`,
+      [event.eventId],
+    );
+    assert.equal(pending.rows[0].disposition, "pending");
+    assert.equal(pending.rows[0].processed_at, null);
+  },
+);
+
+integrationTest(
+  "a 201 lookup is re-resolved under final locks before deciding visibility",
+  async () => {
+    const suffix = Date.now();
+    const ordinary = `created-delete-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [ordinary]);
+    const ordinaryEvent = delivery({
+      eventId: `created_deleted_${suffix}`,
+      userId: ordinary,
+    });
+    const ordinaryResult = await processRevenueCatDelivery({
+      delivery: ordinaryEvent,
+      config: processorConfig,
+      client: {
+        async getSubscriber() {
+          await scopedPool.query("DELETE FROM users WHERE id=$1", [ordinary]);
+          return {
+            lookup: "created",
+            snapshot: snapshot("2026-09-01T10:01:06.000Z"),
+          };
+        },
+      },
+    });
+    assert.deepEqual(ordinaryResult, {
+      status: 200,
+      disposition: "ignored_deleted",
+    });
+    assert.equal(
+      (
+        await scopedPool.query(
+          "SELECT count(*)::integer AS count FROM revenuecat_webhook_events WHERE event_id=$1",
+          [ordinaryEvent.eventId],
+        )
+      ).rows[0].count,
+      0,
+    );
+
+    const source = `created-transfer-source-${suffix}`;
+    const destination = `created-transfer-dest-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1),($2)", [
+      source,
+      destination,
+    ]);
+    const transfer = delivery({
+      eventId: `created_transfer_${suffix}`,
+      type: "TRANSFER",
+      kind: "transfer",
+      transferredFrom: [source],
+      transferredTo: [destination],
+    });
+    delete transfer.userId;
+    delete transfer.originalUserId;
+    delete transfer.aliases;
+    const transferResult = await processRevenueCatDelivery({
+      delivery: transfer,
+      config: processorConfig,
+      client: {
+        async getSubscriber(uid) {
+          if (uid === source) {
+            await scopedPool.query("DELETE FROM users WHERE id=$1", [source]);
+            return {
+              lookup: "created",
+              snapshot: snapshot("2026-09-01T10:01:07.000Z"),
+            };
+          }
+          return {
+            lookup: "existing",
+            snapshot: snapshot("2026-09-01T10:01:07.000Z"),
+          };
+        },
+      },
+    });
+    assert.equal(transferResult.status, 200);
+    const subjects = await scopedPool.query(
+      `SELECT subject_hash FROM revenuecat_event_subjects WHERE event_id=$1`,
+      [transfer.eventId],
+    );
+    assert.deepEqual(
+      subjects.rows.map((row) => row.subject_hash),
+      [subjectHash(destination)],
+    );
+  },
+);
+
+integrationTest(
+  "an expired event lease can be reclaimed while its old fence cannot commit",
+  async () => {
+    const suffix = Date.now();
+    const owner = `expired-fence-${suffix}`;
+    const event = delivery({
+      eventId: `expired_fence_${suffix}`,
+      userId: owner,
+    });
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [owner]);
+    let releaseOld;
+    let oldStarted;
+    const oldStartedPromise = new Promise((resolve) => {
+      oldStarted = resolve;
+    });
+    const oldSnapshot = new Promise((resolve) => {
+      releaseOld = resolve;
+    });
+    const oldRun = processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      client: {
+        async getSubscriber() {
+          oldStarted();
+          return oldSnapshot;
+        },
+      },
+    });
+    await oldStartedPromise;
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET processing_lease_until=now()-interval '1 second',next_attempt_at=now()
+       WHERE event_id=$1`,
+      [event.eventId],
+    );
+    const newer = await processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-01T10:01:09.000Z"),
+        },
+        [],
+      ),
+    });
+    assert.equal(newer.status, 200);
+    releaseOld({
+      lookup: "existing",
+      snapshot: snapshot("2026-09-01T10:01:08.000Z"),
+    });
+    const staleOwner = await oldRun;
+    assert.equal(staleOwner.status, 503);
+    const state = await scopedPool.query(
+      `SELECT attempt_count,disposition FROM revenuecat_webhook_events WHERE event_id=$1`,
+      [event.eventId],
+    );
+    assert.deepEqual(state.rows[0], {
+      attempt_count: 2,
+      disposition: "applied",
+    });
+  },
+);
+
+integrationTest(
+  "transfer sides fail closed independently, same-owner overlap is accepted, and environment mismatches persist nothing",
+  async () => {
+    const suffix = Date.now();
+    const first = `side-a-${suffix}`;
+    const second = `side-b-${suffix}`;
+    const destination = `side-dest-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1),($2),($3)", [
+      first,
+      second,
+      destination,
+    ]);
+    for (const [index, sides] of [
+      { from: [first, second], to: [destination] },
+      { from: [first], to: [second, destination] },
+    ].entries()) {
+      const event = delivery({
+        eventId: `side_conflict_${index}_${suffix}`,
+        type: "TRANSFER",
+        kind: "transfer",
+        transferredFrom: sides.from,
+        transferredTo: sides.to,
+      });
+      delete event.userId;
+      delete event.originalUserId;
+      delete event.aliases;
+      assert.deepEqual(
+        await processRevenueCatDelivery({
+          delivery: event,
+          config: processorConfig,
+          client: fakeClient(null, []),
+        }),
+        { status: 200, disposition: "ignored_identity_conflict" },
+      );
+    }
+    const overlap = delivery({
+      eventId: `same_overlap_${suffix}`,
+      type: "TRANSFER",
+      kind: "transfer",
+      transferredFrom: [first],
+      transferredTo: [first],
+    });
+    delete overlap.userId;
+    delete overlap.originalUserId;
+    delete overlap.aliases;
+    const overlapCalls = [];
+    assert.equal(
+      (
+        await processRevenueCatDelivery({
+          delivery: overlap,
+          config: processorConfig,
+          client: fakeClient(
+            {
+              lookup: "existing",
+              snapshot: snapshot("2026-09-01T10:01:10.000Z"),
+            },
+            overlapCalls,
+          ),
+        })
+      ).status,
+      200,
+    );
+    assert.deepEqual(overlapCalls, [first]);
+
+    const wrongEnvironment = delivery({
+      eventId: `wrong_environment_${suffix}`,
+      userId: first,
+      metadata: { environment: "PRODUCTION" },
+    });
+    assert.deepEqual(
+      await processRevenueCatDelivery({
+        delivery: wrongEnvironment,
+        config: processorConfig,
+        client: fakeClient(null, []),
+      }),
+      { status: 200, disposition: "ignored_environment" },
+    );
+    const eventCount = await scopedPool.query(
+      `SELECT count(*)::integer AS count FROM revenuecat_webhook_events
+       WHERE event_id=ANY($1::text[])`,
+      [
+        [
+          `side_conflict_0_${suffix}`,
+          `side_conflict_1_${suffix}`,
+          wrongEnvironment.eventId,
+        ],
+      ],
+    );
+    assert.equal(eventCount.rows[0].count, 0);
+  },
+);
+
+integrationTest(
+  "a pending pruned transfer resumes only from its surviving linked destination",
+  async () => {
+    const suffix = Date.now();
+    const source = `pruned-source-${suffix}`;
+    const destination = `pruned-destination-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1),($2)", [
+      source,
+      destination,
+    ]);
+    const event = delivery({
+      eventId: `pending_pruned_${suffix}`,
+      type: "TRANSFER",
+      kind: "transfer",
+      transferredFrom: [source],
+      transferredTo: [destination],
+    });
+    delete event.userId;
+    delete event.originalUserId;
+    delete event.aliases;
+    await processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      client: {
+        async getSubscriber() {
+          throw new Error("pending");
+        },
+      },
+    });
+    await scopedPool.query("DELETE FROM users WHERE id=$1", [source]);
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET next_attempt_at=now(),processing_lease_id=NULL,processing_lease_until=NULL
+       WHERE event_id=$1`,
+      [event.eventId],
+    );
+    const calls = [];
+    const recovered = await processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-01T10:01:11.000Z"),
+        },
+        calls,
+      ),
+    });
+    assert.equal(recovered.status, 200);
+    assert.deepEqual(calls, [destination]);
+    const retained = await scopedPool.query(
+      `SELECT e.identity_count,e.retained_identity_count,e.pruned_identity_count,
+              s.subject_hash,s.local_user_id
+       FROM revenuecat_webhook_events e
+       JOIN revenuecat_event_subjects s ON s.event_id=e.event_id
+       WHERE e.event_id=$1`,
+      [event.eventId],
+    );
+    assert.deepEqual(retained.rows[0], {
+      identity_count: 2,
+      retained_identity_count: 1,
+      pruned_identity_count: 1,
+      subject_hash: subjectHash(destination),
+      local_user_id: destination,
+    });
+  },
+);
+
+integrationTest(
+  "generic source and destination reconciliation cannot satisfy a source-live transfer",
+  async () => {
+    const suffix = Date.now();
+    const source = `source-live-${suffix}`;
+    const destination = `source-live-destination-${suffix}`;
+    const alias = `$RCAnonymousID:source-live-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1),($2)", [
+      source,
+      destination,
+    ]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_aliases
+       (alias_hash,local_user_id,alias_kind,ownership_source,source_event_at,source_event_id)
+       VALUES ($1,$2,'anonymous','webhook','2026-08-01T00:00:00Z','source_live_old')`,
+      [subjectHash(alias), source],
+    );
+    const event = delivery({
+      eventId: `source_live_${suffix}`,
+      type: "TRANSFER",
+      kind: "transfer",
+      transferredFrom: [source, alias],
+      transferredTo: [destination],
+    });
+    delete event.userId;
+    delete event.originalUserId;
+    delete event.aliases;
+    await processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      client: {
+        async getSubscriber() {
+          throw new Error("pending");
+        },
+      },
+    });
+    for (const [index, userId] of [source, destination].entries()) {
+      await db.transaction((transaction) =>
+        applyTrustedSnapshot(transaction, {
+          userId,
+          snapshot: snapshot(`2026-09-01T10:01:1${2 + index}.000Z`),
+          config: processorConfig,
+          operationId: `worker:source_live_${index}`,
+        }),
+      );
+    }
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET next_attempt_at=now(),processing_lease_id=NULL,processing_lease_until=NULL
+       WHERE event_id=$1`,
+      [event.eventId],
+    );
+    const stillLive = await processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      client: fakeClient(
+        (uid) => ({
+          lookup: "existing",
+          snapshot: snapshot("2026-09-01T10:01:14.000Z"),
+        }),
+        [],
+      ),
+    });
+    assert.equal(stillLive.disposition, "transfer_visibility_lag");
+    const pending = await scopedPool.query(
+      `SELECT identity_applied_at,entitlement_applied_at,disposition
+       FROM revenuecat_webhook_events WHERE event_id=$1`,
+      [event.eventId],
+    );
+    assert.deepEqual(pending.rows[0], {
+      identity_applied_at: null,
+      entitlement_applied_at: null,
+      disposition: "pending",
+    });
+    const unmoved = await scopedPool.query(
+      "SELECT local_user_id FROM revenuecat_customer_aliases WHERE alias_hash=$1",
+      [subjectHash(alias)],
+    );
+    assert.equal(unmoved.rows[0].local_user_id, source);
+
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET next_attempt_at=now(),processing_lease_id=NULL,processing_lease_until=NULL
+       WHERE event_id=$1`,
+      [event.eventId],
+    );
+    const completed = await processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      client: fakeClient(
+        (uid) => ({
+          lookup: "existing",
+          snapshot:
+            uid === source
+              ? snapshot("2026-09-01T10:01:15.000Z", {
+                  pro: false,
+                  coaching: false,
+                })
+              : snapshot("2026-09-01T10:01:15.000Z"),
+        }),
+        [],
+      ),
+    });
+    assert.equal(completed.status, 200);
+  },
+);
+
+integrationTest(
+  "three ownership expansions back off with identity_set_changed without partial projection",
+  async () => {
+    const suffix = Date.now();
+    const owners = Array.from(
+      { length: 4 },
+      (_, index) => `expansion-owner-${index}-${suffix}`,
+    );
+    const rawAlias = `expansion-alias-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      owners,
+    ]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_aliases
+       (alias_hash,local_user_id,alias_kind,ownership_source,source_event_at,source_event_id)
+       VALUES ($1,$2,'ordinary','webhook','2026-08-01T00:00:00Z','expand_old_1')`,
+      [subjectHash(rawAlias), owners[0]],
+    );
+    const event = delivery({
+      eventId: `three_expansions_${suffix}`,
+      userId: rawAlias,
+    });
+    const calls = [];
+    const metrics = [];
+    const outcome = await processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      client: {
+        async getSubscriber(uid) {
+          const index = owners.indexOf(uid);
+          calls.push(uid);
+          await scopedPool.query(
+            `UPDATE revenuecat_customer_aliases
+             SET local_user_id=$2,source_event_at=$3,source_event_id=$4
+             WHERE alias_hash=$1`,
+            [
+              subjectHash(rawAlias),
+              owners[index + 1],
+              `2026-09-01T10:01:${20 + index}Z`,
+              `expand_new_${index}`,
+            ],
+          );
+          return {
+            lookup: "existing",
+            snapshot: snapshot(`2026-09-01T10:01:${20 + index}.000Z`),
+          };
+        },
+      },
+      metric: (metric) => metrics.push(metric),
+    });
+    assert.equal(outcome.disposition, "identity_set_changed");
+    assert.deepEqual(calls, owners.slice(0, 3));
+    assert.equal(
+      metrics.some((metric) => metric.type === "identity_set_changed"),
+      true,
+    );
+    const projected = await scopedPool.query(
+      "SELECT count(*)::integer AS count FROM subscription_entitlements WHERE user_id=ANY($1::text[])",
+      [owners],
+    );
+    assert.equal(projected.rows[0].count, 0);
+    const queued = await scopedPool.query(
+      `SELECT user_id FROM revenuecat_customer_state
+       WHERE user_id=ANY($1::text[]) ORDER BY user_id`,
+      [owners],
+    );
+    assert.deepEqual(
+      queued.rows.map((row) => row.user_id),
+      [...owners].sort(),
+    );
+  },
+);
+
+integrationTest(
+  "newer reverse and concurrent transfers win alias provenance deterministically",
+  async () => {
+    const suffix = Date.now();
+    const owners = [
+      `chain-a-${suffix}`,
+      `chain-b-${suffix}`,
+      `chain-c-${suffix}`,
+    ];
+    const alias = `$RCAnonymousID:chain-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      owners,
+    ]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_aliases
+       (alias_hash,local_user_id,alias_kind,ownership_source,source_event_at,source_event_id)
+       VALUES ($1,$2,'anonymous','webhook','2026-08-01T00:00:00Z','chain_old_1')`,
+      [subjectHash(alias), owners[0]],
+    );
+    const makeTransfer = (eventId, eventAt, destination) => {
+      const event = delivery({
+        eventId,
+        eventAt,
+        type: "TRANSFER",
+        kind: "transfer",
+        transferredFrom: [alias],
+        transferredTo: [destination],
+      });
+      delete event.userId;
+      delete event.originalUserId;
+      delete event.aliases;
+      return event;
+    };
+    const clientFor = (destination) =>
+      fakeClient(
+        (uid) => ({
+          lookup: "existing",
+          snapshot:
+            uid === destination
+              ? snapshot("2026-09-01T10:01:31.000Z")
+              : snapshot("2026-09-01T10:01:31.000Z", {
+                  pro: false,
+                  coaching: false,
+                }),
+        }),
+        [],
+      );
+    const newer = makeTransfer(
+      `chain_newer_${suffix}`,
+      new Date("2026-09-01T10:01:31Z"),
+      owners[1],
+    );
+    const older = makeTransfer(
+      `chain_older_${suffix}`,
+      new Date("2026-09-01T10:01:30Z"),
+      owners[2],
+    );
+    await Promise.all([
+      processRevenueCatDelivery({
+        delivery: older,
+        config: processorConfig,
+        client: clientFor(owners[2]),
+      }),
+      processRevenueCatDelivery({
+        delivery: newer,
+        config: processorConfig,
+        client: clientFor(owners[1]),
+      }),
+    ]);
+    const winner = await scopedPool.query(
+      `SELECT local_user_id,source_event_id FROM revenuecat_customer_aliases
+       WHERE alias_hash=$1`,
+      [subjectHash(alias)],
+    );
+    assert.deepEqual(winner.rows[0], {
+      local_user_id: owners[1],
+      source_event_id: newer.eventId,
+    });
+  },
+);
+
+integrationTest(
+  "bounded post-GET transfer deletion races retain no deleted subject or alias",
+  async () => {
+    const suffix = Date.now();
+    for (let index = 0; index < 10; index += 1) {
+      const source = `delete-race-source-${index}-${suffix}`;
+      const destination = `delete-race-dest-${index}-${suffix}`;
+      const deleted = index % 2 === 0 ? source : destination;
+      await scopedPool.query("INSERT INTO users (id) VALUES ($1),($2)", [
+        source,
+        destination,
+      ]);
+      const event = delivery({
+        eventId: `delete_race_${index}_${suffix}`,
+        type: "TRANSFER",
+        kind: "transfer",
+        transferredFrom: [source],
+        transferredTo: [destination],
+      });
+      delete event.userId;
+      delete event.originalUserId;
+      delete event.aliases;
+      let deletedDuringGet = false;
+      const outcome = await processRevenueCatDelivery({
+        delivery: event,
+        config: processorConfig,
+        client: {
+          async getSubscriber(uid) {
+            if (uid === deleted && !deletedDuringGet) {
+              deletedDuringGet = true;
+              await scopedPool.query("DELETE FROM users WHERE id=$1", [
+                deleted,
+              ]);
+            }
+            return {
+              lookup: "existing",
+              snapshot:
+                uid === source
+                  ? snapshot("2026-09-01T10:01:40.000Z", {
+                      pro: false,
+                      coaching: false,
+                    })
+                  : snapshot("2026-09-01T10:01:40.000Z"),
+            };
+          },
+        },
+      });
+      assert.equal(outcome.status, 200);
+      const forbidden = await scopedPool.query(
+        `SELECT
+          EXISTS(SELECT 1 FROM revenuecat_event_subjects WHERE subject_hash=$1) AS subject,
+          EXISTS(SELECT 1 FROM revenuecat_customer_aliases WHERE alias_hash=$1) AS alias`,
+        [subjectHash(deleted)],
+      );
+      assert.deepEqual(forbidden.rows[0], { subject: false, alias: false });
+    }
   },
 );
 
