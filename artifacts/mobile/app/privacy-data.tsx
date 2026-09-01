@@ -90,13 +90,18 @@ export default function PrivacyDataScreen() {
       if (deletingAccount) {
         const logoutOutcome = await logout({
           operation: "account_deletion",
-          async beforeSignOut() {
-            const deletion = await deleteMyAccount();
-            if (!deletion.deleted) {
-              throw new Error("The server did not confirm account deletion.");
-            }
-          },
+          beforeSignOut: ({ requestId }) => deleteMyAccount(requestId),
         });
+        if (logoutOutcome.status === "finalizing") {
+          Alert.alert("Deletion is finalizing", logoutOutcome.message);
+          if (logoutOutcome.localSignOutComplete) {
+            void trackEvent("account_deletion_finalizing", {
+              source: "account",
+            });
+            router.replace("/onboarding");
+          }
+          return;
+        }
         if (
           logoutOutcome.status !== "signed_out" ||
           logoutOutcome.operation !== "account_deletion"
@@ -111,7 +116,7 @@ export default function PrivacyDataScreen() {
       void trackEvent("account_deleted", {
         source: deletingAccount ? "account" : "device",
       });
-      await AsyncStorage.clear();
+      if (!deletingAccount) await AsyncStorage.clear();
       Alert.alert(
         "Account deleted",
         "Your Elovia account and app data have been deleted.",

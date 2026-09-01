@@ -1,4 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
+import { randomUUID } from "node:crypto";
 import {
   activityCommentsTable,
   aiUsageTable,
@@ -21,6 +22,11 @@ import { eq, or } from "drizzle-orm";
 import { requireAuth } from "../middlewares/aiGate";
 import { deleteFirebaseUser } from "../lib/auth";
 import { resolveEntitlement } from "../lib/entitlements";
+import {
+  finalizeAccountDeletion,
+  tombstoneAndDeleteAccountData,
+} from "../lib/accountDeletion";
+import { runAccountDeletionWorkflow } from "../lib/accountDeletionWorkflow";
 
 const router: IRouter = Router();
 
@@ -96,8 +102,13 @@ router.get("/legal/account-deletion", (_req: Request, res: Response) => {
       if (!confirm('Permanently delete your Elovia account and app data?')) return;
       remove.disabled = true; status.textContent = 'Deleting…';
       const response = await fetch('/api/account', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token } });
-      status.textContent = response.ok ? 'Your Elovia account and app data have been deleted.' : 'Deletion did not complete. Please try again or use the support contact on Elovia’s app-store listing.';
-      if (!response.ok) remove.disabled = false;
+      const result = await response.json().catch(() => ({}));
+      status.textContent = result.deleted
+        ? 'Your Elovia account and app data have been deleted.'
+        : result.finalizing
+          ? 'Your app data was removed and identity deletion is finalizing. It is safe to close this window.'
+          : 'Deletion did not start. Please try again or use the support contact on Elovia’s app-store listing.';
+      if (!response.ok && !result.finalizing) remove.disabled = false;
     };
   })();
   </script>`,
@@ -231,14 +242,46 @@ router.get(
 
 router.delete("/account", requireAuth, async (req: Request, res: Response) => {
   const userId = req.user!.id;
+  const suppliedRequestId = req.get("X-Elovia-Deletion-Request-ID")?.trim();
+  const requestId =
+    suppliedRequestId && /^[A-Za-z0-9_-]{8,128}$/.test(suppliedRequestId)
+      ? suppliedRequestId
+      : randomUUID();
   try {
     res.setHeader("Cache-Control", "no-store");
-    await db.delete(usersTable).where(eq(usersTable.id, userId));
-    await deleteFirebaseUser(userId);
-    res.status(200).json({ deleted: true });
+    const outcome = await runAccountDeletionWorkflow({
+      async tombstoneAndDeleteData() {
+        await tombstoneAndDeleteAccountData(userId, requestId);
+      },
+      deleteIdentity: () => deleteFirebaseUser(userId),
+      markFinalized: () => finalizeAccountDeletion(userId),
+    });
+    if (outcome.status === "finalized") {
+      res.status(200).json({ deleted: true, finalizing: false });
+      return;
+    }
+
+    req.log.error(
+      {
+        errorType:
+          outcome.error instanceof Error ? outcome.error.name : "UnknownError",
+      },
+      "Account identity deletion remains pending",
+    );
+    res.status(202).json({
+      deleted: false,
+      finalizing: true,
+      code: "account_deletion_finalizing",
+    });
   } catch (error) {
-    req.log.error({ error, userId }, "Account deletion failed");
-    res.status(500).json({ error: "Account deletion did not complete" });
+    req.log.error(
+      { errorType: error instanceof Error ? error.name : "UnknownError" },
+      "Account deletion transaction failed",
+    );
+    res.status(500).json({
+      error: "Account deletion did not start",
+      code: "account_deletion_failed",
+    });
   }
 });
 

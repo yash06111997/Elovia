@@ -1,6 +1,9 @@
 import { type Request, type Response, type NextFunction } from "express";
-import { verifyFirebaseToken, type AuthUser } from "../lib/auth";
-import { db, usersTable } from "@workspace/db";
+import { verifyFirebaseDeletionToken, type AuthUser } from "../lib/auth";
+import {
+  findAccountDeletionTombstone,
+  provisionAuthenticatedUserIfActive,
+} from "../lib/accountDeletion";
 
 declare global {
   namespace Express {
@@ -16,6 +19,14 @@ declare global {
       user: User;
     }
   }
+}
+
+function isAccountDeletionRequest(req: Request): boolean {
+  return req.method === "DELETE" && req.path === "/api/account";
+}
+
+function errorType(error: unknown): string {
+  return error instanceof Error ? error.name : "UnknownError";
 }
 
 export async function authMiddleware(
@@ -39,30 +50,59 @@ export async function authMiddleware(
     return;
   }
 
-  const user = await verifyFirebaseToken(idToken);
-  if (user) {
-    req.user = user;
-    try {
-      await db
-        .insert(usersTable)
-        .values({
-          id: user.id,
-          email: user.email,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          profileImageUrl: user.profileImageUrl,
-        })
-        .onConflictDoUpdate({
-          target: usersTable.id,
-          set: {
-            email: user.email,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            profileImageUrl: user.profileImageUrl,
-            updatedAt: new Date(),
-          },
+  const deletionRequest = isAccountDeletionRequest(req);
+  const deletionVerification = await verifyFirebaseDeletionToken(idToken);
+  const user = deletionVerification?.user ?? null;
+  if (!user) {
+    next();
+    return;
+  }
+
+  try {
+    if (deletionVerification?.deletionFallback) {
+      // A revoked/deleted identity is accepted only to finalize its existing
+      // tombstone. Never provision a user from this narrow fallback.
+      const tombstone = await findAccountDeletionTombstone(user.id);
+      if (!tombstone) {
+        next();
+        return;
+      }
+      if (deletionRequest) {
+        req.user = user;
+        next();
+      } else {
+        res.status(410).json({
+          error: "This Elovia account has been deleted",
+          code: "deleted_account",
         });
-    } catch {}
+      }
+      return;
+    }
+
+    const provisioned = await provisionAuthenticatedUserIfActive(user);
+    if (provisioned === "deleted") {
+      if (deletionRequest) {
+        req.user = user;
+        next();
+        return;
+      }
+      res.status(410).json({
+        error: "This Elovia account has been deleted",
+        code: "deleted_account",
+      });
+      return;
+    }
+    req.user = user;
+  } catch (error) {
+    req.log.error(
+      { errorType: errorType(error) },
+      "Authentication account-state check failed",
+    );
+    res.status(503).json({
+      error: "Authentication is temporarily unavailable",
+      code: "authentication_unavailable",
+    });
+    return;
   }
 
   next();

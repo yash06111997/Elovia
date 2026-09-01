@@ -36,6 +36,7 @@ const expectedUserDataFields = [
   "places",
 ];
 const expectedApplicationTables = [
+  "account_deletions",
   "activity_comments",
   "ai_usage",
   "challenge_participants",
@@ -84,6 +85,9 @@ let db;
 let saveUserData;
 let loadUserData;
 let runMigrations;
+let finalizeAccountDeletion;
+let provisionAuthenticatedUserIfActive;
+let tombstoneAndDeleteAccountData;
 let unregisterTsx;
 let routeServer;
 let routeBaseUrl;
@@ -251,6 +255,11 @@ if (testDatabaseUrl) {
     workspacePool = databaseModule.pool;
     ({ loadUserData, saveUserData } =
       await import("../../artifacts/api-server/src/services/userDataStore.ts"));
+    ({
+      finalizeAccountDeletion,
+      provisionAuthenticatedUserIfActive,
+      tombstoneAndDeleteAccountData,
+    } = await import("../../artifacts/api-server/src/lib/accountDeletion.ts"));
 
     await scopedPool.query("INSERT INTO users (id) VALUES ('route-user')");
     const express = requireFromApiPackage("express");
@@ -298,6 +307,7 @@ integrationTest(
       assert.deepEqual(await runMigrations(databaseUrl), [
         "0000_baseline.sql",
         "0001_user_data_sync_integrity.sql",
+        "0002_account_deletion_tombstones.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -316,6 +326,10 @@ integrationTest(
           { name: "0000_baseline.sql", application_count: 1 },
           {
             name: "0001_user_data_sync_integrity.sql",
+            application_count: 1,
+          },
+          {
+            name: "0002_account_deletion_tombstones.sql",
             application_count: 1,
           },
         ]);
@@ -345,6 +359,7 @@ integrationTest(
       assert.deepEqual(results.flat().sort(), [
         "0000_baseline.sql",
         "0001_user_data_sync_integrity.sql",
+        "0002_account_deletion_tombstones.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -359,6 +374,10 @@ integrationTest(
           { name: "0000_baseline.sql", application_count: 1 },
           {
             name: "0001_user_data_sync_integrity.sql",
+            application_count: 1,
+          },
+          {
+            name: "0002_account_deletion_tombstones.sql",
             application_count: 1,
           },
         ]);
@@ -378,6 +397,7 @@ integrationTest(
     const migrationNames = [
       "0000_baseline.sql",
       "0001_user_data_sync_integrity.sql",
+      "0002_account_deletion_tombstones.sql",
     ];
 
     try {
@@ -430,7 +450,7 @@ integrationTest(
           `);
           assert.deepEqual(state.rows[0], {
             partial_table: null,
-            migration_count: 2,
+            migration_count: 3,
           });
         } finally {
           await pool.end();
@@ -723,7 +743,11 @@ integrationTest(
     `);
     assert.deepEqual(
       applied.rows.map((row) => row.name),
-      ["0000_baseline.sql", "0001_user_data_sync_integrity.sql"],
+      [
+        "0000_baseline.sql",
+        "0001_user_data_sync_integrity.sql",
+        "0002_account_deletion_tombstones.sql",
+      ],
     );
 
     const result = await scopedPool.query(`
@@ -774,6 +798,72 @@ integrationTest(
       results.find((result) => result.kind === "conflict").currentRevision,
       1,
     );
+  },
+);
+
+integrationTest(
+  "account deletion tombstone serializes provisioning and survives repeated deletion",
+  async () => {
+    const userId = "deletion-race-user";
+    const authUser = {
+      id: userId,
+      email: "deletion-race@example.invalid",
+      firstName: "Delete",
+      lastName: "Race",
+      profileImageUrl: null,
+    };
+    await scopedPool.query("INSERT INTO users (id, email) VALUES ($1, $2)", [
+      userId,
+      authUser.email,
+    ]);
+    await scopedPool.query(
+      "INSERT INTO user_data (user_id, app_state) VALUES ($1, $2::jsonb)",
+      [userId, JSON.stringify({ private: true })],
+    );
+
+    await Promise.all([
+      provisionAuthenticatedUserIfActive(authUser),
+      tombstoneAndDeleteAccountData(userId, "deletion-request-first"),
+      provisionAuthenticatedUserIfActive(authUser),
+    ]);
+
+    assert.equal(
+      await provisionAuthenticatedUserIfActive(authUser),
+      "deleted",
+      "post-tombstone auth cannot recreate the user",
+    );
+    const repeated = await tombstoneAndDeleteAccountData(
+      userId,
+      "deletion-request-second",
+    );
+    assert.equal(repeated.requestId, "deletion-request-first");
+    assert.equal(repeated.status, "identity_pending");
+
+    const persisted = await scopedPool.query(
+      `
+        SELECT
+          (SELECT count(*)::integer FROM users WHERE id = $1) AS users,
+          (SELECT count(*)::integer FROM user_data WHERE user_id = $1) AS user_data,
+          (SELECT count(*)::integer FROM account_deletions WHERE user_id = $1) AS tombstones
+      `,
+      [userId],
+    );
+    assert.deepEqual(persisted.rows[0], {
+      users: 0,
+      user_data: 0,
+      tombstones: 1,
+    });
+
+    assert.equal(await finalizeAccountDeletion(userId), true);
+    assert.equal(await finalizeAccountDeletion(userId), true);
+    const finalized = await scopedPool.query(
+      "SELECT status, finalized_at IS NOT NULL AS finalized FROM account_deletions WHERE user_id = $1",
+      [userId],
+    );
+    assert.deepEqual(finalized.rows[0], {
+      status: "finalized",
+      finalized: true,
+    });
   },
 );
 

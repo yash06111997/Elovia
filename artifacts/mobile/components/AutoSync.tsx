@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { useAuth } from "@/lib/auth";
 import {
@@ -19,6 +19,10 @@ import {
 } from "@/lib/cloudSyncContract";
 import { emitDataRestored } from "@/lib/syncEvents";
 import { trackEvent } from "@/lib/telemetry";
+import {
+  isAccountDeletionFinalizing,
+  subscribeAccountDeletionFinalizing,
+} from "@/lib/accountDeletionRecovery";
 
 const AUTO_BACKUP_INTERVAL = 5 * 60 * 1000;
 const MIN_BACKUP_GAP = 30 * 1000;
@@ -37,6 +41,11 @@ function reportAutomaticSyncFailure(
  */
 export function AutoSync() {
   const { user, isAuthenticated } = useAuth();
+  const deletionFinalizing = useSyncExternalStore(
+    subscribeAccountDeletionFinalizing,
+    isAccountDeletionFinalizing,
+    isAccountDeletionFinalizing,
+  );
 
   const activeSessionRef = useRef<CloudSyncSessionToken | null>(null);
   const backupTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -52,6 +61,8 @@ export function AutoSync() {
   ) => {
     if (
       activeSessionRef.current !== sessionToken ||
+      deletionFinalizing ||
+      isAccountDeletionFinalizing() ||
       !isCloudSyncSessionCurrent(sessionToken) ||
       !restoreSettledRef.current ||
       backupInFlightRef.current.has(sessionToken) ||
@@ -90,7 +101,8 @@ export function AutoSync() {
   };
 
   useEffect(() => {
-    const currentUserId = isAuthenticated && user ? user.id : null;
+    const currentUserId =
+      !deletionFinalizing && isAuthenticated && user ? user.id : null;
     const localSession = ++sessionIdRef.current;
     let ownedSessionToken: CloudSyncSessionToken | null = null;
     restoreSettledRef.current = false;
@@ -103,6 +115,7 @@ export function AutoSync() {
       void (async () => {
         const sessionIsCurrent = async () =>
           localSession === sessionIdRef.current &&
+          !isAccountDeletionFinalizing() &&
           activeSessionRef.current === sessionToken &&
           isCloudSyncSessionCurrent(sessionToken) &&
           (await getCurrentCloudSyncUserId()) === currentUserId;
@@ -173,10 +186,10 @@ export function AutoSync() {
         endCloudSyncSession(ownedSessionToken);
       }
     };
-  }, [isAuthenticated, user?.id]);
+  }, [deletionFinalizing, isAuthenticated, user?.id]);
 
   useEffect(() => {
-    if (!isAuthenticated || !user) {
+    if (deletionFinalizing || !isAuthenticated || !user) {
       if (backupTimerRef.current) {
         clearInterval(backupTimerRef.current);
         backupTimerRef.current = null;
@@ -186,6 +199,7 @@ export function AutoSync() {
 
     const userId = user.id;
     const doBackup = async () => {
+      if (isAccountDeletionFinalizing()) return;
       const sessionToken = activeSessionRef.current;
       if (!sessionToken) return;
       await attemptAutomaticBackup(sessionToken, userId);
@@ -207,7 +221,7 @@ export function AutoSync() {
       }
       sub.remove();
     };
-  }, [isAuthenticated, user?.id]);
+  }, [deletionFinalizing, isAuthenticated, user?.id]);
 
   return null;
 }

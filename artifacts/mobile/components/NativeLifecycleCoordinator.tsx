@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useRootNavigationState, useRouter } from "expo-router";
 
 import { useAuth } from "@/lib/auth";
@@ -24,6 +24,10 @@ import {
   isNativeLifecycleFenceCurrent,
   reconcileNativeAccountState,
 } from "@/lib/nativeLifecycleCleanup";
+import {
+  isAccountDeletionFinalizing,
+  subscribeAccountDeletionFinalizing,
+} from "@/lib/accountDeletionRecovery";
 
 let pendingArrivalOperation: Promise<void> = Promise.resolve();
 
@@ -59,6 +63,11 @@ export function NativeLifecycleCoordinator() {
   const rootNavigationState = useRootNavigationState();
   const router = useRouter();
   const generation = useRef(0);
+  const deletionFinalizing = useSyncExternalStore(
+    subscribeAccountDeletionFinalizing,
+    isAccountDeletionFinalizing,
+    isAccountDeletionFinalizing,
+  );
 
   useEffect(() => {
     const run = generation.current + 1;
@@ -73,7 +82,7 @@ export function NativeLifecycleCoordinator() {
       };
     }
 
-    if (!isAuthenticated || !userId) {
+    if (deletionFinalizing || !isAuthenticated || !userId) {
       const cleanupWaits = new Set<{
         timer: ReturnType<typeof setTimeout>;
         resolve(): void;
@@ -303,7 +312,14 @@ export function NativeLifecycleCoordinator() {
         void releasePendingArrival(userId, activeLeaseId);
       }
     };
-  }, [isAuthenticated, isLoading, rootNavigationState?.key, router, user?.id]);
+  }, [
+    deletionFinalizing,
+    isAuthenticated,
+    isLoading,
+    rootNavigationState?.key,
+    router,
+    user?.id,
+  ]);
 
   return null;
 }

@@ -1,5 +1,6 @@
 import { initializeApp, getApps, cert, applicationDefault } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
+import { firebaseAuthErrorType, verifyFirebaseTokenWithPolicy } from "./firebaseTokenPolicy";
 
 if (getApps().length === 0) {
   const projectId = process.env.FIREBASE_PROJECT_ID;
@@ -35,22 +36,49 @@ export interface AuthUser {
   profileImageUrl: string | null;
 }
 
-export async function verifyFirebaseToken(idToken: string): Promise<AuthUser | null> {
+function decodedIdentityToUser(decoded: {
+  uid: string;
+  email?: string;
+  name?: string;
+  picture?: string;
+}): AuthUser {
+  const displayName = decoded.name || "";
+  const nameParts = displayName.split(" ");
+  return {
+    id: decoded.uid,
+    email: decoded.email || null,
+    firstName: nameParts[0] || null,
+    lastName: nameParts.slice(1).join(" ") || null,
+    profileImageUrl: decoded.picture || null,
+  };
+}
+
+async function verifyFirebaseTokenForPolicy(
+  idToken: string,
+  allowDeletedIdentityForDeletion: boolean,
+): Promise<{ user: AuthUser; deletionFallback: boolean } | null> {
   try {
-    const decoded = await firebaseAuth.verifyIdToken(idToken);
-    const displayName = decoded.name || "";
-    const nameParts = displayName.split(" ");
+    const decoded = await verifyFirebaseTokenWithPolicy(firebaseAuth, idToken, allowDeletedIdentityForDeletion);
     return {
-      id: decoded.uid,
-      email: decoded.email || null,
-      firstName: nameParts[0] || null,
-      lastName: nameParts.slice(1).join(" ") || null,
-      profileImageUrl: decoded.picture || null,
+      user: decodedIdentityToUser(decoded.identity),
+      deletionFallback: decoded.deletionFallback,
     };
   } catch (err) {
-    console.error("verifyFirebaseToken failed:", err instanceof Error ? err.message : err);
+    console.error("Firebase token verification failed", { errorType: firebaseAuthErrorType(err) });
     return null;
   }
+}
+
+export function verifyFirebaseToken(idToken: string): Promise<AuthUser | null> {
+  return verifyFirebaseTokenForPolicy(idToken, false).then((verified) => verified?.user ?? null);
+}
+
+/** Only the idempotent DELETE /api/account retry path may call this. */
+export function verifyFirebaseDeletionToken(idToken: string): Promise<{
+  user: AuthUser;
+  deletionFallback: boolean;
+} | null> {
+  return verifyFirebaseTokenForPolicy(idToken, true);
 }
 
 /** Permanently remove the identity after the app database has been erased. */

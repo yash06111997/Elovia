@@ -42,6 +42,10 @@ export type ApiErrorCode =
   | "too_late"
   | "in_past"
   | "bad_request"
+  | "deleted_account"
+  | "authentication_unavailable"
+  | "account_deletion_failed"
+  | "account_deletion_finalizing"
   | "unknown";
 
 export class ApiError extends Error {
@@ -338,7 +342,7 @@ async function getAuthed<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function sendAuthed<T>(path: string, method: string, body?: unknown): Promise<T> {
+async function sendAuthed<T>(path: string, method: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
   const token = await getAuthToken();
   if (!token) throw new ApiError("Please sign in.", 401, "unauthenticated");
 
@@ -347,6 +351,7 @@ async function sendAuthed<T>(path: string, method: string, body?: unknown): Prom
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
+      ...extraHeaders,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -376,8 +381,10 @@ export function exportMyData(): Promise<AccountDataExport> {
   return getAuthed<AccountDataExport>("/api/privacy/export");
 }
 
-export function deleteMyAccount(): Promise<{ deleted: boolean }> {
-  return sendAuthed<{ deleted: boolean }>("/api/account", "DELETE");
+export function deleteMyAccount(requestId: string): Promise<{ deleted: boolean; finalizing: boolean }> {
+  return sendAuthed<{ deleted: boolean; finalizing: boolean }>("/api/account", "DELETE", undefined, {
+    "X-Elovia-Deletion-Request-ID": requestId,
+  });
 }
 
 export interface SocialProfile {

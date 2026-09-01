@@ -45,6 +45,14 @@ import {
   runLogoutWorkflow,
 } from "../../artifacts/mobile/lib/logoutWorkflow.ts";
 import {
+  ACCOUNT_DELETION_MARKER_KEY,
+  AccountDeletionRecoveryStore,
+  isAccountDeletionFinalizing,
+  recoverAccountDeletionFinalization,
+} from "../../artifacts/mobile/lib/accountDeletionRecovery.ts";
+import { runAccountDeletionWorkflow } from "../../artifacts/api-server/src/lib/accountDeletionWorkflow.ts";
+import { verifyFirebaseTokenWithPolicy } from "../../artifacts/api-server/src/lib/firebaseTokenPolicy.ts";
+import {
   canCompleteNativeStateLogout,
   captureNativeLifecycleFence,
   isNativeLifecycleFenceCurrent,
@@ -91,6 +99,12 @@ class MemoryKeyValueStorage {
   }
   async removeItem(key) {
     this.values.delete(key);
+  }
+  async getAllKeys() {
+    return [...this.values.keys()];
+  }
+  async multiRemove(keys) {
+    for (const key of keys) this.values.delete(key);
   }
 }
 
@@ -1084,6 +1098,267 @@ test("account deletion failure after detach remains typed and never reports succ
   assert.equal(localClearCalls, 0);
 });
 
+test("Firebase verification checks revocation and narrows deleted-identity fallback", async () => {
+  const checks = [];
+  const active = await verifyFirebaseTokenWithPolicy(
+    {
+      async verifyIdToken(_token, checkRevoked) {
+        checks.push(checkRevoked);
+        return { uid: "active-user" };
+      },
+    },
+    "signed-token",
+    false,
+  );
+  assert.deepEqual(active, {
+    identity: { uid: "active-user" },
+    deletionFallback: false,
+  });
+  assert.deepEqual(checks, [true]);
+
+  checks.length = 0;
+  const deleted = await verifyFirebaseTokenWithPolicy(
+    {
+      async verifyIdToken(_token, checkRevoked) {
+        checks.push(checkRevoked);
+        if (checkRevoked) {
+          throw { code: "auth/user-not-found" };
+        }
+        return { uid: "deleted-user" };
+      },
+    },
+    "still-signed-unexpired-token",
+    true,
+  );
+  assert.equal(deleted.deletionFallback, true);
+  assert.equal(deleted.identity.uid, "deleted-user");
+  assert.deepEqual(checks, [true, false]);
+
+  await assert.rejects(
+    verifyFirebaseTokenWithPolicy(
+      {
+        async verifyIdToken() {
+          throw { code: "auth/user-not-found" };
+        },
+      },
+      "token",
+      false,
+    ),
+    (error) => error.code === "auth/user-not-found",
+  );
+});
+
+test("server deletion tombstones data before identity work and retries finalization", async () => {
+  const state = {
+    tombstoned: false,
+    userDataPresent: true,
+    finalized: false,
+    identityAttempts: 0,
+  };
+  const order = [];
+  const first = await runAccountDeletionWorkflow({
+    async tombstoneAndDeleteData() {
+      state.tombstoned = true;
+      state.userDataPresent = false;
+      order.push("tombstone-and-data-delete");
+    },
+    async deleteIdentity() {
+      assert.equal(state.tombstoned, true);
+      assert.equal(state.userDataPresent, false);
+      state.identityAttempts += 1;
+      order.push("identity-delete");
+      throw new Error("injected Firebase outage");
+    },
+    async markFinalized() {
+      state.finalized = true;
+      return true;
+    },
+  });
+  assert.equal(first.status, "identity_pending");
+  assert.equal(state.tombstoned, true);
+  assert.equal(state.userDataPresent, false);
+  assert.equal(state.finalized, false);
+
+  const retry = await runAccountDeletionWorkflow({
+    async tombstoneAndDeleteData() {
+      assert.equal(state.tombstoned, true, "the durable tombstone survives");
+      assert.equal(state.userDataPresent, false);
+      order.push("idempotent-data-delete");
+    },
+    async deleteIdentity() {
+      state.identityAttempts += 1;
+      order.push("identity-delete-retry");
+    },
+    async markFinalized() {
+      state.finalized = true;
+      order.push("finalize-tombstone");
+      return true;
+    },
+  });
+  assert.deepEqual(retry, { status: "finalized" });
+  assert.equal(state.identityAttempts, 2);
+  assert.equal(state.finalized, true);
+  assert.deepEqual(order, [
+    "tombstone-and-data-delete",
+    "identity-delete",
+    "idempotent-data-delete",
+    "identity-delete-retry",
+    "finalize-tombstone",
+  ]);
+});
+
+test("post-delete Firebase sign-out failure remains finalizing and never resumes", async () => {
+  const outcome = await runLogoutWorkflow({
+    operation: "account_deletion",
+    isAuthenticated: true,
+    prepare: async () => ({ pushDetached: true, nativeDetached: true }),
+    beforeSignOut: async () => ({ status: "confirmed" }),
+    signOut: async () => {
+      throw new Error("injected local Firebase persistence failure");
+    },
+  });
+  assert.deepEqual(outcome, {
+    status: "finalizing",
+    operation: "account_deletion",
+    reason: "firebase_sign_out_failed",
+    localSignOutComplete: false,
+    message:
+      "Account deletion is finalizing, but Elovia could not finish signing out on this device. Reopen the app to retry safely.",
+  });
+});
+
+test("a lost deletion response signs out but stays honestly finalizing", async () => {
+  let signOutCalls = 0;
+  const outcome = await runLogoutWorkflow({
+    operation: "account_deletion",
+    isAuthenticated: true,
+    prepare: async () => ({ pushDetached: true, nativeDetached: true }),
+    beforeSignOut: async () => ({
+      status: "finalizing",
+      message: "The deletion response was interrupted.",
+    }),
+    async signOut() {
+      signOutCalls += 1;
+    },
+  });
+  assert.deepEqual(outcome, {
+    status: "finalizing",
+    operation: "account_deletion",
+    reason: "remote_delete_ambiguous",
+    localSignOutComplete: true,
+    message: "The deletion response was interrupted.",
+  });
+  assert.equal(signOutCalls, 1);
+});
+
+test("deletion marker survives restart and clears data only after sign-out completes", async () => {
+  const storage = new MemoryKeyValueStorage();
+  storage.values.set("account-data", "private-local-state");
+  const firstStore = new AccountDeletionRecoveryStore(
+    storage,
+    () => new Date("2026-09-01T10:00:00.000Z"),
+  );
+  await firstStore.begin("user-a", "delete-request-a");
+  await firstStore.advance("user-a", "delete-request-a", "request_started");
+  assert.equal(isAccountDeletionFinalizing(), true);
+
+  const signOutGate = deferred();
+  const recovery = recoverAccountDeletionFinalization({
+    store: new AccountDeletionRecoveryStore(storage),
+    currentUserId: "user-a",
+    signOut: () => signOutGate.promise,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(storage.values.get("account-data"), "private-local-state");
+  assert.ok(storage.values.has(ACCOUNT_DELETION_MARKER_KEY));
+
+  signOutGate.resolve();
+  assert.deepEqual(await recovery, { status: "finalized" });
+  assert.equal(storage.values.size, 0);
+  assert.equal(isAccountDeletionFinalizing(), false);
+});
+
+test("pre-request deletion failure aborts safely while post-request failure persists", async () => {
+  const storage = new MemoryKeyValueStorage();
+  const store = new AccountDeletionRecoveryStore(storage);
+  await store.begin("user-a", "delete-pre-request");
+  assert.equal(await store.abortPrepared("user-a", "delete-pre-request"), true);
+  assert.equal(isAccountDeletionFinalizing(), false);
+  assert.equal(await store.read(), null);
+
+  await store.begin("user-a", "delete-post-request");
+  await store.advance("user-a", "delete-post-request", "request_started");
+  assert.equal(
+    await store.abortPrepared("user-a", "delete-post-request"),
+    false,
+  );
+  assert.equal(
+    await store.abortBeforeRemoteCommit("user-a", "delete-post-request"),
+    true,
+    "an authoritative not-started response can release the lifecycle",
+  );
+  assert.equal(isAccountDeletionFinalizing(), false);
+
+  await store.begin("user-a", "delete-ambiguous-request");
+  await store.advance("user-a", "delete-ambiguous-request", "request_started");
+  assert.equal(isAccountDeletionFinalizing(), true);
+  const firstRecovery = await recoverAccountDeletionFinalization({
+    store: new AccountDeletionRecoveryStore(storage),
+    currentUserId: "user-a",
+    signOut: async () => {
+      throw new Error("injected sign-out failure");
+    },
+  });
+  assert.equal(firstRecovery.status, "pending");
+  assert.ok(storage.values.has(ACCOUNT_DELETION_MARKER_KEY));
+
+  assert.deepEqual(
+    await recoverAccountDeletionFinalization({
+      store: new AccountDeletionRecoveryStore(storage),
+      currentUserId: null,
+      signOut: async () => {
+        throw new Error("must not sign out an absent Firebase user");
+      },
+    }),
+    { status: "finalized" },
+  );
+  assert.equal(storage.values.size, 0);
+  assert.equal(isAccountDeletionFinalizing(), false);
+});
+
+test("local deletion clear failure retains the marker for a bounded restart retry", async () => {
+  const storage = new MemoryKeyValueStorage();
+  storage.values.set("private-data", "retained-until-clear-succeeds");
+  const store = new AccountDeletionRecoveryStore(storage);
+  await store.begin("user-a", "delete-clear-fault");
+  await store.advance("user-a", "delete-clear-fault", "remote_confirmed");
+  const originalMultiRemove = storage.multiRemove.bind(storage);
+  storage.multiRemove = async () => {
+    throw new Error("injected local clear failure");
+  };
+
+  const failed = await recoverAccountDeletionFinalization({
+    store,
+    currentUserId: null,
+    signOut: async () => undefined,
+  });
+  assert.equal(failed.status, "pending");
+  assert.ok(storage.values.has(ACCOUNT_DELETION_MARKER_KEY));
+  assert.equal(isAccountDeletionFinalizing(), true);
+
+  storage.multiRemove = originalMultiRemove;
+  assert.deepEqual(
+    await recoverAccountDeletionFinalization({
+      store: new AccountDeletionRecoveryStore(storage),
+      currentUserId: null,
+      signOut: async () => undefined,
+    }),
+    { status: "finalized" },
+  );
+  assert.equal(storage.values.size, 0);
+  assert.equal(isAccountDeletionFinalizing(), false);
+});
+
 test("direct reminder rebuild compensates when logout suspends its generation", async () => {
   setNativeLifecycleAuthOwner("user-a");
   const lifecycleFence = captureNativeLifecycleFence("user-a");
@@ -1653,6 +1928,11 @@ test("authentication recovery and native lifecycle are connected without launch 
     pushLib,
     privacyData,
     profileScreen,
+    autoSync,
+    deletionRecovery,
+    authMiddleware,
+    accountDeletion,
+    privacyRoutes,
   ] = await Promise.all([
     source("artifacts/mobile/app/auth.tsx"),
     source("artifacts/mobile/components/NativeLifecycleCoordinator.tsx"),
@@ -1667,6 +1947,11 @@ test("authentication recovery and native lifecycle are connected without launch 
     source("artifacts/api-server/src/lib/push.ts"),
     source("artifacts/mobile/app/privacy-data.tsx"),
     source("artifacts/mobile/app/(tabs)/profile.tsx"),
+    source("artifacts/mobile/components/AutoSync.tsx"),
+    source("artifacts/mobile/lib/accountDeletionRecovery.ts"),
+    source("artifacts/api-server/src/middlewares/authMiddleware.ts"),
+    source("artifacts/api-server/src/lib/accountDeletion.ts"),
+    source("artifacts/api-server/src/routes/privacy.ts"),
   ]);
 
   assert.match(authScreen, /useAuth\(\)/);
@@ -1693,6 +1978,9 @@ test("authentication recovery and native lifecycle are connected without launch 
   assert.match(workouts, /acknowledgePendingArrival/);
   assert.match(workouts, /parsePendingArrivalRouteContext/);
   assert.match(coordinator, /useRootNavigationState/);
+  assert.match(coordinator, /isAccountDeletionFinalizing/);
+  assert.match(autoSync, /isAccountDeletionFinalizing/);
+  assert.match(autoSync, /useSyncExternalStore/);
   assert.match(root, /<NativeLifecycleCoordinator\s*\/>/);
 
   const reconcileBody = push.match(
@@ -1714,6 +2002,10 @@ test("authentication recovery and native lifecycle are connected without launch 
   assert.match(auth, /Promise<LogoutOutcome>/);
   assert.match(auth, /setNativeLifecycleAuthOwner\(null\)/);
   assert.match(auth, /runPushSafeSignOut/);
+  assert.match(auth, /recoverAccountDeletionFinalization/);
+  assert.match(auth, /request_started/);
+  assert.match(auth, /remote_confirmed/);
+  assert.match(auth, /abortBeforeRemoteCommit/);
   assert.match(push, /preparePushLogout/);
   assert.match(push, /nativeDetached/);
   assert.match(push, /beginPushRegistrationIntent/);
@@ -1746,12 +2038,30 @@ test("authentication recovery and native lifecycle are connected without launch 
   assert.match(pushLib, /return affected\.length > 0/);
   assert.match(pushLib, /eloviaPushOwnerUserId: userId/);
 
+  assert.match(deletionRecovery, /deletion_finalizing/);
+  assert.match(deletionRecovery, /ACCOUNT_DELETION_MARKER_KEY/);
+  assert.match(
+    deletionRecovery,
+    /multiRemove\(dataKeys\)[\s\S]*removeItem\(ACCOUNT_DELETION_MARKER_KEY\)/,
+  );
+  assert.match(authMiddleware, /code: "deleted_account"/);
+  assert.match(authMiddleware, /provisionAuthenticatedUserIfActive/);
+  assert.match(accountDeletion, /pg_advisory_xact_lock/);
+  assert.match(accountDeletion, /tombstoneAndDeleteAccountData/);
+  assert.match(privacyRoutes, /runAccountDeletionWorkflow/);
+  assert.match(privacyRoutes, /account_deletion_finalizing/);
+
   const deletionOutcomeCheck = privacyData.indexOf(
     'logoutOutcome.status !== "signed_out"',
   );
   const localClear = privacyData.indexOf("await AsyncStorage.clear()");
   assert.match(privacyData, /operation: "account_deletion"/);
   assert.match(privacyData, /beforeSignOut/);
+  assert.match(privacyData, /logoutOutcome\.status === "finalizing"/);
+  assert.match(
+    privacyData,
+    /if \(!deletingAccount\) await AsyncStorage\.clear/,
+  );
   assert.ok(deletionOutcomeCheck >= 0 && deletionOutcomeCheck < localClear);
   assert.match(profileScreen, /outcome\.status === "blocked"/);
   assert.match(profileScreen, /Sign-out needs a retry/);

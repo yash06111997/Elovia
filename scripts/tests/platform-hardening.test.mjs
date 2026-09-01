@@ -59,14 +59,20 @@ test("authenticated users can export and permanently delete their account data",
     "artifacts/api-server/src/routes/privacy.ts",
   );
   const serverAuth = await source("artifacts/api-server/src/lib/auth.ts");
+  const deletionState = await source(
+    "artifacts/api-server/src/lib/accountDeletion.ts",
+  );
 
   assert.match(
     privacyRoutes,
     /router\.get\(\s*"\/privacy\/export",\s*requireAuth/,
   );
   assert.match(privacyRoutes, /router\.delete\(\s*"\/account",\s*requireAuth/);
-  assert.match(privacyRoutes, /delete\(usersTable\)/);
+  assert.match(privacyRoutes, /tombstoneAndDeleteAccountData/);
   assert.match(privacyRoutes, /deleteFirebaseUser/);
+  assert.match(deletionState, /accountDeletionTombstonesTable/);
+  assert.match(deletionState, /pg_advisory_xact_lock/);
+  assert.match(deletionState, /transaction\.delete\(usersTable\)/);
   assert.match(privacyRoutes, /Content-Disposition/);
   assert.match(privacyRoutes, /Cache-Control", "no-store"/);
   assert.match(serverAuth, /auth\/user-not-found/);

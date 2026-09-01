@@ -13,6 +13,16 @@ export type LogoutOutcome =
   | { status: "signed_out"; operation: LogoutOperation }
   | { status: "already_signed_out"; operation: "sign_out" }
   | {
+      status: "finalizing";
+      operation: "account_deletion";
+      reason:
+        | "remote_delete_ambiguous"
+        | "firebase_sign_out_failed"
+        | "local_clear_failed";
+      localSignOutComplete: boolean;
+      message: string;
+    }
+  | {
       status: "blocked";
       operation: LogoutOperation;
       reason: LogoutBlockReason;
@@ -24,6 +34,10 @@ export interface LogoutPreparation {
   nativeDetached: boolean;
   blockedMessage?: string;
 }
+
+export type BeforeSignOutOutcome =
+  | { status: "confirmed" }
+  | { status: "finalizing"; message: string };
 
 function cleanupBlockReason(preparation: LogoutPreparation): LogoutBlockReason {
   if (!preparation.pushDetached && !preparation.nativeDetached) {
@@ -41,7 +55,7 @@ export async function runLogoutWorkflow(options: {
   operation: LogoutOperation;
   isAuthenticated: boolean;
   prepare(): Promise<LogoutPreparation>;
-  beforeSignOut?(): Promise<void>;
+  beforeSignOut?(): Promise<void | BeforeSignOutOutcome>;
   signOut(): Promise<void>;
   onError?(
     error: unknown,
@@ -96,8 +110,12 @@ export async function runLogoutWorkflow(options: {
     };
   }
 
+  let deletionFinalizingMessage: string | null = null;
   try {
-    await options.beforeSignOut?.();
+    const beforeSignOut = await options.beforeSignOut?.();
+    if (beforeSignOut?.status === "finalizing") {
+      deletionFinalizingMessage = beforeSignOut.message;
+    }
   } catch (error) {
     options.onError?.(error, "before_sign_out");
     return {
@@ -113,12 +131,32 @@ export async function runLogoutWorkflow(options: {
     await options.signOut();
   } catch (error) {
     options.onError?.(error, "sign_out");
+    if (options.operation === "account_deletion") {
+      return {
+        status: "finalizing",
+        operation: "account_deletion",
+        reason: "firebase_sign_out_failed",
+        localSignOutComplete: false,
+        message:
+          "Account deletion is finalizing, but Elovia could not finish signing out on this device. Reopen the app to retry safely.",
+      };
+    }
     return {
       status: "blocked",
       operation: options.operation,
       reason: "firebase_sign_out_failed",
       message:
         "Elovia completed privacy cleanup but could not finish signing out. Please try again.",
+    };
+  }
+
+  if (options.operation === "account_deletion" && deletionFinalizingMessage) {
+    return {
+      status: "finalizing",
+      operation: "account_deletion",
+      reason: "remote_delete_ambiguous",
+      localSignOutComplete: true,
+      message: deletionFinalizingMessage,
     };
   }
 

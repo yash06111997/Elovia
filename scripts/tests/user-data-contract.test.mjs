@@ -310,6 +310,7 @@ test("production startup runs ordered migrations and CI exercises PostgreSQL int
     migrationRunner,
     baselineSql,
     syncMigrationSql,
+    accountDeletionMigrationSql,
     errorHandler,
     ci,
   ] = await Promise.all([
@@ -330,6 +331,13 @@ test("production startup runs ordered migrations and CI exercises PostgreSQL int
     readFile(
       new URL(
         "../../lib/db/migrations/0001_user_data_sync_integrity.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "../../lib/db/migrations/0002_account_deletion_tombstones.sql",
         import.meta.url,
       ),
       "utf8",
@@ -375,6 +383,9 @@ test("production startup runs ordered migrations and CI exercises PostgreSQL int
   assert.equal((baselineSql.match(/CREATE TABLE /g) ?? []).length, 17);
   assert.match(baselineSql, /CREATE TABLE "coaching_sessions"/);
   assert.match(syncMigrationSql, /"revision" bigint/);
+  assert.match(accountDeletionMigrationSql, /CREATE TABLE "account_deletions"/);
+  assert.match(accountDeletionMigrationSql, /PRIMARY KEY/);
+  assert.doesNotMatch(accountDeletionMigrationSql, /REFERENCES "users"/);
   assert.match(errorHandler, /VALIDATION_ERROR/);
   assert.match(errorHandler, /PAYLOAD_TOO_LARGE/);
   assert.match(ci, /postgres:\s*\[14,\s*16\]/);
