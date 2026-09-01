@@ -113,38 +113,14 @@ BEFORE UPDATE OF "identity_count", "retained_identity_count", "pruned_identity_c
 ON "revenuecat_webhook_events"
 FOR EACH ROW EXECUTE FUNCTION "revenuecat_guard_event_capacity"();
 
-CREATE FUNCTION "revenuecat_reserve_subject_capacity"() RETURNS trigger
+CREATE FUNCTION "revenuecat_preserve_subject_identity"() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-  IF TG_OP = 'UPDATE' THEN
-    IF NEW."event_id" IS DISTINCT FROM OLD."event_id" OR
-       NEW."subject_hash" IS DISTINCT FROM OLD."subject_hash" THEN
-      RAISE EXCEPTION 'RevenueCat event subject identity is immutable'
-        USING ERRCODE = '23514',
-              CONSTRAINT = 'revenuecat_subject_identity_immutable',
-              TABLE = 'revenuecat_event_subjects';
-    END IF;
-    RETURN NEW;
-  END IF;
-
-  PERFORM 1
-  FROM "revenuecat_webhook_events"
-  WHERE "event_id" = NEW."event_id"
-  FOR UPDATE;
-
-  IF NOT FOUND THEN
-    RETURN NEW;
-  END IF;
-
-  UPDATE "revenuecat_webhook_events"
-  SET "retained_identity_count" = "retained_identity_count" + 1
-  WHERE "event_id" = NEW."event_id"
-    AND "retained_identity_count" + "pruned_identity_count" < "identity_count";
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'RevenueCat event subject capacity exceeded'
+  IF NEW."event_id" IS DISTINCT FROM OLD."event_id" OR
+     NEW."subject_hash" IS DISTINCT FROM OLD."subject_hash" THEN
+    RAISE EXCEPTION 'RevenueCat event subject identity is immutable'
       USING ERRCODE = '23514',
-            CONSTRAINT = 'revenuecat_subject_capacity_valid',
+            CONSTRAINT = 'revenuecat_subject_identity_immutable',
             TABLE = 'revenuecat_event_subjects';
   END IF;
 
@@ -152,9 +128,43 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER "TR_revenuecat_reserve_subject_capacity"
-BEFORE INSERT OR UPDATE OF "event_id", "subject_hash"
+CREATE TRIGGER "TR_revenuecat_preserve_subject_identity"
+BEFORE UPDATE OF "event_id", "subject_hash"
 ON "revenuecat_event_subjects"
+FOR EACH ROW EXECUTE FUNCTION "revenuecat_preserve_subject_identity"();
+
+CREATE FUNCTION "revenuecat_reserve_subject_capacity"() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE "revenuecat_webhook_events"
+  SET "retained_identity_count" = "retained_identity_count" + 1
+  WHERE "event_id" = NEW."event_id"
+    AND "retained_identity_count" + "pruned_identity_count" < "identity_count";
+
+  IF FOUND THEN
+    RETURN NEW;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM "revenuecat_webhook_events"
+    WHERE "event_id" = NEW."event_id"
+  ) THEN
+    RAISE EXCEPTION 'RevenueCat event subject parent is missing'
+      USING ERRCODE = '23503',
+            CONSTRAINT = 'revenuecat_event_subjects_event_id_fkey',
+            TABLE = 'revenuecat_event_subjects',
+            COLUMN = 'event_id';
+  END IF;
+
+  RAISE EXCEPTION 'RevenueCat event subject capacity exceeded'
+    USING ERRCODE = '23514',
+          CONSTRAINT = 'revenuecat_subject_capacity_valid',
+          TABLE = 'revenuecat_event_subjects';
+END;
+$$;
+
+CREATE TRIGGER "TR_revenuecat_reserve_subject_capacity"
+AFTER INSERT ON "revenuecat_event_subjects"
 FOR EACH ROW EXECUTE FUNCTION "revenuecat_reserve_subject_capacity"();
 
 CREATE FUNCTION "revenuecat_count_pruned_subject"() RETURNS trigger
@@ -172,10 +182,11 @@ CREATE TRIGGER "TR_revenuecat_count_pruned_subject"
 AFTER DELETE ON "revenuecat_event_subjects"
 FOR EACH ROW EXECUTE FUNCTION "revenuecat_count_pruned_subject"();
 
--- Both counters are trigger-managed. Subject insertion reserves retained capacity
--- while holding the parent row lock; deletion atomically converts one retained slot
--- into one pruned slot. Parent event deletion cascades after the parent is gone and
--- therefore updates zero rows without retaining deleted subject hashes.
+-- Both counters are trigger-managed. A successfully inserted subject atomically
+-- reserves retained capacity by updating the parent row after uniqueness conflict
+-- handling; deletion converts one retained slot into one pruned slot. Parent event
+-- deletion cascades after the parent is gone and therefore updates zero rows without
+-- retaining deleted subject hashes.
 
 CREATE TABLE "revenuecat_customer_aliases" (
   "alias_hash" char(64) PRIMARY KEY,

@@ -300,6 +300,14 @@ test("the forward-only RevenueCat migration contract is present", async () => {
     /"retained_identity_count" \+ "pruned_identity_count" <= "identity_count"/,
   );
   assert.match(sql, /CREATE TRIGGER "TR_revenuecat_reserve_subject_capacity"/);
+  assert.match(
+    sql,
+    /CREATE TRIGGER "TR_revenuecat_reserve_subject_capacity"\s+AFTER INSERT ON "revenuecat_event_subjects"/,
+  );
+  assert.match(
+    sql,
+    /CREATE TRIGGER "TR_revenuecat_preserve_subject_identity"\s+BEFORE UPDATE OF "event_id", "subject_hash"/,
+  );
   assert.match(sql, /CREATE TRIGGER "TR_revenuecat_guard_event_capacity"/);
   assert.doesNotMatch(sql, /INSERT INTO "revenuecat_webhook_events"/);
 });
@@ -685,6 +693,11 @@ integrationTest(
         ],
         [
           "revenuecat_event_subjects",
+          "TR_revenuecat_preserve_subject_identity",
+          "revenuecat_preserve_subject_identity",
+        ],
+        [
+          "revenuecat_event_subjects",
           "TR_revenuecat_reserve_subject_capacity",
           "revenuecat_reserve_subject_capacity",
         ],
@@ -705,7 +718,13 @@ integrationTest(
       trigger.rows.find(
         (row) => row.tgname === "TR_revenuecat_reserve_subject_capacity",
       ).definition,
-      /BEFORE INSERT OR UPDATE OF event_id, subject_hash/,
+      /AFTER INSERT/,
+    );
+    assert.match(
+      trigger.rows.find(
+        (row) => row.tgname === "TR_revenuecat_preserve_subject_identity",
+      ).definition,
+      /BEFORE UPDATE OF event_id, subject_hash/,
     );
     assert.match(
       trigger.rows.find(
@@ -776,6 +795,58 @@ integrationTest(
        VALUES ('event_capacity_1',$1,1,'capacity-user-three')`,
       ["b".repeat(64)],
     );
+    const duplicateNoOp = await scopedPool.query(
+      `INSERT INTO revenuecat_event_subjects
+       (event_id,subject_hash,role_mask,local_user_id)
+       VALUES ('event_capacity_1',$1,2,'capacity-zero-user')
+       ON CONFLICT (event_id,subject_hash) DO NOTHING
+       RETURNING role_mask`,
+      ["b".repeat(64)],
+    );
+    assert.equal(duplicateNoOp.rowCount, 0);
+    let idempotentState = await scopedPool.query(
+      `SELECT retained_identity_count,pruned_identity_count
+       FROM revenuecat_webhook_events WHERE event_id='event_capacity_1'`,
+    );
+    assert.deepEqual(idempotentState.rows[0], {
+      retained_identity_count: 1,
+      pruned_identity_count: 0,
+    });
+
+    const duplicateUpdate = await scopedPool.query(
+      `INSERT INTO revenuecat_event_subjects
+       (event_id,subject_hash,role_mask,local_user_id)
+       VALUES ('event_capacity_1',$1,4,'capacity-zero-user')
+       ON CONFLICT (event_id,subject_hash) DO UPDATE
+       SET role_mask=EXCLUDED.role_mask,
+           local_user_id=EXCLUDED.local_user_id
+       RETURNING role_mask,local_user_id`,
+      ["b".repeat(64)],
+    );
+    assert.deepEqual(duplicateUpdate.rows[0], {
+      role_mask: 4,
+      local_user_id: "capacity-zero-user",
+    });
+    idempotentState = await scopedPool.query(
+      `SELECT retained_identity_count,pruned_identity_count
+       FROM revenuecat_webhook_events WHERE event_id='event_capacity_1'`,
+    );
+    assert.deepEqual(idempotentState.rows[0], {
+      retained_identity_count: 1,
+      pruned_identity_count: 0,
+    });
+    for (const statement of [
+      `UPDATE revenuecat_event_subjects SET subject_hash='${"d".repeat(64)}'
+       WHERE event_id='event_capacity_1'`,
+      `UPDATE revenuecat_event_subjects SET event_id='event_capacity_2'
+       WHERE event_id='event_capacity_1'`,
+    ]) {
+      await assert.rejects(scopedPool.query(statement), (error) => {
+        assert.equal(error.code, "23514");
+        assert.equal(error.constraint, "revenuecat_subject_identity_immutable");
+        return true;
+      });
+    }
     await assert.rejects(
       scopedPool.query(
         `INSERT INTO revenuecat_event_subjects
@@ -801,6 +872,32 @@ integrationTest(
          (event_id,subject_hash,role_mask,local_user_id)
          VALUES ('event_capacity_0',$1,1,'capacity-zero-user')`,
         ["8".repeat(64)],
+      ),
+      (error) => {
+        assert.equal(error.code, "23514");
+        assert.equal(error.constraint, "revenuecat_subject_capacity_valid");
+        return true;
+      },
+    );
+
+    await db.delete(usersTable).where(eq(usersTable.id, "capacity-zero-user"));
+    const conflictPruned = await scopedPool.query(
+      `SELECT retained_identity_count,pruned_identity_count,
+              (SELECT count(*)::integer FROM revenuecat_event_subjects
+               WHERE event_id='event_capacity_1') AS subject_count
+       FROM revenuecat_webhook_events WHERE event_id='event_capacity_1'`,
+    );
+    assert.deepEqual(conflictPruned.rows[0], {
+      retained_identity_count: 0,
+      pruned_identity_count: 1,
+      subject_count: 0,
+    });
+    await assert.rejects(
+      scopedPool.query(
+        `INSERT INTO revenuecat_event_subjects
+         (event_id,subject_hash,role_mask,local_user_id)
+         VALUES ('event_capacity_1',$1,2,'capacity-user-three')`,
+        ["c".repeat(64)],
       ),
       (error) => {
         assert.equal(error.code, "23514");
