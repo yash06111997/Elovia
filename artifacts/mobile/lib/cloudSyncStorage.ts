@@ -206,6 +206,61 @@ function isStoredUserOwner(owner: string): boolean {
   }
 }
 
+function isStableBackgroundOwner(owner: string | null): boolean {
+  return (
+    owner === null ||
+    owner === LOCAL_SYNC_GUEST_OWNER ||
+    isStoredUserOwner(owner)
+  );
+}
+
+/**
+ * Read one synchronized value from an OS background task without consulting
+ * React or Firebase auth state. The owner and transition journal are sampled
+ * on both sides of the value read so a concurrent account transition fails
+ * closed instead of exposing another account's data.
+ *
+ * This helper is deliberately read-only: it never recovers journals, changes
+ * ownership, touches caches, or advances sync generations.
+ */
+export async function readStableSynchronizedValue(
+  storage: SyncStorageAdapter,
+  key: string,
+): Promise<string | null> {
+  const readMetadata = async (): Promise<{
+    owner: string | null;
+    journal: string | null;
+  }> => {
+    const values = new Map(
+      await storage.multiGet([LOCAL_SYNC_OWNER_KEY, LOCAL_SYNC_JOURNAL_KEY]),
+    );
+    return {
+      owner: values.get(LOCAL_SYNC_OWNER_KEY) ?? null,
+      journal: values.get(LOCAL_SYNC_JOURNAL_KEY) ?? null,
+    };
+  };
+
+  try {
+    const before = await readMetadata();
+    if (before.journal !== null || !isStableBackgroundOwner(before.owner)) {
+      return null;
+    }
+
+    const value = await storage.getItem(key);
+    const after = await readMetadata();
+    if (
+      after.journal !== null ||
+      after.owner !== before.owner ||
+      !isStableBackgroundOwner(after.owner)
+    ) {
+      return null;
+    }
+    return value;
+  } catch {
+    return null;
+  }
+}
+
 function storedOwnerMatches(
   owner: string | null,
   expectedUserId: string | null,

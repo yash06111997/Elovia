@@ -167,6 +167,8 @@ const RESTORE_FIELD_KINDS = {
   healthData: "plain-object",
   wellnessData: "plain-object",
   waterGoal: "positive-number",
+  reminderPrefs: "plain-object",
+  places: "array",
 };
 
 test("cloud reset materializes every synchronized field as a null tombstone", () => {
@@ -301,6 +303,10 @@ test("sync field schemas reject wrong containers and malformed water goals", () 
     { customPlans: { id: "one" } },
     { appState: [] },
     { workoutPlan: [] },
+    { reminderPrefs: [] },
+    { reminderPrefs: "enabled" },
+    { places: {} },
+    { places: "gym" },
     { waterGoal: 0 },
     { waterGoal: -1 },
     { waterGoal: Number.POSITIVE_INFINITY },
@@ -310,6 +316,35 @@ test("sync field schemas reject wrong containers and malformed water goals", () 
       status: "invalid",
     });
   }
+});
+
+test("reminder preferences and places preserve valid containers and explicit clears", () => {
+  assert.deepEqual(
+    serializeRestoreFields(
+      {
+        reminderPrefs: { enabled: true, workoutTime: "18:00" },
+        places: [{ id: "gym", enabled: true }],
+      },
+      RESTORE_FIELD_KINDS,
+    ),
+    {
+      status: "valid",
+      changes: [
+        ["reminderPrefs", '{"enabled":true,"workoutTime":"18:00"}'],
+        ["places", '[{"id":"gym","enabled":true}]'],
+      ],
+    },
+  );
+
+  const cleared = serializeRestoreFields(
+    { reminderPrefs: null, places: null },
+    RESTORE_FIELD_KINDS,
+  );
+  assert.equal(cleared.status, "valid");
+  assert.deepEqual(cleared.changes, [
+    ["reminderPrefs", null],
+    ["places", null],
+  ]);
 });
 
 test("existing revisions upload missing synchronized fields as deletion tombstones", () => {

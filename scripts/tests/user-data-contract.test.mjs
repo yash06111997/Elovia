@@ -145,8 +145,12 @@ test("sync JSON fields enforce their container and water domains", () => {
     healthData: {},
     wellnessData: {},
     waterGoal: 3.5,
+    reminderPrefs: { enabled: true },
+    places: [{ id: "gym" }],
   });
   assert.equal(valid.waterGoal, 3.5);
+  assert.deepEqual(valid.reminderPrefs, { enabled: true });
+  assert.deepEqual(valid.places, [{ id: "gym" }]);
 
   for (const invalid of [
     { sessions: {} },
@@ -157,6 +161,10 @@ test("sync JSON fields enforce their container and water domains", () => {
     { activeSession: [] },
     { healthData: [] },
     { wellnessData: [] },
+    { reminderPrefs: [] },
+    { reminderPrefs: "enabled" },
+    { places: {} },
+    { places: "gym" },
     { waterGoal: 0 },
     { waterGoal: -1 },
     { waterGoal: "3" },
@@ -167,9 +175,25 @@ test("sync JSON fields enforce their container and water domains", () => {
 
 test("sync patches preserve omission and permit explicit clearing", () => {
   assert.deepEqual(
-    buildUserDataPatch({ baseRevision: 7, appState: null, sessions: [] }),
-    { appState: null, sessions: [] },
+    buildUserDataPatch({
+      baseRevision: 7,
+      appState: null,
+      sessions: [],
+      reminderPrefs: null,
+      places: null,
+    }),
+    { appState: null, sessions: [], reminderPrefs: null, places: null },
   );
+
+  const parsed = parseUserDataWrite({
+    baseRevision: 7,
+    reminderPrefs: null,
+    places: null,
+  });
+  assert.deepEqual(buildUserDataPatch(parsed), {
+    reminderPrefs: null,
+    places: null,
+  });
 });
 
 test("parsed sync writes preserve explicit null and omit absent fields", () => {

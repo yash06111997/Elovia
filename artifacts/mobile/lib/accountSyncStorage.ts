@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getFirebaseAuth } from "./firebase";
 import {
   createGenerationGuardedCurrentUserResolver,
+  readStableSynchronizedValue,
   SyncStorageCoordinator,
   type CurrentUserId,
 } from "./cloudSyncStorage";
@@ -9,10 +10,10 @@ import {
 export const SYNC_KEYS = [
   "@elovia_state",
   "@elovia_plan",
-  "@elovia_active_session",
   "@elovia_custom_plans",
   "@elovia_active_plan_type",
   "@elovia_active_custom_plan_id",
+  "@elovia_active_session",
   "@elovia_sessions",
   "@elovia_prs",
   "@elovia_meal_plan",
@@ -23,9 +24,11 @@ export const SYNC_KEYS = [
   "@elovia_health_data",
   "@elovia_wellness",
   "@elovia_water_goal",
+  "@elovia_reminder_prefs",
+  "@elovia_places",
 ] as const;
 
-type SyncKey = (typeof SYNC_KEYS)[number];
+export type SyncKey = (typeof SYNC_KEYS)[number];
 
 interface AuthScope {
   ready: boolean;
@@ -187,6 +190,17 @@ export function captureAccountStorageSession(): AccountStorageSession {
       await ensureCommitted(entries, []);
     },
   };
+}
+
+/**
+ * Read-only access for headless native tasks that cannot rely on AuthProvider.
+ * Owner and journal stability are verified around the raw value read.
+ */
+export async function readStableBackgroundAccountValue(
+  key: SyncKey,
+): Promise<string | null> {
+  assertSyncKeys([key]);
+  return readStableSynchronizedValue(AsyncStorage, key);
 }
 
 /** Reset only the currently mounted account/guest namespace. */

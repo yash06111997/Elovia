@@ -57,10 +57,10 @@ export {
 const FIELD_MAP: Record<string, string> = {
   "@elovia_state": "appState",
   "@elovia_plan": "workoutPlan",
-  "@elovia_active_session": "activeSession",
   "@elovia_custom_plans": "customPlans",
   "@elovia_active_plan_type": "activePlanType",
   "@elovia_active_custom_plan_id": "activeCustomPlanId",
+  "@elovia_active_session": "activeSession",
   "@elovia_sessions": "sessions",
   "@elovia_prs": "personalRecords",
   "@elovia_meal_plan": "mealPlan",
@@ -71,6 +71,8 @@ const FIELD_MAP: Record<string, string> = {
   "@elovia_health_data": "healthData",
   "@elovia_wellness": "wellnessData",
   "@elovia_water_goal": "waterGoal",
+  "@elovia_reminder_prefs": "reminderPrefs",
+  "@elovia_places": "places",
 };
 
 const REVERSE_FIELD_MAP: Record<string, string> = Object.fromEntries(
@@ -94,6 +96,8 @@ const RESTORE_FIELD_KINDS: Record<string, RestoreFieldKind> = {
   healthData: "plain-object",
   wellnessData: "plain-object",
   waterGoal: "positive-number",
+  reminderPrefs: "plain-object",
+  places: "array",
 };
 
 type AuthIdentity = { uid: string; token: string };

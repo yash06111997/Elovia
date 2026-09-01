@@ -25,7 +25,6 @@ export type UserDataField = (typeof USER_DATA_FIELDS)[number];
 
 export const MAX_SYNC_REVISION = Number.MAX_SAFE_INTEGER;
 
-const jsonField = z.unknown().optional();
 const varcharField = z.string().nullable().optional();
 const objectField = z.record(z.string(), z.unknown()).nullable().optional();
 const arrayField = z.array(z.unknown()).nullable().optional();
@@ -60,8 +59,8 @@ const userDataWriteSchema = z
     healthData: objectField,
     wellnessData: objectField,
     waterGoal: positiveNumberField,
-    reminderPrefs: jsonField,
-    places: jsonField,
+    reminderPrefs: objectField,
+    places: arrayField,
   })
   .strict()
   .superRefine((value, context) => {

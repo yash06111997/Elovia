@@ -9,6 +9,7 @@ import {
   LOCAL_SYNC_GUEST_OWNER,
   LOCAL_SYNC_OWNER_KEY,
   LOCAL_SYNC_QUARANTINE_OWNER,
+  readStableSynchronizedValue,
   STALE_CURRENT_USER,
   scopedSyncCacheKey,
   storedSyncUserOwner,
@@ -116,6 +117,82 @@ function deferred() {
   });
   return { promise, resolve };
 }
+
+test("background reads accept only unchanged stable owners", async () => {
+  for (const owner of [
+    null,
+    LOCAL_SYNC_GUEST_OWNER,
+    storedSyncUserOwner("A"),
+  ]) {
+    const entries = [["places", '[{"id":"A-gym"}]']];
+    if (owner !== null) entries.push([LOCAL_SYNC_OWNER_KEY, owner]);
+    const storage = new MemoryStorage(entries);
+    assert.equal(
+      await readStableSynchronizedValue(storage, "places"),
+      '[{"id":"A-gym"}]',
+    );
+  }
+
+  for (const entries of [
+    [
+      [LOCAL_SYNC_OWNER_KEY, LOCAL_SYNC_QUARANTINE_OWNER],
+      ["places", '[{"id":"unsafe"}]'],
+    ],
+    [
+      [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
+      [LOCAL_SYNC_JOURNAL_KEY, '{"kind":"transition"}'],
+      ["places", '[{"id":"unsafe"}]'],
+    ],
+    [
+      [LOCAL_SYNC_OWNER_KEY, "raw-unverified-owner"],
+      ["places", '[{"id":"unsafe"}]'],
+    ],
+  ]) {
+    assert.equal(
+      await readStableSynchronizedValue(new MemoryStorage(entries), "places"),
+      null,
+    );
+  }
+});
+
+test("background reads fail closed when an owner transition starts between checks", async () => {
+  class TransitionDuringReadStorage extends MemoryStorage {
+    async getItem(key) {
+      if (key === "places") {
+        this.values.set(LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("B"));
+        this.values.set("places", '[{"id":"B-gym"}]');
+      }
+      return super.getItem(key);
+    }
+  }
+
+  const storage = new TransitionDuringReadStorage([
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
+    ["places", '[{"id":"A-gym"}]'],
+  ]);
+  assert.equal(await readStableSynchronizedValue(storage, "places"), null);
+
+  class JournalDuringReadStorage extends MemoryStorage {
+    async getItem(key) {
+      if (key === "places") {
+        this.values.set(
+          LOCAL_SYNC_JOURNAL_KEY,
+          JSON.stringify({ version: 2, kind: "transition" }),
+        );
+      }
+      return super.getItem(key);
+    }
+  }
+
+  const pendingTransition = new JournalDuringReadStorage([
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
+    ["places", '[{"id":"A-gym"}]'],
+  ]);
+  assert.equal(
+    await readStableSynchronizedValue(pendingTransition, "places"),
+    null,
+  );
+});
 
 test("an A1 Firebase lookup resolving after A to B to A2 is stale before mutation", async () => {
   const lookup = deferred();

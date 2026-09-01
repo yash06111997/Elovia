@@ -1,5 +1,9 @@
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  captureAccountStorageSession,
+  readStableBackgroundAccountValue,
+} from "./accountSyncStorage";
 
 /**
  * Place-based triggers ("you arrived at the gym").
@@ -65,23 +69,37 @@ function loadTaskManager(): TaskManagerModule | null {
   }
 }
 
-export async function loadPlaces(): Promise<SavedPlace[]> {
+function parsePlaces(raw: string | null): SavedPlace[] {
+  if (!raw) return [];
   try {
-    const raw = await AsyncStorage.getItem(PLACES_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
+    const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
 }
 
-export async function savePlaces(places: SavedPlace[]): Promise<void> {
+export async function loadPlaces(): Promise<SavedPlace[]> {
   try {
-    await AsyncStorage.setItem(PLACES_KEY, JSON.stringify(places.slice(0, MAX_PLACES)));
+    return parsePlaces(
+      await captureAccountStorageSession().getItem(PLACES_KEY),
+    );
   } catch {
-    // Non-fatal.
+    return [];
   }
+}
+
+/** Headless task read that returns no places unless sync ownership is stable. */
+export async function loadPlacesForBackgroundTask(): Promise<SavedPlace[]> {
+  return parsePlaces(await readStableBackgroundAccountValue(PLACES_KEY));
+}
+
+export async function savePlaces(places: SavedPlace[]): Promise<void> {
+  const accountStorage = captureAccountStorageSession();
+  await accountStorage.setItem(
+    PLACES_KEY,
+    JSON.stringify(places.slice(0, MAX_PLACES)),
+  );
 }
 
 /**
@@ -119,8 +137,12 @@ export async function clearPendingArrival(): Promise<void> {
   await AsyncStorage.removeItem(PENDING_KEY).catch(() => undefined);
 }
 
-export async function recordPendingArrival(arrival: PendingArrival): Promise<void> {
-  await AsyncStorage.setItem(PENDING_KEY, JSON.stringify(arrival)).catch(() => undefined);
+export async function recordPendingArrival(
+  arrival: PendingArrival,
+): Promise<void> {
+  await AsyncStorage.setItem(PENDING_KEY, JSON.stringify(arrival)).catch(
+    () => undefined,
+  );
 }
 
 export type PermissionOutcome =

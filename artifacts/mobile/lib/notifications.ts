@@ -1,5 +1,5 @@
 import { Platform } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { captureAccountStorageSession } from "./accountSyncStorage";
 
 /**
  * Local notification scheduling.
@@ -69,20 +69,25 @@ const PREFS_KEY = "@elovia_reminder_prefs";
 
 export async function loadReminderPreferences(): Promise<ReminderPreferences> {
   try {
-    const raw = await AsyncStorage.getItem(PREFS_KEY);
+    const raw = await captureAccountStorageSession().getItem(PREFS_KEY);
     if (!raw) return DEFAULT_REMINDERS;
-    return { ...DEFAULT_REMINDERS, ...JSON.parse(raw) };
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return DEFAULT_REMINDERS;
+    }
+    return { ...DEFAULT_REMINDERS, ...parsed };
   } catch {
     return DEFAULT_REMINDERS;
   }
 }
 
-export async function saveReminderPreferences(prefs: ReminderPreferences): Promise<void> {
-  try {
-    await AsyncStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
-  } catch {
-    // A failed preference write is not worth interrupting the user over.
-  }
+export async function saveReminderPreferences(
+  prefs: ReminderPreferences,
+): Promise<void> {
+  await captureAccountStorageSession().setItem(
+    PREFS_KEY,
+    JSON.stringify(prefs),
+  );
 }
 
 export function isNotificationsAvailable(): boolean {
@@ -149,13 +154,25 @@ function parseTime(value: string): { hour: number; minute: number } {
 }
 
 const WORKOUT_COPY = [
-  { title: "Time to train", body: "Your session is waiting. Even a short one counts." },
-  { title: "Session time", body: "Twenty minutes now beats a perfect workout you skip." },
-  { title: "Ready when you are", body: "Open Elovia and knock today's session out." },
+  {
+    title: "Time to train",
+    body: "Your session is waiting. Even a short one counts.",
+  },
+  {
+    title: "Session time",
+    body: "Twenty minutes now beats a perfect workout you skip.",
+  },
+  {
+    title: "Ready when you are",
+    body: "Open Elovia and knock today's session out.",
+  },
 ];
 
 const HYDRATION_COPY = [
-  { title: "Water break", body: "A glass now keeps you on track for today's goal." },
+  {
+    title: "Water break",
+    body: "A glass now keeps you on track for today's goal.",
+  },
   { title: "Hydrate", body: "Quick one - drink some water and log it." },
 ];
 
@@ -170,7 +187,9 @@ function pick<T>(list: T[]): T {
  * would be more efficient but far easier to get wrong, and the resulting
  * duplicate-reminder bug is exactly the kind that makes people uninstall.
  */
-export async function rescheduleAllReminders(prefs: ReminderPreferences): Promise<boolean> {
+export async function rescheduleAllReminders(
+  prefs: ReminderPreferences,
+): Promise<boolean> {
   const N = loadNotifications();
   if (!N || Platform.OS === "web") return false;
 
@@ -201,7 +220,11 @@ export async function rescheduleAllReminders(prefs: ReminderPreferences): Promis
       // trigger would fire overnight, which is the fastest way to get
       // notifications disabled entirely.
       const step = Math.max(1, Math.min(6, prefs.hydrationIntervalHours));
-      for (let hour = prefs.wakingStartHour; hour <= prefs.wakingEndHour; hour += step) {
+      for (
+        let hour = prefs.wakingStartHour;
+        hour <= prefs.wakingEndHour;
+        hour += step
+      ) {
         const copy = pick(HYDRATION_COPY);
         await N.scheduleNotificationAsync({
           content: { ...copy, data: { kind: "hydration" } },
@@ -284,7 +307,8 @@ export async function suppressTodayStreakReminder(): Promise<void> {
   try {
     const scheduled = await N.getAllScheduledNotificationsAsync();
     const streakOnes = scheduled.filter(
-      (s) => (s.content?.data as { kind?: string } | undefined)?.kind === "streak",
+      (s) =>
+        (s.content?.data as { kind?: string } | undefined)?.kind === "streak",
     );
     for (const item of streakOnes) {
       await N.cancelScheduledNotificationAsync(item.identifier);

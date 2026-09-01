@@ -20,6 +20,7 @@ import { Space, Radius } from "@/constants/design";
 import { PressableScale } from "@/components/Pressable";
 import { EmptyState } from "@/components/Skeleton";
 import { useTheme } from "@/hooks/useTheme";
+import { onDataRestored } from "@/lib/syncEvents";
 import {
   loadPlaces,
   savePlaces,
@@ -59,29 +60,46 @@ export default function PlacesScreen() {
 
   useEffect(() => {
     void refresh();
+    return onDataRestored(refresh);
   }, [refresh]);
 
-  const persist = useCallback(async (next: SavedPlace[]) => {
-    setPlaces(next);
-    await savePlaces(next);
-    await syncGeofences();
+  const persist = useCallback(async (next: SavedPlace[]): Promise<boolean> => {
+    try {
+      await savePlaces(next);
+      setPlaces(next);
+      await syncGeofences();
+      return true;
+    } catch {
+      Alert.alert(
+        "Could not save places",
+        "Your changes were not saved. Please try again.",
+      );
+      return false;
+    }
   }, []);
 
-  const togglePlace = (id: string, field: "enabled" | "notifyOnArrive" | "autoStartWorkout") => {
+  const togglePlace = (
+    id: string,
+    field: "enabled" | "notifyOnArrive" | "autoStartWorkout",
+  ) => {
     void persist(
       places.map((p) => (p.id === id ? { ...p, [field]: !p[field] } : p)),
     );
   };
 
   const removePlace = (place: SavedPlace) => {
-    Alert.alert("Remove place?", `${place.name} will no longer trigger anything.`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Remove",
-        style: "destructive",
-        onPress: () => void persist(places.filter((p) => p.id !== place.id)),
-      },
-    ]);
+    Alert.alert(
+      "Remove place?",
+      `${place.name} will no longer trigger anything.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: () => void persist(places.filter((p) => p.id !== place.id)),
+        },
+      ],
+    );
   };
 
   const enableBackground = async () => {
@@ -94,12 +112,14 @@ export default function PlacesScreen() {
     }
 
     Alert.alert(
-      outcome === "unsupported" ? "Not available" : "Background location needed",
+      outcome === "unsupported"
+        ? "Not available"
+        : "Background location needed",
       outcome === "unsupported"
         ? "Place reminders need the mobile app."
         : Platform.OS === "ios"
           ? 'Open Settings > Elovia > Location and choose "Always". Without it, arrivals can only be detected while the app is open.'
-          : "Open Settings > Apps > Elovia > Permissions > Location and choose \"Allow all the time\".",
+          : 'Open Settings > Apps > Elovia > Permissions > Location and choose "Allow all the time".',
     );
   };
 
@@ -108,33 +128,51 @@ export default function PlacesScreen() {
       <Stack.Screen options={{ title: "My Places", headerShown: true }} />
 
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 100 }]}
+        contentContainerStyle={[
+          styles.content,
+          { paddingBottom: insets.bottom + 100 },
+        ]}
         showsVerticalScrollIndicator={false}
       >
         <Text style={[styles.intro, { color: theme.textSecondary }]}>
-          Elovia can notice when you arrive somewhere and offer to start your session. Your
-          location is only used on your device to detect these arrivals — it is never sent
-          anywhere.
+          Elovia can notice when you arrive somewhere and offer to start your
+          session. Arrival detection stays on your device. Saved place details
+          are included in your private account backup when you sign in.
         </Text>
 
         {!backgroundGranted && places.length > 0 && (
           <PressableScale
-            style={[styles.warnBanner, { borderColor: Colors.accentYellow + "50" }]}
+            style={[
+              styles.warnBanner,
+              { borderColor: Colors.accentYellow + "50" },
+            ]}
             onPress={enableBackground}
           >
-            <Ionicons name="alert-circle-outline" size={18} color={Colors.accentYellow} />
+            <Ionicons
+              name="alert-circle-outline"
+              size={18}
+              color={Colors.accentYellow}
+            />
             <Text style={[styles.warnText, { color: theme.textSecondary }]}>
-              Background location is off, so arrivals will only be noticed while the app is
-              open. Tap to enable.
+              Background location is off, so arrivals will only be noticed while
+              the app is open. Tap to enable.
             </Text>
           </PressableScale>
         )}
 
-        {loading && <ActivityIndicator color={Colors.primary} style={{ marginTop: 30 }} />}
+        {loading && (
+          <ActivityIndicator color={Colors.primary} style={{ marginTop: 30 }} />
+        )}
 
         {!loading && places.length === 0 && (
           <EmptyState
-            icon={<Ionicons name="location-outline" size={28} color={theme.textMuted} />}
+            icon={
+              <Ionicons
+                name="location-outline"
+                size={28}
+                color={theme.textMuted}
+              />
+            }
             title="No places yet"
             body="Add your gym and Elovia will offer to start your workout when you get there."
           />
@@ -145,20 +183,43 @@ export default function PlacesScreen() {
           return (
             <View
               key={place.id}
-              style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}
+              style={[
+                styles.card,
+                { backgroundColor: theme.card, borderColor: theme.border },
+              ]}
             >
               <View style={styles.cardHeader}>
-                <View style={[styles.kindIcon, { backgroundColor: Colors.primary + "18" }]}>
-                  <Ionicons name={kind.icon as any} size={18} color={Colors.primary} />
+                <View
+                  style={[
+                    styles.kindIcon,
+                    { backgroundColor: Colors.primary + "18" },
+                  ]}
+                >
+                  <Ionicons
+                    name={kind.icon as any}
+                    size={18}
+                    color={Colors.primary}
+                  />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.cardName, { color: theme.text }]}>{place.name}</Text>
+                  <Text style={[styles.cardName, { color: theme.text }]}>
+                    {place.name}
+                  </Text>
                   <Text style={[styles.cardMeta, { color: theme.textMuted }]}>
                     {kind.label} · {place.radius}m radius
                   </Text>
                 </View>
-                <PressableScale onPress={() => removePlace(place)} hitSlop={12} accessibilityRole="button" accessibilityLabel="Delete">
-                  <Ionicons name="trash-outline" size={18} color={theme.textMuted} />
+                <PressableScale
+                  onPress={() => removePlace(place)}
+                  hitSlop={12}
+                  accessibilityRole="button"
+                  accessibilityLabel="Delete"
+                >
+                  <Ionicons
+                    name="trash-outline"
+                    size={18}
+                    color={theme.textMuted}
+                  />
                 </PressableScale>
               </View>
 
@@ -190,9 +251,14 @@ export default function PlacesScreen() {
 
       {places.length < MAX_PLACES && (
         <PressableScale
-          style={[styles.fab, { backgroundColor: Colors.primary, bottom: insets.bottom + 20 }]}
+          style={[
+            styles.fab,
+            { backgroundColor: Colors.primary, bottom: insets.bottom + 20 },
+          ]}
           onPress={() => setAddVisible(true)}
-          haptic accessibilityRole="button" accessibilityLabel="Add"
+          haptic
+          accessibilityRole="button"
+          accessibilityLabel="Add"
         >
           <Ionicons name="add" size={26} color="#000" />
         </PressableScale>
@@ -202,11 +268,12 @@ export default function PlacesScreen() {
         visible={addVisible}
         onClose={() => setAddVisible(false)}
         onSave={async (place) => {
-          setAddVisible(false);
           const next = [...places, place];
-          await persist(next);
+          if (!(await persist(next))) return false;
+          setAddVisible(false);
           if (!(await hasBackgroundPermission())) await enableBackground();
           else setBackgroundGranted(true);
+          return true;
         }}
         theme={theme}
       />
@@ -233,7 +300,11 @@ function ToggleRow({
     <View style={[styles.toggleRow, disabled && { opacity: 0.45 }]}>
       <View style={{ flex: 1 }}>
         <Text style={[styles.toggleLabel, { color: theme.text }]}>{label}</Text>
-        {hint ? <Text style={[styles.toggleHint, { color: theme.textMuted }]}>{hint}</Text> : null}
+        {hint ? (
+          <Text style={[styles.toggleHint, { color: theme.textMuted }]}>
+            {hint}
+          </Text>
+        ) : null}
       </View>
       <Switch
         value={value}
@@ -253,7 +324,7 @@ function AddPlaceModal({
 }: {
   visible: boolean;
   onClose: () => void;
-  onSave: (place: SavedPlace) => void;
+  onSave: (place: SavedPlace) => Promise<boolean>;
   theme: any;
 }) {
   const [name, setName] = useState("");
@@ -276,7 +347,7 @@ function AddPlaceModal({
       }
 
       const parsedRadius = Number(radius);
-      onSave({
+      const saved = await onSave({
         id: makePlaceId(),
         name: name.trim().slice(0, 60),
         kind,
@@ -292,6 +363,8 @@ function AddPlaceModal({
         enabled: true,
       });
 
+      if (!saved) return;
+
       setName("");
       setRadius(String(DEFAULT_RADIUS_M));
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -301,18 +374,31 @@ function AddPlaceModal({
   };
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={onClose}
+    >
       <View style={[styles.container, { backgroundColor: theme.background }]}>
         <View style={[styles.modalHeader, { borderBottomColor: theme.border }]}>
-          <Text style={[styles.modalTitle, { color: theme.text }]}>Save this place</Text>
-          <PressableScale onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Close">
+          <Text style={[styles.modalTitle, { color: theme.text }]}>
+            Save this place
+          </Text>
+          <PressableScale
+            onPress={onClose}
+            hitSlop={12}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+          >
             <Ionicons name="close" size={24} color={theme.textMuted} />
           </PressableScale>
         </View>
 
         <ScrollView contentContainerStyle={styles.formContent}>
           <Text style={[styles.formHint, { color: theme.textMuted }]}>
-            Saves your current position, so do this while you are actually at the place.
+            Saves your current position, so do this while you are actually at
+            the place.
           </Text>
 
           <View style={styles.kindGrid}>
@@ -322,8 +408,10 @@ function AddPlaceModal({
                 style={[
                   styles.kindOption,
                   {
-                    backgroundColor: kind === option.key ? Colors.primary : theme.card,
-                    borderColor: kind === option.key ? Colors.primary : theme.border,
+                    backgroundColor:
+                      kind === option.key ? Colors.primary : theme.card,
+                    borderColor:
+                      kind === option.key ? Colors.primary : theme.border,
                   },
                 ]}
                 onPress={() => setKind(option.key)}
@@ -336,7 +424,9 @@ function AddPlaceModal({
                 <Text
                   style={[
                     styles.kindLabel,
-                    { color: kind === option.key ? "#000" : theme.textSecondary },
+                    {
+                      color: kind === option.key ? "#000" : theme.textSecondary,
+                    },
                   ]}
                 >
                   {option.label}
@@ -345,9 +435,14 @@ function AddPlaceModal({
             ))}
           </View>
 
-          <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>Name</Text>
+          <Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>
+            Name
+          </Text>
           <TextInput
-            style={[styles.input, { color: theme.text, borderColor: theme.border }]}
+            style={[
+              styles.input,
+              { color: theme.text, borderColor: theme.border },
+            ]}
             value={name}
             onChangeText={setName}
             placeholder="e.g. PureGym Waterloo"
@@ -358,14 +453,17 @@ function AddPlaceModal({
             Trigger radius (metres)
           </Text>
           <TextInput
-            style={[styles.input, { color: theme.text, borderColor: theme.border }]}
+            style={[
+              styles.input,
+              { color: theme.text, borderColor: theme.border },
+            ]}
             value={radius}
             onChangeText={setRadius}
             keyboardType="number-pad"
           />
           <Text style={[styles.formHint, { color: theme.textMuted }]}>
-            Minimum {MIN_RADIUS_M}m. Smaller radii sound precise but GPS drift alone will
-            trigger them repeatedly.
+            Minimum {MIN_RADIUS_M}m. Smaller radii sound precise but GPS drift
+            alone will trigger them repeatedly.
           </Text>
 
           <PressableScale
@@ -401,17 +499,48 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     padding: Space.md,
   },
-  warnText: { flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 17 },
+  warnText: {
+    flex: 1,
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 17,
+  },
 
-  card: { borderRadius: Radius.lg, borderWidth: 1, padding: Space.lg, gap: Space.sm },
-  cardHeader: { flexDirection: "row", alignItems: "center", gap: Space.md, marginBottom: 2 },
-  kindIcon: { width: 36, height: 36, borderRadius: Radius.md, alignItems: "center", justifyContent: "center" },
+  card: {
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    padding: Space.lg,
+    gap: Space.sm,
+  },
+  cardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Space.md,
+    marginBottom: 2,
+  },
+  kindIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: Radius.md,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   cardName: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   cardMeta: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 1 },
 
-  toggleRow: { flexDirection: "row", alignItems: "center", gap: Space.md, paddingVertical: 4 },
+  toggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Space.md,
+    paddingVertical: 4,
+  },
   toggleLabel: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  toggleHint: { fontSize: 11, fontFamily: "Inter_400Regular", lineHeight: 15, marginTop: 2 },
+  toggleHint: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 15,
+    marginTop: 2,
+  },
 
   fab: {
     position: "absolute",
@@ -447,7 +576,11 @@ const styles = StyleSheet.create({
   },
   kindLabel: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
 
-  fieldLabel: { fontSize: 12, fontFamily: "Inter_500Medium", marginTop: Space.xs },
+  fieldLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    marginTop: Space.xs,
+  },
   input: {
     borderWidth: 1,
     borderRadius: Radius.md,
@@ -457,6 +590,11 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_400Regular",
   },
 
-  saveBtn: { borderRadius: Radius.lg, paddingVertical: 15, alignItems: "center", marginTop: Space.sm },
+  saveBtn: {
+    borderRadius: Radius.lg,
+    paddingVertical: 15,
+    alignItems: "center",
+    marginTop: Space.sm,
+  },
   saveBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#000" },
 });

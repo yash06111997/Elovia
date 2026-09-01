@@ -69,3 +69,38 @@ test("known vulnerable runtime and build dependencies are pinned to patched rele
   assert.match(workspace, /websocket-driver@>=0\.7\.0 <0\.7\.5/);
   assert.match(workspace, /path-to-regexp@>=8\.0\.0 <8\.4\.0/);
 });
+
+test("cloud snapshots include the complete advertised recoverable state", async () => {
+  const [accountStorage, cloudSync, notifications, geofence, geofenceTask] =
+    await Promise.all([
+      source("artifacts/mobile/lib/accountSyncStorage.ts"),
+      source("artifacts/mobile/lib/cloudSync.ts"),
+      source("artifacts/mobile/lib/notifications.ts"),
+      source("artifacts/mobile/lib/geofence.ts"),
+      source("artifacts/mobile/lib/geofenceTask.ts"),
+    ]);
+
+  for (const key of [
+    "@elovia_active_session",
+    "@elovia_wellness",
+    "@elovia_water_goal",
+    "@elovia_reminder_prefs",
+    "@elovia_places",
+  ]) {
+    assert.match(accountStorage, new RegExp(key));
+  }
+  assert.match(cloudSync, /"@elovia_reminder_prefs": "reminderPrefs"/);
+  assert.match(cloudSync, /"@elovia_places": "places"/);
+  assert.match(cloudSync, /reminderPrefs: "plain-object"/);
+  assert.match(cloudSync, /places: "array"/);
+
+  assert.match(notifications, /captureAccountStorageSession/);
+  assert.doesNotMatch(
+    notifications,
+    /@react-native-async-storage\/async-storage/,
+  );
+  assert.match(geofence, /captureAccountStorageSession/);
+  assert.match(geofence, /readStableBackgroundAccountValue/);
+  assert.match(geofenceTask, /loadPlacesForBackgroundTask/);
+  assert.doesNotMatch(geofenceTask, /\bloadPlaces\b/);
+});

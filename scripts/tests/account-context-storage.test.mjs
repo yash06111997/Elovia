@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { USER_DATA_FIELDS } from "../../artifacts/api-server/src/routes/userDataContract.ts";
 
 const mobile = new URL("../../artifacts/mobile/", import.meta.url);
 
@@ -30,6 +31,8 @@ test("every synchronized context key participates in cloud and account isolation
     "@elovia_active_session",
     "@elovia_wellness",
     "@elovia_water_goal",
+    "@elovia_reminder_prefs",
+    "@elovia_places",
   ]) {
     assert.match(text, new RegExp(key));
   }
@@ -38,6 +41,64 @@ test("every synchronized context key participates in cloud and account isolation
   assert.match(cloud, /"@elovia_active_session": "activeSession"/);
   assert.match(cloud, /"@elovia_wellness": "wellnessData"/);
   assert.match(cloud, /"@elovia_water_goal": "waterGoal"/);
+  assert.match(cloud, /"@elovia_reminder_prefs": "reminderPrefs"/);
+  assert.match(cloud, /"@elovia_places": "places"/);
+});
+
+test("mobile and server expose one exact eighteen-field sync contract", async () => {
+  const [accountStorage, cloudSync, userDataStore] = await Promise.all([
+    source("lib/accountSyncStorage.ts"),
+    source("lib/cloudSync.ts"),
+    source("../api-server/src/services/userDataStore.ts"),
+  ]);
+  const keysBlock = accountStorage.match(
+    /export const SYNC_KEYS = \[([\s\S]*?)\] as const/,
+  );
+  assert.ok(keysBlock, "SYNC_KEYS must remain a literal auditable list");
+  const syncKeys = [...keysBlock[1].matchAll(/"([^"]+)"/g)].map(
+    (match) => match[1],
+  );
+  const fieldPairs = [...cloudSync.matchAll(/"(@elovia_[^"]+)": "([^"]+)"/g)];
+  const fieldMap = new Map(
+    fieldPairs.map(([, storageKey, serverField]) => [storageKey, serverField]),
+  );
+
+  assert.equal(syncKeys.length, 18);
+  assert.equal(fieldMap.size, 18);
+  assert.deepEqual(
+    syncKeys.map((storageKey) => fieldMap.get(storageKey)),
+    USER_DATA_FIELDS,
+  );
+  assert.match(userDataStore, /USER_DATA_FIELDS\.map/);
+});
+
+test("reminders and foreground places use account-aware writes while arrivals stay device-local", async () => {
+  const [notifications, geofence, placesScreen] = await Promise.all([
+    source("lib/notifications.ts"),
+    source("lib/geofence.ts"),
+    source("app/places.tsx"),
+  ]);
+
+  assert.match(notifications, /captureAccountStorageSession/);
+  assert.doesNotMatch(
+    notifications,
+    /@react-native-async-storage\/async-storage/,
+  );
+  const reminderSave = notifications.slice(
+    notifications.indexOf("export async function saveReminderPreferences"),
+    notifications.indexOf("export function isNotificationsAvailable"),
+  );
+  assert.match(reminderSave, /\.setItem\(/);
+  assert.doesNotMatch(reminderSave, /catch/);
+  assert.match(geofence, /captureAccountStorageSession/);
+  assert.match(geofence, /accountStorage\.setItem\(\s*PLACES_KEY/);
+  assert.match(geofence, /readStableBackgroundAccountValue\(PLACES_KEY\)/);
+  assert.match(geofence, /AsyncStorage\.getItem\(PENDING_KEY\)/);
+  assert.match(geofence, /AsyncStorage\.setItem\(PENDING_KEY/);
+  assert.match(placesScreen, /onDataRestored/);
+  assert.match(placesScreen, /Could not save places/);
+  assert.match(placesScreen, /private account backup/);
+  assert.doesNotMatch(placesScreen, /never sent anywhere/);
 });
 
 test("context reloads reset missing synchronized values to defaults", async () => {

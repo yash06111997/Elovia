@@ -1,4 +1,8 @@
-import { GEOFENCE_TASK, loadPlaces, recordPendingArrival } from "./geofence";
+import {
+  GEOFENCE_TASK,
+  loadPlacesForBackgroundTask,
+  recordPendingArrival,
+} from "./geofence";
 
 /**
  * Background geofence handler.
@@ -95,7 +99,7 @@ if (TaskManager && Location) {
         if (eventType !== Location.LocationGeofencingEventType.Enter) return;
 
         try {
-          const places = await loadPlaces();
+          const places = await loadPlacesForBackgroundTask();
           const place = places.find((p) => p.id === region.identifier);
           if (!place || !place.enabled) return;
 
