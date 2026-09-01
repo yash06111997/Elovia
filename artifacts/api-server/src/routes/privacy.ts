@@ -10,9 +10,12 @@ import {
   friendshipsTable,
   kudosTable,
   pushTokensTable,
+  revenuecatCustomerStateTable,
+  revenuecatEventSubjectsTable,
+  revenuecatWebhookEventsTable,
   sharedActivitiesTable,
   socialProfilesTable,
-  subscriptionsTable,
+  subscriptionEntitlementsTable,
   supplementsTable,
   userDataTable,
   usersTable,
@@ -30,6 +33,7 @@ import {
 } from "../lib/accountDeletion";
 import { runAccountDeletionWorkflow } from "../lib/accountDeletionWorkflow";
 import { rateLimit } from "../lib/rateLimit";
+import { buildRevenueCatPrivacyExport } from "../lib/revenuecatPresentation";
 
 const router: IRouter = Router();
 
@@ -129,7 +133,9 @@ router.get(
       const [
         account,
         appData,
-        subscriptions,
+        normalizedEntitlements,
+        revenueCatEvents,
+        revenueCatReconciliation,
         aiUsage,
         pushDevices,
         supplements,
@@ -148,8 +154,45 @@ router.get(
         db.select().from(userDataTable).where(eq(userDataTable.userId, userId)),
         db
           .select()
-          .from(subscriptionsTable)
-          .where(eq(subscriptionsTable.userId, userId)),
+          .from(subscriptionEntitlementsTable)
+          .where(eq(subscriptionEntitlementsTable.userId, userId)),
+        db
+          .select({
+            eventId: revenuecatWebhookEventsTable.eventId,
+            type: revenuecatWebhookEventsTable.type,
+            eventAt: revenuecatWebhookEventsTable.eventAt,
+            receivedAt: revenuecatWebhookEventsTable.receivedAt,
+            environment: revenuecatWebhookEventsTable.environment,
+            disposition: revenuecatWebhookEventsTable.disposition,
+            metadata: revenuecatWebhookEventsTable.metadata,
+            identityCount: revenuecatWebhookEventsTable.identityCount,
+            retainedIdentityCount:
+              revenuecatWebhookEventsTable.retainedIdentityCount,
+            prunedIdentityCount:
+              revenuecatWebhookEventsTable.prunedIdentityCount,
+            identityRequired: revenuecatWebhookEventsTable.identityRequired,
+            identityAppliedAt:
+              revenuecatWebhookEventsTable.identityAppliedAt,
+            entitlementRequired:
+              revenuecatWebhookEventsTable.entitlementRequired,
+            entitlementAppliedAt:
+              revenuecatWebhookEventsTable.entitlementAppliedAt,
+            processedAt: revenuecatWebhookEventsTable.processedAt,
+            roleMask: revenuecatEventSubjectsTable.roleMask,
+          })
+          .from(revenuecatEventSubjectsTable)
+          .innerJoin(
+            revenuecatWebhookEventsTable,
+            eq(
+              revenuecatWebhookEventsTable.eventId,
+              revenuecatEventSubjectsTable.eventId,
+            ),
+          )
+          .where(eq(revenuecatEventSubjectsTable.localUserId, userId)),
+        db
+          .select()
+          .from(revenuecatCustomerStateTable)
+          .where(eq(revenuecatCustomerStateTable.userId, userId)),
         db.select().from(aiUsageTable).where(eq(aiUsageTable.userId, userId)),
         db
           .select()
@@ -205,12 +248,18 @@ router.get(
         resolveEntitlement(userId),
       ]);
 
+      const revenueCatBilling = buildRevenueCatPrivacyExport({
+        entitlements: normalizedEntitlements,
+        events: revenueCatEvents,
+        reconciliation: revenueCatReconciliation[0] ?? null,
+      });
       const exportData = {
         exportedAt: new Date().toISOString(),
         account: account[0] ?? null,
         appData: appData[0] ?? null,
         entitlement,
-        subscriptions,
+        subscriptions: revenueCatBilling.entitlements,
+        revenueCatBilling,
         aiUsage,
         pushDevices,
         supplements,
@@ -237,7 +286,10 @@ router.get(
       );
       res.type("application/json").send(JSON.stringify(exportData, null, 2));
     } catch (error) {
-      req.log.error({ error }, "Privacy export failed");
+      req.log.error(
+        { errorType: error instanceof Error ? error.name : "UnknownError" },
+        "Privacy export failed",
+      );
       res.status(500).json({ error: "Could not export account data" });
     }
   },

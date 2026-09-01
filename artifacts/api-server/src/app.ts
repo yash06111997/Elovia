@@ -1,38 +1,54 @@
-import express, { type Express } from "express";
 import cors from "cors";
+import express, {
+  type Express,
+  type IRouter,
+  type RequestHandler,
+} from "express";
 import pinoHttp from "pino-http";
-import { authMiddleware } from "./middlewares/authMiddleware";
-import router from "./routes";
-import { logger } from "./lib/logger";
-import { apiErrorHandler } from "./middlewares/apiErrorHandler";
+import { logger } from "./lib/logger.js";
+import { apiErrorHandler } from "./middlewares/apiErrorHandler.js";
 
-const app: Express = express();
+export type CreateAppOptions = Readonly<{
+  revenueCatRouter: IRouter;
+  authenticatedRouter: IRouter;
+  authMiddlewareImpl: RequestHandler;
+}>;
 
-app.use(
-  pinoHttp({
-    logger,
-    serializers: {
-      req(req) {
-        return {
-          id: req.id,
-          method: req.method,
-          url: req.url?.split("?")[0],
-        };
+/**
+ * Create the HTTP application without importing database-backed routes.
+ * Production dependency assembly belongs in index.ts; tests can inject only
+ * the boundary under test without a DATABASE_URL or Firebase runtime.
+ */
+export function createApp(options: CreateAppOptions): Express {
+  const app = express();
+
+  app.use(
+    pinoHttp({
+      logger,
+      serializers: {
+        req(request) {
+          return {
+            id: request.id,
+            method: request.method,
+            url: request.url?.split("?")[0],
+          };
+        },
+        res(response) {
+          return { statusCode: response.statusCode };
+        },
       },
-      res(res) {
-        return {
-          statusCode: res.statusCode,
-        };
-      },
-    },
-  }),
-);
-app.use(cors({ credentials: true, origin: true }));
-app.use(express.json({ limit: "20mb" }));
-app.use(express.urlencoded({ extended: true, limit: "20mb" }));
-app.use(authMiddleware);
+    }),
+  );
+  app.use(cors({ credentials: true, origin: true }));
 
-app.use("/api", router);
-app.use(apiErrorHandler);
+  // RevenueCat has its own authentication and a much smaller body budget.
+  app.use("/api", options.revenueCatRouter);
 
-export default app;
+  app.use(express.json({ limit: "20mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "20mb" }));
+  app.use(options.authMiddlewareImpl);
+  app.use("/api", options.authenticatedRouter);
+  app.use(apiErrorHandler);
+
+  return app;
+}

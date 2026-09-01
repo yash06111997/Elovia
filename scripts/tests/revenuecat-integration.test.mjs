@@ -659,15 +659,27 @@ if (testDatabaseUrl) {
     } = await import("../../artifacts/api-server/src/lib/revenuecatWorker.ts"));
     ({ resolveEntitlement } =
       await import("../../artifacts/api-server/src/lib/entitlements.ts"));
-    const { default: healthRouter } =
-      await import("../../artifacts/api-server/src/routes/health.ts");
+    const [
+      { default: healthRouter },
+      { default: privacyRouter },
+      { default: diagnosticsRouter },
+    ] = await Promise.all([
+      import("../../artifacts/api-server/src/routes/health.ts"),
+      import("../../artifacts/api-server/src/routes/privacy.ts"),
+      import("../../artifacts/api-server/src/routes/diagnostics.ts"),
+    ]);
     const express = requireFromApiPackage("express");
     apiApp = express();
     apiApp.use((request, _response, next) => {
-      request.log = { error() {} };
+      request.log = { error() {}, warn() {}, info() {} };
+      const testUser = request.get("x-elovia-test-user");
+      if (testUser) request.user = { id: testUser };
       next();
     });
+    apiApp.use(express.json({ limit: "20mb" }));
     apiApp.use("/api", healthRouter);
+    apiApp.use("/api", privacyRouter);
+    apiApp.use("/api", diagnosticsRouter);
     ({ applyVerifiedFirebaseAuth } =
       await import("../../artifacts/api-server/src/middlewares/authMiddleware.ts"));
     scopedPool = new Pool({ connectionString: databaseUrl });
@@ -6582,6 +6594,190 @@ integrationTest(
 );
 
 integrationTest(
+  "real privacy and diagnostics routes preserve shared events while omitting pseudonymous identifiers",
+  async () => {
+    const suffix = `${process.pid}-${Date.now()}`;
+    const owner = `presentation-owner-${suffix}`;
+    const sharedOwner = `presentation-shared-${suffix}`;
+    const missingStateOwner = `presentation-missing-${suffix}`;
+    const eventId = `presentation_event_${Date.now()}`;
+    const ownerHash = subjectHash(`raw-owner-${suffix}`);
+    const sharedHash = subjectHash(`raw-shared-${suffix}`);
+    const eventAt = new Date(Date.now() - 120_000).toISOString();
+    const receivedAt = new Date(Date.now() - 60_000).toISOString();
+    const server = await new Promise((resolve, reject) => {
+      const listening = apiApp.listen(0, () => resolve(listening));
+      listening.once("error", reject);
+    });
+    const address = server.address();
+    assert.equal(typeof address, "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const getJson = async (path, userId) => {
+      const response = await fetch(`${origin}${path}`, {
+        headers: { "x-elovia-test-user": userId },
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    try {
+      const baseline = (
+        await getJson("/api/diagnostics", `probe-${suffix}`)
+      ).body.revenueCat;
+      await scopedPool.query(
+        `INSERT INTO users (id,created_at) VALUES
+         ($1,clock_timestamp()),($2,clock_timestamp()),($3,clock_timestamp())`,
+        [owner, sharedOwner, missingStateOwner],
+      );
+      await scopedPool.query(
+        `INSERT INTO revenuecat_customer_state
+         (user_id,canonicalization_state,source_kind,source_environment,
+          last_snapshot_at,last_operation_id,last_reconciled_at,
+          reconcile_reason,reconcile_after)
+         VALUES
+         ($1,'pending','none',NULL,NULL,NULL,NULL,'webhook_failure',clock_timestamp()),
+         ($2,'canonical','worker_canonical','sandbox',clock_timestamp(),
+          'worker:presentation123',clock_timestamp(),'scheduled','2099-01-01T00:00:00Z')`,
+        [owner, sharedOwner],
+      );
+      await insertEvent(scopedPool, {
+        eventId,
+        type: "TRANSFER",
+        eventAt,
+        receivedAt,
+        environment: "sandbox",
+        metadata: { schemaVersion: 1, identityCount: 2 },
+        identityCount: 2,
+        identityRequired: true,
+        entitlementRequired: true,
+        nextAttemptAt: receivedAt,
+      });
+      await scopedPool.query(
+        `UPDATE revenuecat_webhook_events SET attempt_count=1 WHERE event_id=$1`,
+        [eventId],
+      );
+      await scopedPool.query(
+        `INSERT INTO revenuecat_event_subjects
+         (event_id,subject_hash,role_mask,local_user_id) VALUES
+         ($1,$2,$3,$4),($1,$5,$6,$7)`,
+        [
+          eventId,
+          ownerHash,
+          1 | 16,
+          owner,
+          sharedHash,
+          8,
+          sharedOwner,
+        ],
+      );
+      await scopedPool.query(
+        `INSERT INTO subscription_entitlements
+         (user_id,entitlement_id,active,status,product_id,store,
+          period_ends_at,access_ends_at,will_renew,source_environment,
+          source_kind,source_snapshot_at,source_operation_id,
+          source_trigger_event_id)
+         VALUES ($1,'elovia_pro',true,'active','pro_monthly','test_store',
+                 '2099-01-01T00:00:00Z','2099-01-01T00:00:00Z',true,
+                 'sandbox','webhook_canonical',clock_timestamp(),$2,$3)`,
+        [owner, `webhook:${eventId}`, eventId],
+      );
+
+      const ownerExport = await getJson("/api/privacy/export", owner);
+      assert.equal(ownerExport.status, 200);
+      assert.equal(
+        ownerExport.body.revenueCatBilling.label,
+        "RevenueCat billing entitlement state",
+      );
+      assert.deepEqual(ownerExport.body.revenueCatBilling.events[0].roles, [
+        "primary",
+        "transferred_to",
+      ]);
+      assert.deepEqual(ownerExport.body.subscriptions, [
+        ownerExport.body.revenueCatBilling.entitlements[0],
+      ]);
+      const sharedExport = await getJson("/api/privacy/export", sharedOwner);
+      assert.equal(sharedExport.status, 200);
+      assert.deepEqual(sharedExport.body.revenueCatBilling.events[0].roles, [
+        "transferred_from",
+      ]);
+      for (const exportBody of [ownerExport.body, sharedExport.body]) {
+        const serialized = JSON.stringify(exportBody.revenueCatBilling);
+        assert.equal(serialized.includes(ownerHash), false);
+        assert.equal(serialized.includes(sharedHash), false);
+        assert.equal(serialized.includes("subjectHash"), false);
+        assert.equal(serialized.includes("aliasHash"), false);
+        assert.equal(serialized.includes("revenuecatUserId"), false);
+        assert.equal(serialized.includes("lastEvent"), false);
+      }
+
+      await scopedPool.query("DELETE FROM users WHERE id=$1", [sharedOwner]);
+      const survivingExport = await getJson("/api/privacy/export", owner);
+      assert.equal(survivingExport.status, 200);
+      assert.equal(
+        survivingExport.body.revenueCatBilling.events[0].prunedIdentityCount,
+        1,
+      );
+      assert.deepEqual(
+        survivingExport.body.revenueCatBilling.events[0].roles,
+        ["primary", "transferred_to"],
+      );
+      assert.deepEqual(
+        (
+          await scopedPool.query(
+            `SELECT retained_identity_count,pruned_identity_count,
+                    (SELECT count(*)::integer FROM revenuecat_event_subjects
+                     WHERE event_id=$1) AS subjects
+             FROM revenuecat_webhook_events WHERE event_id=$1`,
+            [eventId],
+          )
+        ).rows[0],
+        { retained_identity_count: 1, pruned_identity_count: 1, subjects: 1 },
+      );
+
+      const diagnostics = (
+        await getJson("/api/diagnostics", owner)
+      ).body.revenueCat;
+      assert.equal(diagnostics.configuration.webhookSecretPresent, true);
+      assert.equal(diagnostics.configuration.apiKeyPresent, true);
+      assert.equal(diagnostics.configuration.subjectHashKeyPresent, true);
+      assert.equal(diagnostics.configuration.proProductCount, 1);
+      assert.equal(diagnostics.configuration.coachingProductCount, 1);
+      assert.equal(diagnostics.events.due, baseline.events.due + 1);
+      assert.equal(diagnostics.events.failed, baseline.events.failed + 1);
+      assert.equal(diagnostics.events.pending, baseline.events.pending + 1);
+      assert.equal(
+        diagnostics.events.pendingIdentityPhase,
+        baseline.events.pendingIdentityPhase + 1,
+      );
+      assert.equal(
+        diagnostics.events.pendingEntitlementPhase,
+        baseline.events.pendingEntitlementPhase + 1,
+      );
+      assert.equal(diagnostics.events.pruned, baseline.events.pruned + 1);
+      assert.equal(
+        diagnostics.customers.noncanonical,
+        baseline.customers.noncanonical + 1,
+      );
+      assert.equal(
+        diagnostics.customers.missingState,
+        baseline.customers.missingState + 1,
+      );
+      assert.equal(diagnostics.customers.hasNoncanonical, true);
+    } finally {
+      await scopedPool.query(
+        `DELETE FROM users WHERE id=ANY($1::text[])`,
+        [[owner, sharedOwner, missingStateOwner]],
+      );
+      await scopedPool.query(
+        `DELETE FROM revenuecat_webhook_events WHERE event_id=$1`,
+        [eventId],
+      );
+      await new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  },
+);
+
+integrationTest(
   "per-user and strict resolvers ignore legacy paid rows and strict readiness uses real customer state",
   async () => {
     const suffix = Date.now();
@@ -6642,6 +6838,10 @@ integrationTest(
       const address = server.address();
       assert.equal(typeof address, "object");
       const origin = `http://127.0.0.1:${address.port}`;
+      process.env.REVENUECAT_ENVIRONMENT = "invalid-for-readiness-test";
+      const invalidConfiguration = await fetch(`${origin}/api/readyz`);
+      process.env.REVENUECAT_ENVIRONMENT = processorConfig.environment;
+      assert.equal(invalidConfiguration.status, 503);
       const unavailable = await fetch(`${origin}/api/readyz`);
       assert.equal(unavailable.status, 503);
 

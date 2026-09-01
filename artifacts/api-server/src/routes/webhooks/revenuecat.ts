@@ -1,162 +1,156 @@
-import { Router, type IRouter, type Request, type Response } from "express";
-import { timingSafeEqual } from "node:crypto";
-import { db, subscriptionsTable, usersTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { createHash, timingSafeEqual } from "node:crypto";
+import express, {
+  Router,
+  type ErrorRequestHandler,
+  type IRouter,
+  type NextFunction,
+  type Request,
+  type Response,
+} from "express";
+import {
+  parseRevenueCatDelivery,
+  type RevenueCatParseResult,
+} from "../../lib/revenuecatContract.js";
+import type { RevenueCatProcessorResult } from "../../lib/revenuecatProcessor.js";
 
-const router: IRouter = Router();
+const MAX_AUTHORIZATION_BYTES = 1_024;
+const RETRY_AFTER_MAX_SECONDS = 60;
 
-/**
- * Map a RevenueCat product identifier to our internal tier label.
- * Kept permissive: unknown products still grant access, they just aren't
- * labelled, because refusing entitlement to a real payer is far worse than
- * showing a blank tier name.
- */
-function tierForProduct(productId: string | null | undefined): string | null {
-  if (!productId) return null;
-  const id = productId.toLowerCase();
-  if (id.includes("lifetime")) return "lifetime";
-  if (id.includes("year") || id.includes("annual")) return "yearly";
-  if (id.includes("month")) return "monthly";
-  return null;
+export type RevenueCatWebhookProcessor = (
+  parsed: RevenueCatParseResult,
+) => Promise<RevenueCatProcessorResult>;
+
+export type CreateRevenueCatWebhookRouterOptions = Readonly<{
+  processor: RevenueCatWebhookProcessor;
+  webhookSecret: string;
+}>;
+
+function digest(value: string): Buffer {
+  return createHash("sha256").update(value, "utf8").digest();
 }
 
-/** RevenueCat event types that mean "this user currently has access". */
-const GRANTING_EVENTS = new Set([
-  "INITIAL_PURCHASE",
-  "RENEWAL",
-  "UNCANCELLATION",
-  "NON_RENEWING_PURCHASE",
-  "SUBSCRIPTION_EXTENDED",
-  "PRODUCT_CHANGE",
-  "TRANSFER",
-]);
-
-/** Events that revoke access immediately. */
-const REVOKING_EVENTS = new Set(["EXPIRATION", "REFUND"]);
-
-function statusForEvent(type: string, isTrial: boolean): string {
-  if (type === "CANCELLATION") return "cancelled";
-  if (type === "EXPIRATION") return "expired";
-  if (type === "REFUND") return "expired";
-  if (type === "BILLING_ISSUE") return "billing_issue";
-  return isTrial ? "in_trial" : "active";
+function authorized(provided: unknown, expectedDigest: Buffer): boolean {
+  const value = typeof provided === "string" ? provided : "";
+  if (Buffer.byteLength(value, "utf8") > MAX_AUTHORIZATION_BYTES) return false;
+  return timingSafeEqual(digest(value), expectedDigest);
 }
 
-function constantTimeEquals(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
+function boundedLabel(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, maxLength) : undefined;
 }
 
-/**
- * RevenueCat server-to-server webhook.
- *
- * This is the ONLY writer to the subscriptions table. The mobile app reports
- * what RevenueCat tells it, but that report is advisory — a modified client can
- * claim anything. Entitlement decisions read exclusively from what lands here.
- *
- * Auth: RevenueCat sends the value configured in its dashboard as the
- * Authorization header. Compared in constant time to avoid leaking the secret
- * through response timing.
- */
-router.post("/webhooks/revenuecat", async (req: Request, res: Response) => {
-  const expected = process.env.REVENUECAT_WEBHOOK_SECRET;
+function retryAfter(result: RevenueCatProcessorResult): string | undefined {
+  if (result.status !== 503) return undefined;
+  const requested =
+    typeof result.retryAfterSeconds === "number" &&
+    Number.isFinite(result.retryAfterSeconds)
+      ? Math.floor(result.retryAfterSeconds)
+      : 1;
+  return String(
+    Math.max(1, Math.min(RETRY_AFTER_MAX_SECONDS, requested)),
+  );
+}
 
-  if (!expected) {
-    req.log.error("REVENUECAT_WEBHOOK_SECRET is not set; rejecting webhook");
-    res.status(503).json({ error: "Webhook not configured" });
+const webhookJsonErrorHandler: ErrorRequestHandler = (
+  error: unknown,
+  _request,
+  response,
+  next,
+) => {
+  if (response.headersSent) {
+    next(error);
     return;
   }
-
-  const provided = req.headers["authorization"];
-  if (typeof provided !== "string" || !constantTimeEquals(provided, expected)) {
-    req.log.warn("Rejected RevenueCat webhook with bad signature");
-    res.status(401).json({ error: "Invalid signature" });
+  const parserError = error as { status?: number; type?: string };
+  if (parserError.status === 413 || parserError.type === "entity.too.large") {
+    response.status(413).json({ error: "payload_too_large" });
     return;
   }
-
-  const event = req.body?.event;
-  if (!event?.type) {
-    res.status(400).json({ error: "Malformed event" });
+  if (
+    parserError.status === 400 ||
+    parserError.type === "entity.parse.failed"
+  ) {
+    response.status(400).json({ error: "malformed_json" });
     return;
   }
+  next(error);
+};
 
-  // app_user_id is set via Purchases.logIn(firebaseUid), so it IS our user id.
-  const userId: string | undefined = event.app_user_id || event.original_app_user_id;
-  if (!userId) {
-    req.log.warn({ type: event.type }, "RevenueCat event without app_user_id");
-    res.status(202).json({ received: true, applied: false });
-    return;
+/** Build the pre-authenticated, tightly bounded RevenueCat transport. */
+export function createRevenueCatWebhookRouter(
+  options: CreateRevenueCatWebhookRouterOptions,
+): IRouter {
+  if (
+    typeof options.webhookSecret !== "string" ||
+    options.webhookSecret.length === 0 ||
+    Buffer.byteLength(options.webhookSecret, "utf8") > MAX_AUTHORIZATION_BYTES
+  ) {
+    throw new Error("RevenueCat webhook secret is required.");
   }
+  const expectedDigest = digest(options.webhookSecret);
+  const router: IRouter = Router();
 
-  try {
-    // A webhook can legitimately arrive before the user has ever hit our API
-    // (purchase completes faster than first authenticated request). Without
-    // this the FK below fails and RevenueCat retries forever.
-    await db
-      .insert(usersTable)
-      .values({ id: userId })
-      .onConflictDoNothing({ target: usersTable.id });
+  router.post(
+    "/webhooks/revenuecat",
+    (request: Request, response: Response, next: NextFunction) => {
+      if (!authorized(request.headers.authorization, expectedDigest)) {
+        request.log?.warn(
+          { requestId: request.id },
+          "Rejected RevenueCat webhook authorization",
+        );
+        response.status(401).json({ error: "invalid_authorization" });
+        return;
+      }
+      next();
+    },
+    express.json({ limit: "256kb", strict: true, type: "application/json" }),
+    async (request: Request, response: Response, next: NextFunction) => {
+      const parsed = parseRevenueCatDelivery(request.body);
+      const event =
+        request.body && typeof request.body === "object"
+          ? (request.body as { event?: Record<string, unknown> }).event
+          : undefined;
+      try {
+        const outcome = await options.processor(parsed);
+        const retry = retryAfter(outcome);
+        if (retry) response.setHeader("Retry-After", retry);
+        request.log?.info(
+          {
+            requestId: request.id,
+            eventId: boundedLabel(event?.id, 128),
+            eventType: boundedLabel(event?.type, 64),
+            disposition: outcome.disposition,
+          },
+          "Handled RevenueCat webhook",
+        );
+        response.status(outcome.status).json({
+          received: outcome.status === 200,
+          applied: outcome.disposition === "applied",
+          disposition: outcome.disposition,
+        });
+      } catch {
+        const disposition = "provider_unavailable" as const;
+        request.log?.error(
+          {
+            requestId: request.id,
+            eventId: boundedLabel(event?.id, 128),
+            eventType: boundedLabel(event?.type, 64),
+            disposition,
+          },
+          "RevenueCat webhook processor failed",
+        );
+        response.setHeader("Retry-After", "1");
+        response.status(503).json({
+          received: false,
+          applied: false,
+          disposition,
+        });
+      }
+    },
+    webhookJsonErrorHandler,
+  );
 
-    const type: string = event.type;
-    const isTrial = event.period_type === "TRIAL";
-    const expiresAtMs: number | null = event.expiration_at_ms ?? null;
-    const expiresAt = expiresAtMs ? new Date(expiresAtMs) : null;
-
-    const granting = GRANTING_EVENTS.has(type);
-    const revoking = REVOKING_EVENTS.has(type);
-
-    // CANCELLATION means "will not renew", NOT "access ends now" — the user
-    // keeps access until the period ends. Treating it as immediate revocation
-    // is a common and very visible billing bug.
-    const stillWithinPeriod = !expiresAt || expiresAt.getTime() > Date.now();
-    const entitlementActive = revoking ? false : granting || stillWithinPeriod;
-
-    const productId: string | null = event.product_id ?? null;
-
-    await db
-      .insert(subscriptionsTable)
-      .values({
-        userId,
-        revenuecatUserId: event.original_app_user_id ?? userId,
-        entitlementActive,
-        entitlementId: Array.isArray(event.entitlement_ids)
-          ? event.entitlement_ids[0] ?? null
-          : event.entitlement_id ?? null,
-        status: statusForEvent(type, isTrial),
-        tier: tierForProduct(productId),
-        productId,
-        store: event.store ?? null,
-        trialEndsAt: isTrial ? expiresAt : null,
-        currentPeriodEndsAt: expiresAt,
-        lastEvent: event,
-        lastEventAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: subscriptionsTable.userId,
-        set: {
-          revenuecatUserId: event.original_app_user_id ?? userId,
-          entitlementActive,
-          status: statusForEvent(type, isTrial),
-          tier: tierForProduct(productId),
-          productId,
-          store: event.store ?? null,
-          ...(isTrial ? { trialEndsAt: expiresAt } : {}),
-          currentPeriodEndsAt: expiresAt,
-          lastEvent: event,
-          lastEventAt: new Date(),
-          updatedAt: new Date(),
-        },
-      });
-
-    req.log.info({ type, userId, entitlementActive }, "Applied RevenueCat event");
-    res.json({ received: true, applied: true });
-  } catch (err) {
-    req.log.error({ err, type: event.type }, "Failed to apply RevenueCat event");
-    // 500 so RevenueCat retries rather than dropping a real billing event.
-    res.status(500).json({ error: "Failed to process event" });
-  }
-});
-
-export default router;
+  return router;
+}

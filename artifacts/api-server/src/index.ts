@@ -1,13 +1,37 @@
-import app from "./app";
+import { createApp } from "./app";
 import { startAccountDeletionFinalizer } from "./lib/accountDeletionFinalizer";
+import { createRevenueCatClient } from "./lib/revenuecatClient";
 import { logger } from "./lib/logger";
 import { loadRevenueCatConfig } from "./lib/revenuecatConfig";
+import { processRevenueCatParseResult } from "./lib/revenuecatProcessor";
 import { startRevenueCatWorkers } from "./lib/revenuecatWorker";
+import { authMiddleware } from "./middlewares/authMiddleware";
+import authenticatedRouter from "./routes";
+import { createRevenueCatWebhookRouter } from "./routes/webhooks/revenuecat";
 
 // Validate every RevenueCat invariant before listen so an unsafe runtime never
 // advertises readiness or accepts traffic.
 const revenueCatConfig = loadRevenueCatConfig(process.env);
-void revenueCatConfig;
+const revenueCatClient = createRevenueCatClient({
+  apiKey: revenueCatConfig.apiKey,
+});
+const revenueCatRouter = createRevenueCatWebhookRouter({
+  webhookSecret: revenueCatConfig.webhookSecret,
+  processor: (parsed) =>
+    processRevenueCatParseResult({
+      parsed,
+      config: revenueCatConfig,
+      client: revenueCatClient,
+      metric(metric) {
+        logger.info(metric, "RevenueCat webhook metric");
+      },
+    }),
+});
+const app = createApp({
+  revenueCatRouter,
+  authenticatedRouter,
+  authMiddlewareImpl: authMiddleware,
+});
 
 const rawPort = process.env["PORT"];
 
