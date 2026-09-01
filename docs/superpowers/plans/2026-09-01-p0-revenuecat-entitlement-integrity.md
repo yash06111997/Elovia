@@ -71,7 +71,7 @@ Allowed API behavior is therefore limited to the documented fields above. Do not
 1. Only Firebase-authenticated middleware provisions `users`. No webhook, RevenueCat response, alias, transfer, redemption, bootstrap, worker, or on-demand reconciliation creates a local user.
 2. A RevenueCat v1 `201` means RevenueCat created an empty customer. It never authorizes local provisioning or creates a new 15-day trial; that trial derives only from an already-existing local `users.created_at`.
 3. Unknown events, unsupported identity volume, unsupported redemption shapes, deliveries with no trusted local side, ordinary unmapped subjects, and conflicting owners never grant, revoke, provision, move aliases, or call RevenueCat. A valid newer `TRANSFER` may attach a non-tombstoned unmapped source alias to an already-trusted destination, but never fetches by that alias.
-4. Ordinary events resolve the union of `app_user_id`, `original_app_user_id`, and `aliases[]`. More than one trusted local owner fails closed.
+4. Ordinary events resolve the union of `app_user_id`, `original_app_user_id`, and `aliases[]`. Each `TRANSFER` side resolves independently after direct-UID precedence. More than one distinct retained local owner in an ordinary delivery or on either transfer side fails closed before claim with `ignored_identity_conflict`.
 5. `$RCAnonymousID:*` is never provisioned or used in a provider GET. It is usable through an existing ordered mapping, or a valid newer `TRANSFER` may create that mapping only to an already-trusted destination.
 6. Tombstones are checked before provider I/O and authoritatively under the same account lock used by deletion. Tombstoned transfer sides are removed before any v1 GET.
 7. A delivery ID has one fetch owner per unexpired fenced lease. Crash/lease expiry can cause another GET; only the current fence commits. Do not claim globally exactly-once external calls.
@@ -86,6 +86,9 @@ Allowed API behavior is therefore limited to the documented fields above. Do not
 16. Account deletion cascades every user-linked subject, alias, state, and entitlement without deleting another user's shared event or entitlement.
 17. Canonical responses and identity collections have explicit size/count/string/date/enum bounds compatible with DB columns.
 18. PostgreSQL behavior, collation ordering, leases, races, migrations, and deletion are tested on PostgreSQL 14 and 16.
+19. Identity completion and entitlement completion are separately fenced and durable. Customer canonicalization can satisfy only the entitlement phase; no cleanup can infer that an unapplied alias operation is complete.
+20. An authenticated Firebase UID is authoritative for its own HMAC subject. Authenticated provenance outranks every webhook event tuple while that local user exists; webhook-to-webhook ordering remains `(event_at,event_id COLLATE "C")`.
+21. Event subject erasure leaves the immutable `identity_count` unchanged and increments only a monotonic `pruned_identity_count`, never retaining the deleted hash. Duplicate/collision checks distinguish complete and deletion-pruned subject sets without restoring erased identifiers.
 
 ## Canonical definitions
 
@@ -97,14 +100,15 @@ Each raw identity array is limited to 256 entries, every entry must be well-form
 
 Persist `HMAC-SHA-256(REVENUECAT_SUBJECT_HASH_KEY, rawRevenueCatUserId)` as lowercase hex only in subject/alias tables. Raw IDs exist only in bounded request memory. Hashes remain pseudonymous and user-linked; privacy exports omit them, logs omit them, and deletion cascades their local links.
 
-### Two independent order domains
+### Independent snapshot and identity order domains
 
 - Entitlement snapshots compare `(source_snapshot_at, source_operation_id COLLATE "C")`. `source_snapshot_at` is canonical `request_date_ms`. `source_operation_id` is bounded ASCII: `webhook:<event-id>`, `bootstrap:<uuid>`, `auth:<uuid>`, or `worker:<lease-id>`. PostgreSQL and application tests use byte ordering, never locale ordering.
-- Alias mappings compare `(source_event_at, source_event_id COLLATE "C")`, because alias provenance comes from the delivery. Equal/older tuples cannot reassign an alias.
+- Webhook-owned alias mappings compare `(source_event_at, source_event_id COLLATE "C")`, because webhook alias provenance comes from the delivery. Equal/older webhook tuples cannot reassign an alias.
+- Authenticated self-ownership is a separate authority class, recorded with `ownership_source='authenticated'` and `authenticated_at`. It always outranks webhook provenance for the live local UID whose HMAC is the alias key. It is not assigned a synthetic webhook timestamp or event ID.
 
 The legacy sentinel alone uses epoch plus operation ID `legacy`. Every canonical path—webhook, bootstrap, authenticated on-demand, and worker—uses the same snapshot projector and the real validated `request_date_ms`.
 
-Event dispositions are exhaustive. `pending` means canonical work is still durable/retryable and has no `processed_at`; `applied` means the complete intended snapshot batch and alias/subject changes committed; `stale` means the authoritative batch completed but every incoming canonical tuple was older/equal, so no projection advanced; `ignored_unknown` is a terminal identifier-free unknown-event envelope. There is no `reconciliation_failed`: transient failures stay `pending` with `next_attempt_at`; unsupported/unmapped/conflicting/deleted deliveries that persist nothing are HTTP dispositions only. New pending/terminal rows set `retention_until=received_at + interval '90 days'`; terminal transitions clear both lease columns and set `processed_at`.
+Event dispositions are exhaustive. `pending` means one or both required phases remain durable/retryable and has no `processed_at`; `applied` means all required identity/entitlement work completed and at least one phase advanced state; `stale` means all required work completed but ordered identity/canonical state was already equal/newer; `ignored_unknown` is a terminal identifier-free unknown-event envelope. There is no `reconciliation_failed`: transient failures stay `pending` with `next_attempt_at`; unsupported/unmapped/conflicting/deleted deliveries that persist nothing are HTTP dispositions only. `identity_applied_at` means every surviving identity action either committed or was explicitly proven older than authenticated/newer webhook provenance. `entitlement_applied_at` means the event projection committed/staled or every surviving linked user had a later canonical observation. Neither phase implies the other. New pending/terminal rows set `retention_until=received_at + interval '90 days'`; terminal transitions clear both lease columns and set `processed_at` only after every required phase is complete.
 
 ### Product configuration
 
@@ -273,7 +277,7 @@ Use the proven harness exactly: test-only database name, unique schema in `DATAB
 
 For the upgrade test, copy exact `0000`–`0003` files to a temporary migration directory, run them, insert a hostile legacy subscription with `entitlement_active=true`, overlong identifiers, future `last_event_at`, raw `last_event`, and an anonymous `revenuecat_user_id`, then run the full migration directory. Assert `0004` succeeds, writes only the inactive sentinel, scrubs both sensitive legacy columns, and enforces both checks.
 
-Assert every column/PK/FK/check/index below, `COLLATE "C"`, byte order for mixed `A/a/-/_` operation and event IDs under available locales, five-table discovery, pending state for an existing user without a subscription, two-user shared-event deletion safety, customer-state queue cascade, and event TTL deletion setting only entitlement `source_trigger_event_id` null.
+Assert every column/PK/FK/check/index/trigger below, `COLLATE "C"`, byte order for mixed `A/a/-/_` operation and event IDs under available locales, five-table discovery, pending state for an existing user without a subscription, one-row-per-identity role masks, authenticated/webhook provenance checks, independent phase constraints, two-user shared-event deletion safety, pruned-count increments without retained deleted hashes, customer-state queue cascade, and event TTL deletion setting only entitlement `source_trigger_event_id` null.
 
 Update blank-install, concurrent-runner, checksum, baseline-adoption, and table-count fixtures. Preserve `0003_account_deletion_identity_outbox.sql` immediately before `0004`; `migrate.mjs` already discovers/sorts `.sql` lexically and does not change. Keep all existing deletion/outbox tests.
 
@@ -298,6 +302,12 @@ CREATE TABLE "revenuecat_webhook_events" (
   "environment" varchar(16),
   "disposition" varchar(32) NOT NULL,
   "metadata" jsonb NOT NULL DEFAULT '{}'::jsonb,
+  "identity_count" integer NOT NULL,
+  "pruned_identity_count" integer NOT NULL DEFAULT 0,
+  "identity_required" boolean NOT NULL,
+  "identity_applied_at" timestamptz,
+  "entitlement_required" boolean NOT NULL,
+  "entitlement_applied_at" timestamptz,
   "attempt_count" integer NOT NULL DEFAULT 0,
   "processing_lease_id" varchar(128),
   "processing_lease_until" timestamptz,
@@ -314,6 +324,16 @@ CREATE TABLE "revenuecat_webhook_events" (
   CONSTRAINT "revenuecat_event_disposition_valid"
     CHECK ("disposition" IN ('pending','applied','stale','ignored_unknown')),
   CONSTRAINT "revenuecat_event_metadata_object" CHECK (jsonb_typeof("metadata") = 'object'),
+  CONSTRAINT "revenuecat_event_identity_count_valid" CHECK (
+    "identity_count" BETWEEN 0 AND 256 AND
+    "pruned_identity_count" BETWEEN 0 AND "identity_count"
+  ),
+  CONSTRAINT "revenuecat_event_phase_fields_valid" CHECK (
+    "identity_required" = ("identity_count" > 0) AND
+    (NOT "entitlement_required" OR "identity_required") AND
+    ("identity_required" OR "identity_applied_at" IS NULL) AND
+    ("entitlement_required" OR "entitlement_applied_at" IS NULL)
+  ),
   CONSTRAINT "revenuecat_event_attempt_valid" CHECK ("attempt_count" >= 0),
   CONSTRAINT "revenuecat_event_lease_consistent" CHECK (
     ("processing_lease_id" IS NULL) = ("processing_lease_until" IS NULL) AND
@@ -321,12 +341,25 @@ CREATE TABLE "revenuecat_webhook_events" (
   ),
   CONSTRAINT "revenuecat_event_state_consistent" CHECK (
     ("disposition" = 'pending' AND "processed_at" IS NULL) OR
-    ("disposition" <> 'pending' AND "processed_at" IS NOT NULL AND
+    ("disposition" IN ('applied','stale') AND "processed_at" IS NOT NULL AND
+      (NOT "identity_required" OR "identity_applied_at" IS NOT NULL) AND
+      (NOT "entitlement_required" OR "entitlement_applied_at" IS NOT NULL) AND
+      "processing_lease_id" IS NULL AND "processing_lease_until" IS NULL) OR
+    ("disposition" = 'ignored_unknown' AND "processed_at" IS NOT NULL AND
+      "identity_count" = 0 AND "identity_required" = false AND
+      "entitlement_required" = false AND "identity_applied_at" IS NULL AND
+      "entitlement_applied_at" IS NULL AND
       "processing_lease_id" IS NULL AND "processing_lease_until" IS NULL)
   ),
   CONSTRAINT "revenuecat_event_schedule_valid" CHECK (
     "next_attempt_at" >= "received_at" AND
-    ("processed_at" IS NULL OR "processed_at" >= "received_at")
+    ("identity_applied_at" IS NULL OR "identity_applied_at" >= "received_at") AND
+    ("entitlement_applied_at" IS NULL OR "entitlement_applied_at" >= "received_at") AND
+    ("processed_at" IS NULL OR (
+      "processed_at" >= "received_at" AND
+      ("identity_applied_at" IS NULL OR "processed_at" >= "identity_applied_at") AND
+      ("entitlement_applied_at" IS NULL OR "processed_at" >= "entitlement_applied_at")
+    ))
   ),
   CONSTRAINT "revenuecat_event_retention_valid" CHECK ("retention_until" > "received_at")
 );
@@ -335,30 +368,58 @@ CREATE TABLE "revenuecat_event_subjects" (
   "event_id" varchar(128) COLLATE "C" NOT NULL
     REFERENCES "revenuecat_webhook_events"("event_id") ON DELETE CASCADE,
   "subject_hash" char(64) NOT NULL,
-  "role" varchar(32) NOT NULL,
+  "role_mask" smallint NOT NULL,
   "local_user_id" varchar REFERENCES "users"("id") ON DELETE CASCADE,
-  PRIMARY KEY ("event_id","subject_hash","role"),
+  PRIMARY KEY ("event_id","subject_hash"),
   CONSTRAINT "revenuecat_subject_hash_valid" CHECK ("subject_hash" ~ '^[0-9a-f]{64}$'),
-  CONSTRAINT "revenuecat_subject_role_valid" CHECK (
-    "role" IN ('primary','original','alias','transferred_from','transferred_to','redeemed_from','redeemed_by')
-  )
+  CONSTRAINT "revenuecat_subject_role_mask_valid" CHECK ("role_mask" BETWEEN 1 AND 127)
 );
+
+-- role_mask bits: primary=1, original=2, alias=4, transferred_from=8,
+-- transferred_to=16, redeemed_from=32, redeemed_by=64.
+CREATE FUNCTION "revenuecat_count_pruned_subject"() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE "revenuecat_webhook_events"
+  SET "pruned_identity_count" = "pruned_identity_count" + 1
+  WHERE "event_id" = OLD."event_id";
+  RETURN OLD;
+END;
+$$;
+
+CREATE TRIGGER "TR_revenuecat_count_pruned_subject"
+AFTER DELETE ON "revenuecat_event_subjects"
+FOR EACH ROW EXECUTE FUNCTION "revenuecat_count_pruned_subject"();
+
+-- Application SQL never updates pruned_identity_count directly. Account deletion's
+-- subject cascade is the only surviving-parent path that advances it; parent event
+-- deletion cascades after the parent is gone and therefore updates zero rows.
 
 CREATE TABLE "revenuecat_customer_aliases" (
   "alias_hash" char(64) PRIMARY KEY,
   "local_user_id" varchar NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
   "alias_kind" varchar(32) NOT NULL,
-  "source_event_at" timestamptz NOT NULL,
-  "source_event_id" varchar(128) COLLATE "C" NOT NULL,
+  "ownership_source" varchar(16) NOT NULL,
+  "source_event_at" timestamptz,
+  "source_event_id" varchar(128) COLLATE "C",
+  "authenticated_at" timestamptz,
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "updated_at" timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT "revenuecat_alias_hash_valid" CHECK ("alias_hash" ~ '^[0-9a-f]{64}$'),
   CONSTRAINT "revenuecat_alias_kind_valid" CHECK (
     "alias_kind" IN ('authenticated','anonymous','original','ordinary','transferred')
   ),
-  CONSTRAINT "revenuecat_alias_source_valid" CHECK (
-    "source_event_at" > '1970-01-01T00:00:00Z'::timestamptz AND
-    "source_event_id" ~ '^[A-Za-z0-9_-]{8,128}$'
+  CONSTRAINT "revenuecat_alias_ownership_source_valid" CHECK (
+    "ownership_source" IN ('webhook','authenticated')
+  ),
+  CONSTRAINT "revenuecat_alias_provenance_valid" CHECK (
+    ("ownership_source" = 'webhook' AND
+      "source_event_at" > '1970-01-01T00:00:00Z'::timestamptz AND
+      "source_event_id" ~ '^[A-Za-z0-9_-]{8,128}$' AND
+      "authenticated_at" IS NULL) OR
+    ("ownership_source" = 'authenticated' AND "alias_kind" = 'authenticated' AND
+      "source_event_at" IS NULL AND "source_event_id" IS NULL AND
+      "authenticated_at" > '1970-01-01T00:00:00Z'::timestamptz)
   )
 );
 
@@ -499,10 +560,10 @@ CREATE TABLE "subscription_entitlements" (
 Create exact indexes:
 
 - `IDX_revenuecat_events_type_time(type,event_at DESC)`;
-- `IDX_revenuecat_events_pending_due(disposition,next_attempt_at,processing_lease_until)`;
+- `IDX_revenuecat_events_pending_due(disposition,next_attempt_at,processing_lease_until,identity_applied_at,entitlement_applied_at)`;
 - `IDX_revenuecat_events_retention(retention_until,disposition)`;
 - `IDX_revenuecat_event_subjects_local(local_user_id,event_id)`;
-- `IDX_revenuecat_aliases_local(local_user_id)` and `IDX_revenuecat_aliases_source(source_event_at,source_event_id)`;
+- `IDX_revenuecat_aliases_local(local_user_id)` and `IDX_revenuecat_aliases_source(ownership_source,source_event_at,source_event_id)`;
 - `IDX_revenuecat_customer_reconcile_due(reconcile_after,reconcile_lease_until,user_id)`;
 - `IDX_subscription_entitlements_active(user_id,active,access_ends_at)`;
 - `IDX_subscription_entitlements_source(user_id,source_snapshot_at,source_operation_id)`.
@@ -544,7 +605,7 @@ Do not copy any legacy access/product/store/date/event value into normalized sta
 
 - [ ] **Step 4: Mirror exact Drizzle schema and run GREEN**
 
-Mirror all relations, collations, checks, indexes, and FK actions. Mirror both new `subscriptions` checks. Export insert/select types.
+Mirror all relations, collations, checks, indexes, and FK actions, including the role-mask bit constants and phase/provenance columns. The pruning trigger remains migration-owned but is asserted through Drizzle-driven deletion tests. Mirror both new `subscriptions` checks. Export insert/select types.
 
 ```powershell
 pnpm run typecheck:libs
@@ -635,6 +696,7 @@ With fake client and real PostgreSQL, cover:
 
 - 20 concurrent duplicates: one valid lease owner calls GET/commits, others do not call while that lease is valid; an expired lease after simulated crash may call again, but the old fence cannot commit;
 - terminal duplicate, event-ID envelope collision, pending retry/reclaim, stale canonical snapshot, and equal snapshot time with mixed-case/hyphen/underscore operation IDs under `COLLATE "C"`;
+- complete-set duplicate/collision plus single-user and shared-event duplicate-after-deletion: terminal pruned duplicates remain stable non-mutating HTTP 200; envelope/count/subset inconsistency remains 400 collision; pending pruned events use only surviving links and never recreate erased hashes;
 - ordinary identity union maps one existing owner; zero owners returns `ignored_unmapped`; two owners returns `ignored_identity_conflict`; neither persists identifiers/hashes nor calls GET;
 - webhook never inserts `users`; an existing user with 200 can reconcile; 201 after a recognized webhook is retryable/non-applied, preserves state, and enqueues that trusted UID;
 - provider/normalization/finalization failure enqueues trusted UID and releases only the current event fence;
@@ -644,6 +706,8 @@ With fake client and real PostgreSQL, cover:
 
 Transfer/alias tests:
 
+- two different local owners resolved on `transferred_from` is pre-claim `ignored_identity_conflict`; two different owners on `transferred_to` is the same; both persist no event/hash and make no GET/mutation;
+- multiple identities on a side resolving to the same retained owner are accepted; source/destination resolving to the same UID is locked/fetched/projected once with destination semantics;
 - existing source→destination and anonymous mapped source→destination; a retained source with no trusted destination can only reconcile canonical revocation and cannot move aliases/grant; a trusted destination with no retained source can receive only non-tombstoned alias hashes and its canonical snapshot; tombstoned sides are excluded before any GET and both deleted means no persistence;
 - alias upsert advances only on `(source_event_at, source_event_id COLLATE "C")`;
 - after sorted locks, every hash/direct UID is re-resolved; a new owner outside the lock set rolls back, unions the expanded set, and retries from sorted order without acquiring an extra lock in-place;
@@ -653,6 +717,7 @@ Transfer/alias tests:
 - event-subject `local_user_id` links are updated in the alias-assignment transaction and follow the final owner; a presented identity equal to a live local UID is self-owned and cannot be overridden by an alias row;
 - 50 transfer-vs-deletion races: tombstone leaves no linked rows and no provider GET begins for a prechecked deleted side.
 - deletion after a permitted GET but before final lock discards the response; an ordinary event with no surviving link is deleted/acknowledged `ignored_deleted`, while transfer retries with only surviving sides. Neither path remains a permanent `503`.
+- crash/customer-canonicalization after entitlement commit but before alias commit leaves `entitlement_applied_at` set and `identity_applied_at` null; the fenced worker later applies/proves every ordered identity action before terminalizing.
 
 Purchase-redemption tests:
 
@@ -674,17 +739,25 @@ Expected: processor/lock/alias tests fail.
 
 `withAccountLocks` uses one transaction and sorted `pg_advisory_xact_lock(hashtextextended(uid, ACCOUNT_DELETION_LOCK_SEED))`; sorting is explicit UTF-8 byte order, never locale order. Never rewrite UIDs or acquire later-discovered locks out of order.
 
-For a mapped recognized event, under the initial sorted account locks recheck tombstones/owners, insert-or-claim the direct-identifier-free event with a 30-second lease, add user-linked subject hashes, and enqueue each trusted UID before releasing locks. Persisted metadata is constructed—not copied—from the exact allowlist `{schemaVersion: 1, identityCount: number, redemptionOutcome?: 'alias'|'transfer'|'redeemer_owns'}`; it contains no raw ID, product, payload, or provider response. `INSERT ... ON CONFLICT DO NOTHING`; conflict validates immutable type/event time/environment, allowlisted metadata, and the complete hash/role set. Reclaim uses one conditional `UPDATE ... WHERE disposition='pending' AND next_attempt_at<=now() AND (lease IS NULL OR lease_until<=now()) RETURNING`, increments attempts, and creates a new fence. Nonowners poll at most 5.5 seconds, then return `503 processing` with `Retry-After: 1` if still pending.
+After bounded parse/HMAC but before owner resolution, look up `event_id`. An existing terminal event takes the complete/pruned duplicate path below, so deletion cannot turn a valid retry into unmapped/conflict behavior. An existing pending event resumes only from its surviving stored links. Only a genuinely new event proceeds to owner resolution and the pre-claim conflict checks.
 
-Only the fence owner fetches. Before final writes it reacquires the sorted account locks, re-resolves every direct identity/alias hash, rechecks tombstones, and verifies `processing_lease_id`. A newly discovered owner outside the acquired set aborts the transaction and retries from the expanded, byte-sorted union; it never takes an extra lock in-place. Final entitlement/alias/subject/compatibility writes and terminal transition are atomic. Never hold a DB transaction/account lock across network I/O. A provider/normalization failure clears its own lease, advances `next_attempt_at` with the bounded backoff defined in Task 5, and leaves both the PII-minimized pending event and trusted-UID queue durable. A crash may cause a second GET after expiry; canonical ordering and fencing prevent stale commit.
+Resolve and byte-sort candidate owners, acquire that set, then re-resolve before claim. For `TRANSFER`, reduce each side independently to distinct retained local UIDs after direct-self precedence. Either side having more than one UID returns count-only `ignored_identity_conflict` HTTP 200 before insert; persist no event/subject/hash and perform no GET/mutation. Zero or one owner per side is valid. If both sides resolve to the same UID, keep one lock/fetch and destination semantics.
+
+For a mapped recognized event, under the stable initial sorted account locks recheck tombstones/owners, insert-or-claim the direct-identifier-free event with a 30-second lease, add one subject row per unique HMAC with the combined role mask, and enqueue each trusted UID before releasing locks. Set `identity_count` to the combined unique count; mapped recognized deliveries set both phase-required flags true. Persisted metadata is constructed—not copied—from the exact allowlist `{schemaVersion: 1, identityCount: number, redemptionOutcome?: 'alias'|'transfer'|'redeemer_owns'}`; it contains no raw ID, product, payload, or provider response. Assert `COUNT(subjects)+pruned_identity_count=identity_count` after every subject/pruning mutation.
+
+`INSERT ... ON CONFLICT DO NOTHING`. On conflict, first validate immutable type/event time/environment, allowlisted metadata, and identity count. With `pruned_identity_count=0`, require exact hash/role-mask set equality. With pruning, require the stored surviving set to be a subset of the incoming set and `surviving_count+pruned_identity_count=identity_count`; never reinsert the erased difference. A terminal match is the same stable duplicate HTTP 200, even when all subjects were pruned. Any envelope/count/surviving-subset inconsistency is collision 400. A matching pending duplicate continues only with surviving links. Reclaim uses one conditional `UPDATE ... WHERE disposition='pending' AND next_attempt_at<=now() AND (lease IS NULL OR lease_until<=now()) RETURNING`, increments attempts, and creates a new fence. Nonowners poll at most 5.5 seconds, then return `503 processing` with `Retry-After: 1` if still pending.
+
+Only the fence owner fetches. Before final writes it reacquires the sorted account locks, re-resolves every direct identity/alias hash, rechecks transfer-side uniqueness/tombstones, and verifies `processing_lease_id`. A newly discovered owner outside the acquired set aborts the transaction and retries from the expanded, byte-sorted union; it never takes an extra lock in-place. If a side becomes multi-owner before either phase committed, delete the claimed envelope/subjects and return count-only `ignored_identity_conflict` HTTP 200 with no state mutation. A recovery fixture with a previously committed phase cannot be erased; it remains pending/manual with a count-only alert and cannot make a new mutation or fan out canonical grants.
+
+The normal final transaction applies the canonical and ordered identity work together, sets both phase timestamps, relinks subjects, rebuilds compatibility, and terminalizes under the same fence. Recovery deliberately supports either phase already complete: an independent trusted-user canonical observation can fence/set only `entitlement_applied_at`, while the event worker can later fence/apply or prove the identity phase without refetching an already-satisfied entitlement phase. It sets `identity_applied_at` only after every surviving hash is moved/relinked or has authenticated/newer-webhook provenance that makes this event a no-op. `processed_at`/terminal disposition is written only when both required timestamps exist. Never hold a DB transaction/account lock across network I/O. A provider/normalization failure clears its own lease, advances `next_attempt_at` with the bounded backoff defined in Task 5, and leaves both the PII-minimized pending event and trusted-UID queue durable. A crash may cause a second GET after expiry; canonical ordering and fencing prevent stale commit.
 
 - [ ] **Step 5: Implement ordinary, transfer, redemption, and unknown semantics**
 
-Ordinary events assign only newer aliases to the one trusted owner. A raw presented identity equal to an existing local UID resolves directly to itself; alias-table ownership is consulted only when no live direct user exists, so an alias row cannot steal an authenticated UID. Transfer excludes prechecked tombstones before fetch, locks all retained source/destination UIDs, and fetches one canonical snapshot per unique UID. A retained source is deactivated only when its canonical configured products are absent/inactive; a still-live source or a `201` is `transfer_visibility_lag`, remains pending, and commits no entitlement batch. Once all snapshots are authoritative, apply newer alias provenance, all source projections, and every destination projection atomically; a UID present on both sides is projected only as destination. On re-resolution expansion, rollback and restart with the union sorted set. Redemptions follow the no-duplicate-transfer rules above. Unknown/unsupported/unmapped paths do no canonical work.
+Ordinary events assign only newer webhook-owned aliases to the one trusted owner. A raw presented identity equal to an existing local UID resolves directly to itself; authenticated alias ownership is consulted before webhook ownership and cannot be stolen by any event tuple. Transfer excludes prechecked tombstones before fetch, has at most one retained source owner and at most one retained destination owner, and fetches one canonical snapshot per distinct UID. A retained source is deactivated only when its canonical configured products are absent/inactive; a still-live source or a `201` is `transfer_visibility_lag`, remains pending, and commits no entitlement batch. Once all snapshots are authoritative, apply eligible newer webhook alias provenance and the source/destination projections atomically; one UID on both sides is projected only as destination. On re-resolution expansion, rollback and restart with the union sorted set. Redemptions follow the no-duplicate-transfer rules above. Unknown/unsupported/unmapped paths do no canonical work.
 
 If the authoritative final tombstone check removes the last linked user, discard the fetched response, delete the now-unreconstructable pending envelope, and return terminal HTTP `ignored_deleted`. If a transfer retains another live side, rollback and restart with only the surviving side set; never keep returning `503` for a deleted subject.
 
-Alias movement uses one conditional upsert: update `local_user_id`, `alias_kind`, `source_event_at`, and `source_event_id` only where `(existing.source_event_at, existing.source_event_id COLLATE "C") < (incoming.event_at, incoming.event_id COLLATE "C")`. In that same transaction, update every matching `revenuecat_event_subjects.local_user_id` to the final owner. Equal/older events may add a missing event-subject link to the already-established owner but cannot move the alias.
+Webhook alias movement uses one conditional upsert: insert `ownership_source='webhook'`, or update `local_user_id`, `alias_kind`, `source_event_at`, and `source_event_id` only when the existing source is webhook and `(existing.source_event_at, existing.source_event_id COLLATE "C") < (incoming.event_at, incoming.event_id COLLATE "C")`. It never updates an authenticated row. In the same transaction, translate `role_mask`, update every matching pending `revenuecat_event_subjects.local_user_id` to the final owner, and set `identity_applied_at` only after every surviving bit-action is applied or proven inapplicable by higher/equal provenance. Equal/older events may relink a pending subject to the established owner but cannot move the alias.
 
 Create `applyTrustedSnapshot(...)` in `revenuecatReconciler.ts` now so the webhook processor and later worker/on-demand paths share the exact conditional normalized upsert, compatibility reprojection, customer-state update, fence verification, and snapshot ordering code. Task 5 adds provider-fetch orchestration around this transactional primitive instead of reimplementing it.
 
@@ -713,6 +786,8 @@ Commit: `fix: serialize trusted revenuecat projections`
 Test the exact customer-state queue:
 
 - migration covers every existing user, and auth provisioning creates `pending` state/due work for every future user in the same account-lock transaction through an optional/additive provisioning callback; tombstoned/deletion-fallback auth never enqueues;
+- authenticated provisioning/existing-user auth computes the UID HMAC, expands to and byte-locks any prior alias owner, writes authenticated self-provenance, re-links matching pending subjects, and enqueues both displaced and authenticated owners; webhook tuples cannot overwrite it;
+- crash with `entitlement_applied_at` set and identity pending, followed by provisioning the exact Firebase UID, then event-worker recovery: authenticated self-ownership wins, the worker discovers the new owner from the hash row, expands locks without inversion, completes identity deterministically, and never restores the prior alias owner;
 - authenticated requests enqueue only missing/legacy/due state, avoiding a request-rate polling storm;
 - `GET /entitlement` attempts one bounded on-demand reconciliation only for a trusted uncanonicalized/due user, then resolves safely even if provider fails;
 - webhook failure already mapped to a trusted UID remains recoverable after all webhook retries stop;
@@ -722,8 +797,9 @@ Test the exact customer-state queue:
 - worker/on-demand/bootstrap never provision a user and deletion between fetch/final lock wins;
 - bootstrap pages `revenuecat_customer_state.user_id` joined to a still-existing `users.id`, never legacy `subscriptions.revenuecat_user_id`, cursor batches deterministically, removes any sentinel, and accepts 200 or bootstrap-only 201 empty;
 - webhook-vs-bootstrap and worker-vs-webhook races leave the greatest canonical snapshot tuple; alias ordering remains independent;
-- the event worker reconstructs ordinary/transfer/redemption work only from event roles, hashes, and still-linked trusted local UIDs—never raw subjects—and preserves atomic source/destination transfer projection after RevenueCat's delivery retry window;
-- terminal event cleanup at 90 days; pending events alert at 24 hours and remain retryable for 30 days. After 30 days, a no-live-lease event whose linked users have independently canonicalized after `received_at` becomes terminal `stale`; an event with no surviving trusted link is deleted with an unreconstructable alert by type/count only. Otherwise it keeps retrying and pages operations. At 90 days, enqueue every surviving linked trusted UID, emit a critical type/count-only alert, and delete the event; trusted-UID reconciliation remains the bounded recovery path.
+- the event worker reconstructs ordinary/transfer/redemption work only from role masks, hashes, alias provenance, and still-linked trusted local UIDs—never raw subjects—and preserves atomic source/destination transfer projection after RevenueCat's delivery retry window;
+- 30-day cleanup never marks an identity-bearing event stale from customer canonicalization alone. It may set/satisfy only `entitlement_applied_at`; terminalization additionally requires `identity_applied_at`, which the fenced identity worker sets only after every surviving hash action applies or is older than authenticated/newer webhook provenance;
+- 90-day cleanup deletes terminal events and all-pruned/no-surviving-link pending events, but never deletes a pending event with a surviving unresolved identity phase. Such an event remains pending and pages a critical type/count-only alert until the identity worker or explicit operator repair completes it. Single-user and shared-event cleanup prove erased hashes are not restored.
 
 Resolver tests:
 
@@ -764,11 +840,13 @@ If neither configured row advances, the operation is stale and compatibility sta
 
 - [ ] **Step 4: Implement worker, auth, on-demand, and cleanup**
 
-The worker claims due `revenuecat_customer_state` rows in batches with `FOR UPDATE SKIP LOCKED`, a random lease, and a 60-second lease deadline. It fetches only `user_id`, finalizes only with its current lease, schedules 6-hour success or bounded exponential retry, and emits type/error-code/count metrics only. It separately claims `revenuecat_webhook_events` where `disposition='pending'`, `next_attempt_at<=now()`, and no valid lease. Using surviving `revenuecat_event_subjects.local_user_id` grouped by role plus stored hashes, it retries the Task 4 canonical batch/alias assignment without reconstructing raw IDs; the same fence and sorted-lock rules apply. An unreconstructable event never calls RevenueCat. `index.ts` starts/stops both loops beside the existing account-deletion finalizer.
+The worker claims due `revenuecat_customer_state` rows in batches with `FOR UPDATE SKIP LOCKED`, a random lease, and a 60-second lease deadline. It fetches only `user_id`, finalizes only with its current lease, schedules 6-hour success or bounded exponential retry, and emits type/error-code/count metrics only. A successful trusted-user observation may satisfy a pending event's entitlement phase only when every surviving linked UID was canonically observed after the event's `received_at`; it never sets `identity_applied_at`.
 
-Keep `provisionAuthenticatedUserIfActive` public return compatibility. Add an optional transaction callback so `authMiddleware` can create/due reconciliation state atomically after trusted Firebase provisioning. Deletion-fallback auth never invokes it. `GET /entitlement` invokes bounded on-demand reconciliation for due/uncanonicalized trusted users; failure is fail-closed to account trial/free, not a 500 paid grant and not a legacy read.
+The worker separately claims `revenuecat_webhook_events` where `disposition='pending'`, `next_attempt_at<=now()`, and no valid lease. Using surviving `revenuecat_event_subjects.local_user_id`, role masks, stored hashes, and current alias provenance, it retries the Task 4 phase(s) without reconstructing raw IDs. It first expands/sorts all current and newly discovered owners; authenticated ownership may introduce the newly provisioned direct UID and displace the old alias owner. Under the current fence it runs only missing phases, verifies `surviving_count+pruned_identity_count=identity_count`, and terminalizes only when every required phase timestamp exists. An unreconstructable event never calls RevenueCat. `index.ts` starts/stops both loops beside the existing account-deletion finalizer.
 
-Cleanup deletes terminal event rows after 90 days. It alerts on pending age at 24 hours; at 30 days and with no live lease it follows the exact canonicalized-linked-user or no-surviving-link terminal/delete rule from Step 1; at 90 days it enqueues surviving linked UIDs, emits the critical alert, and hard-deletes. `source_trigger_event_id ON DELETE SET NULL` preserves canonical ordering. Alert counts identify pending events that lost all user-linked subjects after deletion; no subject/hash is printed.
+Keep `provisionAuthenticatedUserIfActive` public return compatibility. Before its account mutation, compute `uidHash=HMAC(key,verifiedFirebaseUid)`, read any alias owner, and call the same expandable `withAccountLocks` algorithm with the byte-sorted union of UID/prior owner. Re-read after locking; a newly discovered owner rolls back and expands, never adds an out-of-order lock. In the provisioning transaction, after the tombstone check and for both new/existing users, upsert the hash as `ownership_source='authenticated',local_user_id=uid,alias_kind='authenticated',authenticated_at=users.created_at` with all event provenance null. This authority class overwrites webhook ownership regardless of event time. Re-link matching subjects of pending events to UID, leave terminal history untouched, and enqueue UID plus any displaced prior owner. Add the reconciliation-state write through an optional/additive callback without changing the public return. Deletion-fallback auth performs none of these writes. `GET /entitlement` invokes bounded on-demand reconciliation for due/uncanonicalized trusted users; failure is fail-closed to account trial/free, not a 500 paid grant and not a legacy read.
+
+Cleanup alerts on pending age at 24 hours. At 30 days with no live lease it may mark the entitlement phase satisfied from the exact post-event canonical-observation rule, then must run/queue the identity phase; it cannot terminalize from customer state alone. At 90 days it deletes terminal events. A pending event with `pruned_identity_count=identity_count` and zero surviving subjects is deletion-resolved and may be deleted as `ignored_deleted`; no alias target survives. Any pending event with a surviving subject and null `identity_applied_at` is retained, its linked UIDs are enqueued, and a critical count/type-only alert pages operations. Once the identity phase applies/proves newer provenance, normal terminal retention resumes. `source_trigger_event_id ON DELETE SET NULL` preserves canonical ordering. No alert prints a subject/hash.
 
 - [ ] **Step 5: Implement bootstrap and remove legacy paid fallback**
 
@@ -807,7 +885,7 @@ Assert secret missing fails construction; bad/missing auth 401; valid-auth body 
 
 - [ ] **Step 2: Add pure presentation tests and DB-backed wiring tests**
 
-`revenuecat-presentation.test.mjs` tests pure allowlist builders with plain rows: diagnostics booleans/counts only; privacy output normalized entitlements, bounded event metadata, event roles, and reconciliation status without hashes, aliases, legacy RevenueCat ID, raw event, payload, API response, or secrets.
+`revenuecat-presentation.test.mjs` tests pure allowlist builders with plain rows: diagnostics booleans/counts only, including pending identity/entitlement phase and pruned-event counts; privacy output normalized entitlements, bounded event metadata, decoded role-mask names, phase status, and reconciliation status without hashes, aliases, legacy RevenueCat ID, raw event, payload, API response, or secrets.
 
 The ordered PostgreSQL integration harness—not the DB-free app factory—dynamically imports and mounts real privacy/diagnostics routes after migrations and DB env setup. Assert live query/wiring, local-user cascade, shared event behavior, pseudonymous hash omission, and readiness counts.
 
@@ -857,6 +935,7 @@ Include ordinary `INITIAL_PURCHASE`, `RENEWAL`, `CANCELLATION`, `UNCANCELLATION`
 Matrix requirements:
 
 - aliases in ordinary identity; 256 accepted/257 acknowledged fail-closed;
+- transfer-side unique-owner enforcement for multi-owner source, multi-owner destination, same-owner aliases, and source/destination overlap;
 - 200 existing vs 201 created semantics and zero webhook provisioning;
 - purchase-before-first-server-call recovered after trusted auth; anonymous→authenticated recovered by ordinary alias webhook/on-demand schedule;
 - canonical request-time reverse order/equal-time C-collation operation tie; webhook event time cannot overwrite newer canonical snapshot;
@@ -864,7 +943,9 @@ Matrix requirements:
 - PREPAID/promotional/non-renewing/lifetime/refund/absence/willRenew exactness;
 - valid-lease concurrency, crash/expired-lease duplicate GET allowance, old-fence rejection;
 - reverse/concurrent transfer chains, lock-set expansion, both-side UID destination win, subject-link reassignment, transfer/deletion races;
-- durable missed-webhook convergence, worker lease/backoff, on-demand/bootstrap, 201 visibility lag;
+- crash-after-entitlement-before-identity recovery, later Firebase UID provisioning/authenticated-precedence race, and no webhook overwrite of direct self-ownership;
+- complete/pruned duplicate and collision behavior after single-user/shared-event deletion, including pending surviving-link recovery;
+- 30/90-day gates that never stale/delete a surviving unapplied identity phase; durable missed-webhook convergence, worker lease/backoff, on-demand/bootstrap, and 201 visibility lag;
 - no legacy paid fallback, false-grant fixture, bootstrap cutover, strict readiness;
 - hostile migration, raw payload/RevenueCat ID scrub, pseudonymous privacy cascade, TTL cleanup;
 - DB-free transport/presentation plus DB-backed privacy/diagnostics wiring.
@@ -926,7 +1007,11 @@ Rollback may switch from `strict` to `per_user`, which still grants only normali
 - Webhooks and provider responses never provision local users or create trials.
 - Auth provisioning plus on-demand/durable scheduled reconciliation recovers missed purchase/merge webhooks.
 - Entitlements order only by validated canonical request time plus C-collated operation ID.
-- Aliases retain C-collated event provenance and update only when newer under expandable sorted lock sets.
+- Webhook-owned aliases retain C-collated event provenance and update only when newer under expandable sorted lock sets.
+- Each transfer side has at most one distinct retained owner; conflicts fail before persistence, while overlap dedupes with destination truth.
+- Authenticated direct-self provenance outranks webhook provenance and hash-only workers discover later-provisioned owners safely.
+- Identity and entitlement phases are independently fenced; cleanup never discards a surviving unapplied alias operation.
+- Deletion-pruned subject counts preserve stable duplicate behavior without retaining or restoring erased hashes.
 - Transfer chains/races, both-side destination truth, and event-subject relinking are specified/tested.
 - One owner exists per valid event lease; fencing, crash semantics, trusted-UID recovery, TTL cleanup, and alerts are exact.
 - No successful read/rollback path trusts legacy paid/trial state; bootstrap completes before strict.
