@@ -11,7 +11,6 @@ import {
 import {
   createRevenueCatClient,
   RevenueCatClientError,
-  trustAuthenticatedLocalUid,
 } from "../../artifacts/api-server/src/lib/revenuecatClient.ts";
 import {
   parseCanonicalRevenueCatSnapshot,
@@ -628,7 +627,7 @@ test("RevenueCat client URL-encodes a trusted UID and distinguishes 200 from Get
         });
       },
     });
-    const result = await client.getSubscriber(trustAuthenticatedLocalUid("firebase/user + one"));
+    const result = await client.getSubscriber("firebase/user + one");
     assert.equal(result.lookup, lookup);
     assert.equal(result.snapshot.sourceSnapshotAt.getTime(), SNAPSHOT_MS);
     assert.equal("provisionLocalUser" in result, false);
@@ -655,7 +654,7 @@ test("RevenueCat client returns typed sanitized status, network, and timeout fai
       fetchImpl: async () => new Response("private-provider-body", { status }),
     });
     await assert.rejects(
-      client.getSubscriber(trustAuthenticatedLocalUid("private-user")),
+      client.getSubscriber("private-user"),
       (error) => {
         assert.equal(error instanceof RevenueCatClientError, true);
         assert.equal(error.code, code);
@@ -672,7 +671,7 @@ test("RevenueCat client returns typed sanitized status, network, and timeout fai
     fetchImpl: async () => { throw new Error("private network detail"); },
   });
   await assert.rejects(
-    networkClient.getSubscriber(trustAuthenticatedLocalUid("private-user")),
+    networkClient.getSubscriber("private-user"),
     (error) => error.code === "revenuecat_unavailable" && error.retryable && !error.message.includes("private"),
   );
 
@@ -685,7 +684,7 @@ test("RevenueCat client returns typed sanitized status, network, and timeout fai
     }),
   });
   await assert.rejects(
-    timeoutClient.getSubscriber(trustAuthenticatedLocalUid("private-user")),
+    timeoutClient.getSubscriber("private-user"),
     (error) => error.code === "revenuecat_timeout" && error.retryable,
   );
 
@@ -700,7 +699,7 @@ test("RevenueCat client returns typed sanitized status, network, and timeout fai
     }), { status: 200, headers: { "content-type": "application/json" } }),
   });
   await assert.rejects(
-    bodyTimeoutClient.getSubscriber(trustAuthenticatedLocalUid("private-user")),
+    bodyTimeoutClient.getSubscriber("private-user"),
     (error) => error.code === "revenuecat_timeout" && error.retryable,
   );
 });
@@ -715,7 +714,7 @@ test("RevenueCat client bounds declared and streamed bytes before parsing", asyn
       headers: { "content-type": "application/json", "content-length": String(tooLarge) },
     }),
   });
-  await assert.rejects(declared.getSubscriber(trustAuthenticatedLocalUid("uid")), (error) => error.code === "canonical_response_invalid");
+  await assert.rejects(declared.getSubscriber("uid"), (error) => error.code === "canonical_response_invalid");
 
   const chunk = new Uint8Array(600_000);
   const body = new ReadableStream({
@@ -730,7 +729,7 @@ test("RevenueCat client bounds declared and streamed bytes before parsing", asyn
     clock: () => new Date(SNAPSHOT_MS),
     fetchImpl: async () => new Response(body, { status: 200, headers: { "content-type": "application/json" } }),
   });
-  await assert.rejects(streamed.getSubscriber(trustAuthenticatedLocalUid("uid")), (error) => error.code === "canonical_response_invalid");
+  await assert.rejects(streamed.getSubscriber("uid"), (error) => error.code === "canonical_response_invalid");
 });
 
 test("RevenueCat client rejects content type, UTF-8, JSON, and schema without response.json", async () => {
@@ -746,7 +745,7 @@ test("RevenueCat client rejects content type, UTF-8, JSON, and schema without re
       clock: () => new Date(SNAPSHOT_MS),
       fetchImpl: async () => new Response(bytes, { status: 200, headers: { "content-type": contentType } }),
     });
-    await assert.rejects(client.getSubscriber(trustAuthenticatedLocalUid("uid")), (error) => error.code === "canonical_response_invalid");
+    await assert.rejects(client.getSubscriber("uid"), (error) => error.code === "canonical_response_invalid");
   }
   const source = await readFile(new URL("../../artifacts/api-server/src/lib/revenuecatClient.ts", import.meta.url), "utf8").catch(() => "");
   assert.doesNotMatch(source, /\.json\s*\(/);
@@ -759,6 +758,75 @@ test("RevenueCat client rejects content type, UTF-8, JSON, and schema without re
   assert.match(source, /getSubscriber\(uid: TrustedLocalUid\)/);
   assert.match(source, /unique symbol/);
   assert.doesNotMatch(source, /getSubscriber\(uid: string\)/);
+  assert.doesNotMatch(source, /trustAuthenticatedLocalUid/);
+});
+
+test("RevenueCat client cancels every body rejected before consumption", async () => {
+  const cases = [
+    { status: 418, contentType: "application/json" },
+    { status: 200, contentType: "text/plain" },
+    { status: 200, contentType: "application/json", contentLength: "1048577" },
+  ];
+  for (const fixture of cases) {
+    let cancellations = 0;
+    const body = new ReadableStream({
+      cancel() {
+        cancellations += 1;
+        throw new Error("private cancellation detail");
+      },
+    });
+    const headers = { "content-type": fixture.contentType };
+    if (fixture.contentLength) headers["content-length"] = fixture.contentLength;
+    const client = createRevenueCatClient({
+      apiKey: "captured-secret",
+      clock: () => new Date(SNAPSHOT_MS),
+      fetchImpl: async () => new Response(body, { status: fixture.status, headers }),
+    });
+    await assert.rejects(client.getSubscriber("uid"), (error) => {
+      assert.equal(error instanceof RevenueCatClientError, true);
+      assert.doesNotMatch(error.message, /private cancellation detail/);
+      return true;
+    });
+    assert.equal(cancellations, 1, JSON.stringify(fixture));
+  }
+
+  let normalCancellations = 0;
+  const normalBody = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(JSON.stringify(rawSnapshot())));
+      controller.close();
+    },
+    cancel() {
+      normalCancellations += 1;
+    },
+  });
+  const normalClient = createRevenueCatClient({
+    apiKey: "captured-secret",
+    clock: () => new Date(SNAPSHOT_MS),
+    fetchImpl: async () => new Response(normalBody, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  });
+  await normalClient.getSubscriber("uid");
+  assert.equal(normalCancellations, 0);
+});
+
+test("RevenueCat client captures the validated API key at construction", async () => {
+  const options = {
+    apiKey: "original-secret",
+    clock: () => new Date(SNAPSHOT_MS),
+    fetchImpl: async (_url, init) => {
+      assert.equal(init.headers.Authorization, "Bearer original-secret");
+      return new Response(JSON.stringify(rawSnapshot()), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  };
+  const client = createRevenueCatClient(options);
+  options.apiKey = "mutated-secret";
+  await client.getSubscriber("uid");
 });
 
 test("canonical snapshot rejects skew, count, string, enum, date, and product-class shapes", () => {
@@ -800,6 +868,89 @@ test("canonical snapshot ignores unlisted fields without traversing subscriber a
   assert.equal(snapshot.subscriptions.pro_auto.productId, "pro_auto");
   assert.equal("extra" in snapshot.subscriptions.pro_auto, false);
   assert.equal("attributes" in snapshot, false);
+});
+
+test("canonical and projected Date values are defensive copies", () => {
+  const expiry = new Date(SNAPSHOT_MS + 30 * DAY).toISOString();
+  const grace = new Date(SNAPSHOT_MS + 35 * DAY).toISOString();
+  const refund = new Date(SNAPSHOT_MS - DAY).toISOString();
+  const purchaseDate = new Date(SNAPSHOT_MS - 60 * DAY).toISOString();
+  const pointerPurchase = new Date(SNAPSHOT_MS - 3 * DAY).toISOString();
+  const snapshot = parseSnapshot(rawSnapshot({
+    entitlements: {
+      "Elovia Pro": {
+        product_identifier: "pro_auto",
+        expires_date: expiry,
+        grace_period_expires_date: grace,
+        purchase_date: pointerPurchase,
+      },
+    },
+    subscriptions: {
+      pro_auto: subscription({
+        expires_date: expiry,
+        grace_period_expires_date: grace,
+        refunded_at: refund,
+      }),
+    },
+    non_subscriptions: {
+      pro_fixed: [{
+        id: "fixed-purchase",
+        purchase_date: purchaseDate,
+        is_sandbox: false,
+        store: "app_store",
+      }],
+    },
+  }));
+
+  const representatives = [
+    [() => snapshot.sourceSnapshotAt, new Date(SNAPSHOT_MS).toISOString()],
+    [() => snapshot.entitlements["Elovia Pro"].expiresDate, expiry],
+    [() => snapshot.entitlements["Elovia Pro"].gracePeriodExpiresDate, grace],
+    [() => snapshot.entitlements["Elovia Pro"].purchaseDate, pointerPurchase],
+    [() => snapshot.subscriptions.pro_auto.expiresDate, expiry],
+    [() => snapshot.subscriptions.pro_auto.refundedAt, refund],
+    [() => snapshot.subscriptions.pro_auto.gracePeriodExpiresDate, grace],
+    [() => snapshot.nonSubscriptions.pro_fixed[0].purchaseDate, purchaseDate],
+  ];
+  for (const [read, expected] of representatives) {
+    const exposed = read();
+    exposed.setUTCFullYear(2099);
+    assert.equal(read().toISOString(), expected);
+  }
+
+  const [row] = projectRevenueCatSnapshot({
+    snapshot,
+    config: config(),
+    operationId: "worker:lease-12345678",
+  });
+  const projectedExpected = {
+    source: new Date(SNAPSHOT_MS).toISOString(),
+    access: refund,
+    period: expiry,
+  };
+  row.sourceSnapshotAt.setUTCFullYear(2099);
+  row.accessEndsAt.setUTCFullYear(2099);
+  row.periodEndsAt.setUTCFullYear(2099);
+  assert.equal(row.sourceSnapshotAt.toISOString(), projectedExpected.source);
+  assert.equal(row.accessEndsAt.toISOString(), projectedExpected.access);
+  assert.equal(row.periodEndsAt.toISOString(), projectedExpected.period);
+
+  const expiredSnapshot = parseSnapshot(rawSnapshot({
+    subscriptions: {
+      pro_auto: subscription({
+        expires_date: new Date(SNAPSHOT_MS - DAY).toISOString(),
+      }),
+    },
+  }));
+  expiredSnapshot.subscriptions.pro_auto.expiresDate.setUTCFullYear(2099);
+  expiredSnapshot.sourceSnapshotAt.setUTCFullYear(2099);
+  const [expired] = projectRevenueCatSnapshot({
+    snapshot: expiredSnapshot,
+    config: config(),
+    operationId: "worker:lease-12345678",
+  });
+  assert.equal(expired.active, false);
+  assert.equal(expired.sourceSnapshotAt.getTime(), SNAPSHOT_MS);
 });
 
 test("snapshot projection enforces pointers, environment, source class, and period contracts", () => {

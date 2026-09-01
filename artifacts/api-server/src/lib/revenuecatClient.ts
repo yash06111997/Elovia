@@ -93,12 +93,12 @@ function validUid(value: string): boolean {
   );
 }
 
-/** Establish this brand only from a UID already verified by Firebase auth. */
-export function trustAuthenticatedLocalUid(uid: string): TrustedLocalUid {
-  if (!validUid(uid)) {
-    throw new RevenueCatClientError("revenuecat_request_invalid", false);
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Cancellation is best-effort and must never replace the sanitized error.
   }
-  return uid as TrustedLocalUid;
 }
 
 async function boundedResponseBytes(
@@ -108,6 +108,7 @@ async function boundedResponseBytes(
   const declared = response.headers.get("content-length");
   if (declared !== null) {
     if (!/^\d+$/.test(declared) || Number(declared) > maximum) {
+      await cancelResponseBody(response);
       throw new RevenueCatClientError("canonical_response_invalid", true);
     }
   }
@@ -124,7 +125,11 @@ async function boundedResponseBytes(
       if (done) break;
       total += value.byteLength;
       if (total > maximum) {
-        await reader.cancel();
+        try {
+          await reader.cancel();
+        } catch {
+          // Preserve the intended bounded-response error.
+        }
         throw new RevenueCatClientError("canonical_response_invalid", true);
       }
       chunks.push(value);
@@ -181,11 +186,12 @@ function statusError(status: number): RevenueCatClientError {
 export function createRevenueCatClient(
   options: RevenueCatClientOptions,
 ): RevenueCatClient {
+  const candidateApiKey = options.apiKey;
   if (
-    typeof options.apiKey !== "string" ||
-    options.apiKey.trim().length === 0 ||
-    Buffer.byteLength(options.apiKey, "utf8") > 1_024 ||
-    !isWellFormed(options.apiKey)
+    typeof candidateApiKey !== "string" ||
+    candidateApiKey.trim().length === 0 ||
+    Buffer.byteLength(candidateApiKey, "utf8") > 1_024 ||
+    !isWellFormed(candidateApiKey)
   ) {
     throw new RevenueCatClientError("revenuecat_configuration_invalid", false);
   }
@@ -204,6 +210,7 @@ export function createRevenueCatClient(
   }
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const clock = options.clock ?? (() => new Date());
+  const apiKey = candidateApiKey;
 
   return Object.freeze({
     async getSubscriber(uid: TrustedLocalUid): Promise<RevenueCatLookup> {
@@ -224,7 +231,7 @@ export function createRevenueCatClient(
           {
             method: "GET",
             headers: {
-              Authorization: `Bearer ${options.apiKey}`,
+              Authorization: `Bearer ${apiKey}`,
               Accept: "application/json",
             },
             signal: controller.signal,
@@ -233,10 +240,13 @@ export function createRevenueCatClient(
 
         const responseReceivedAt = clock();
         if (response.status !== 200 && response.status !== 201) {
-          throw statusError(response.status);
+          const error = statusError(response.status);
+          await cancelResponseBody(response);
+          throw error;
         }
         const contentType = response.headers.get("content-type") ?? "";
         if (!/^application\/json(?:\s*;|\s*$)/i.test(contentType)) {
+          await cancelResponseBody(response);
           throw new RevenueCatClientError("canonical_response_invalid", true);
         }
         const bytes = await boundedResponseBytes(response, maxResponseBytes);

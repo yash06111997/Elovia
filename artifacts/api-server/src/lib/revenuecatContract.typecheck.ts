@@ -3,6 +3,10 @@ import {
   type OrdinaryRevenueCatDelivery,
   type RevenueCatDelivery,
 } from "./revenuecatContract.js";
+import type {
+  RevenueCatClient,
+  TrustedLocalUid,
+} from "./revenuecatClient.js";
 
 declare const delivery: RevenueCatDelivery;
 declare const ordinary: OrdinaryRevenueCatDelivery;
@@ -17,3 +21,11 @@ void runtimeSet;
 void legacyMetadata;
 void ordinaryUserId;
 void ordinaryOriginal;
+
+declare const revenueCatClient: RevenueCatClient;
+declare const trustedLocalUid: TrustedLocalUid;
+declare const rawLocalUid: string;
+
+void revenueCatClient.getSubscriber(trustedLocalUid);
+// @ts-expect-error Raw strings have not crossed the authenticated local-user boundary.
+void revenueCatClient.getSubscriber(rawLocalUid);

@@ -195,7 +195,7 @@ function upperDateBound(snapshotMs: number): number {
 function optionalCanonicalDate(
   value: unknown,
   snapshotMs: number,
-): Date | null {
+): number | null {
   if (value === undefined || value === null) return null;
   const source = boundedString(value, 64);
   if (!ISO_DATE.test(source)) invalid();
@@ -207,7 +207,7 @@ function optionalCanonicalDate(
   ) {
     invalid();
   }
-  return new Date(milliseconds);
+  return milliseconds;
 }
 
 function requiredObjectCollection(
@@ -218,6 +218,14 @@ function requiredObjectCollection(
   const entries = Object.entries(value);
   if (entries.length > maxEntries) invalid();
   return value;
+}
+
+function defensiveDate(value: Date | null): Date | null {
+  return value === null ? null : new Date(value.getTime());
+}
+
+function dateFromMilliseconds(value: number | null): Date | null {
+  return value === null ? null : new Date(value);
 }
 
 function normalizePointer(
@@ -231,15 +239,24 @@ function normalizePointer(
     rawProduct === undefined || rawProduct === null
       ? null
       : boundedString(rawProduct, 256);
+  const expiresDate = optionalCanonicalDate(value["expires_date"], snapshotMs);
+  const gracePeriodExpiresDate = optionalCanonicalDate(
+    value["grace_period_expires_date"],
+    snapshotMs,
+  );
+  const purchaseDate = optionalCanonicalDate(value["purchase_date"], snapshotMs);
   return Object.freeze({
     entitlementId,
     productIdentifier,
-    expiresDate: optionalCanonicalDate(value["expires_date"], snapshotMs),
-    gracePeriodExpiresDate: optionalCanonicalDate(
-      value["grace_period_expires_date"],
-      snapshotMs,
-    ),
-    purchaseDate: optionalCanonicalDate(value["purchase_date"], snapshotMs),
+    get expiresDate() {
+      return dateFromMilliseconds(expiresDate);
+    },
+    get gracePeriodExpiresDate() {
+      return dateFromMilliseconds(gracePeriodExpiresDate);
+    },
+    get purchaseDate() {
+      return dateFromMilliseconds(purchaseDate);
+    },
   });
 }
 
@@ -249,28 +266,55 @@ function normalizeSubscription(
   snapshotMs: number,
 ): CanonicalSubscription {
   if (!isRecord(value) || typeof value["is_sandbox"] !== "boolean") invalid();
+  const purchaseDate = optionalCanonicalDate(value["purchase_date"], snapshotMs);
+  const originalPurchaseDate = optionalCanonicalDate(
+    value["original_purchase_date"],
+    snapshotMs,
+  );
+  const expiresDate = optionalCanonicalDate(value["expires_date"], snapshotMs);
+  const gracePeriodExpiresDate = optionalCanonicalDate(
+    value["grace_period_expires_date"],
+    snapshotMs,
+  );
+  const billingIssuesDetectedAt = optionalCanonicalDate(
+    value["billing_issues_detected_at"],
+    snapshotMs,
+  );
+  const unsubscribeDetectedAt = optionalCanonicalDate(
+    value["unsubscribe_detected_at"],
+    snapshotMs,
+  );
+  const refundedAt = optionalCanonicalDate(value["refunded_at"], snapshotMs);
+  const autoResumeDate = optionalCanonicalDate(
+    value["auto_resume_date"],
+    snapshotMs,
+  );
   return Object.freeze({
     productId,
-    purchaseDate: optionalCanonicalDate(value["purchase_date"], snapshotMs),
-    originalPurchaseDate: optionalCanonicalDate(
-      value["original_purchase_date"],
-      snapshotMs,
-    ),
-    expiresDate: optionalCanonicalDate(value["expires_date"], snapshotMs),
-    gracePeriodExpiresDate: optionalCanonicalDate(
-      value["grace_period_expires_date"],
-      snapshotMs,
-    ),
-    billingIssuesDetectedAt: optionalCanonicalDate(
-      value["billing_issues_detected_at"],
-      snapshotMs,
-    ),
-    unsubscribeDetectedAt: optionalCanonicalDate(
-      value["unsubscribe_detected_at"],
-      snapshotMs,
-    ),
-    refundedAt: optionalCanonicalDate(value["refunded_at"], snapshotMs),
-    autoResumeDate: optionalCanonicalDate(value["auto_resume_date"], snapshotMs),
+    get purchaseDate() {
+      return dateFromMilliseconds(purchaseDate);
+    },
+    get originalPurchaseDate() {
+      return dateFromMilliseconds(originalPurchaseDate);
+    },
+    get expiresDate() {
+      return dateFromMilliseconds(expiresDate);
+    },
+    get gracePeriodExpiresDate() {
+      return dateFromMilliseconds(gracePeriodExpiresDate);
+    },
+    get billingIssuesDetectedAt() {
+      return dateFromMilliseconds(billingIssuesDetectedAt);
+    },
+    get unsubscribeDetectedAt() {
+      return dateFromMilliseconds(unsubscribeDetectedAt);
+    },
+    get refundedAt() {
+      return dateFromMilliseconds(refundedAt);
+    },
+    get autoResumeDate() {
+      return dateFromMilliseconds(autoResumeDate);
+    },
     isSandbox: value["is_sandbox"],
     store: optionalEnum(value["store"], STORES),
     ownershipType: optionalEnum(value["ownership_type"], OWNERSHIP),
@@ -291,7 +335,9 @@ function normalizePurchase(
   return Object.freeze({
     id,
     productId,
-    purchaseDate,
+    get purchaseDate() {
+      return new Date(purchaseDate);
+    },
     isSandbox: value["is_sandbox"],
     store,
   });
@@ -377,7 +423,9 @@ export function parseCanonicalRevenueCatSnapshot(
   }
 
   return Object.freeze({
-    sourceSnapshotAt: new Date(requestDateMs),
+    get sourceSnapshotAt() {
+      return new Date(requestDateMs);
+    },
     entitlements: Object.freeze(entitlements),
     subscriptions: Object.freeze(subscriptions),
     nonSubscriptions: Object.freeze(nonSubscriptions),
@@ -670,20 +718,10 @@ function projectEntitlement(
   }
 
   const selected = chooseCandidate(candidates);
-  const dates = {
-    periodEndsAt:
-      selected?.periodEndsAt === null || selected === null
-        ? null
-        : new Date(selected.periodEndsAt),
-    graceEndsAt:
-      selected?.graceEndsAt === null || selected === null
-        ? null
-        : new Date(selected.graceEndsAt),
-    accessEndsAt:
-      selected?.accessEndsAt === null || selected === null
-        ? null
-        : new Date(selected.accessEndsAt),
-  };
+  const periodEndsAt = selected?.periodEndsAt ?? null;
+  const graceEndsAt = selected?.graceEndsAt ?? null;
+  const accessEndsAt = selected?.accessEndsAt ?? null;
+  const sourceSnapshotAt = snapshot.sourceSnapshotAt;
 
   return Object.freeze({
     entitlementId,
@@ -692,11 +730,21 @@ function projectEntitlement(
     productId: selected?.productId ?? null,
     productKind: selected?.productKind ?? null,
     store: selected?.store ?? null,
-    ...dates,
+    get periodEndsAt() {
+      return defensiveDate(periodEndsAt);
+    },
+    get graceEndsAt() {
+      return defensiveDate(graceEndsAt);
+    },
+    get accessEndsAt() {
+      return defensiveDate(accessEndsAt);
+    },
     willRenew: selected?.willRenew ?? false,
     sourceEnvironment: config.environment,
     sourceKind,
-    sourceSnapshotAt: new Date(snapshot.sourceSnapshotAt),
+    get sourceSnapshotAt() {
+      return new Date(sourceSnapshotAt.getTime());
+    },
     sourceOperationId: operationId,
     sourceTriggerEventId,
   });
