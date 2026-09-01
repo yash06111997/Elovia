@@ -67,11 +67,14 @@ test("unknown events are valid but never state-changing", () => {
 });
 
 test("every recognized access event reconciles canonical state", () => {
+  assert.equal(RECONCILING_REVENUECAT_EVENTS instanceof Set, true);
+  assert.equal(typeof RECONCILING_REVENUECAT_EVENTS.has, "function");
   assert.deepEqual(
     [...RECONCILING_REVENUECAT_EVENTS].sort(),
     [...EXPECTED_RECONCILING_REVENUECAT_EVENTS].sort(),
   );
   for (const type of EXPECTED_RECONCILING_REVENUECAT_EVENTS) {
+    assert.equal(RECONCILING_REVENUECAT_EVENTS.has(type), true, type);
     const body = structuredClone(valid);
     body.event.type = type;
     const parsed = parseRevenueCatDelivery(body);

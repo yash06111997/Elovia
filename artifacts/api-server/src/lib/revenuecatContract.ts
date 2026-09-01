@@ -1,4 +1,4 @@
-export const RECONCILING_REVENUECAT_EVENTS = Object.freeze([
+export const RECONCILING_REVENUECAT_EVENTS = new Set([
   "INITIAL_PURCHASE",
   "RENEWAL",
   "CANCELLATION",
@@ -11,18 +11,7 @@ export const RECONCILING_REVENUECAT_EVENTS = Object.freeze([
   "PRODUCT_CHANGE",
   "TRANSFER",
   "SUBSCRIPTION_PAUSED",
-] as const);
-
-const reconcilingRevenueCatEventSet = new Set<string>(
-  RECONCILING_REVENUECAT_EVENTS,
-);
-
-export interface RevenueCatMetadata {
-  readonly productId: string | null;
-  readonly entitlementIds: readonly string[];
-  readonly store: string | null;
-  readonly environment: string | null;
-}
+]);
 
 export interface RevenueCatDelivery {
   eventId: string;
@@ -32,7 +21,7 @@ export interface RevenueCatDelivery {
   originalUserId: string | null;
   disposition: "pending" | "ignored_unknown";
   requiresReconciliation: boolean;
-  metadata: RevenueCatMetadata;
+  metadata: Record<string, string | number | string[] | null>;
 }
 
 export type RevenueCatParseResult =
@@ -100,7 +89,7 @@ export function parseRevenueCatDelivery(body: unknown): RevenueCatParseResult {
       code: "malformed_event",
       message: "Invalid event subject or time",
     };
-  const requiresReconciliation = reconcilingRevenueCatEventSet.has(type);
+  const requiresReconciliation = RECONCILING_REVENUECAT_EVENTS.has(type);
   return {
     ok: true,
     value: {
