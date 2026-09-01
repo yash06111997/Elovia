@@ -471,22 +471,34 @@ export function createRevenueCatAuthProvisioningCallback(
         `);
       }
       const ownershipChanged = Boolean(displaced && displaced !== user.id);
-      if (aliasNeedsWrite || ownershipChanged || needsRelink) {
-        await enqueueAuthenticatedOwner(transaction, user.id, true);
+      const stateRepaired = await ensureAuthenticatedOwnerState(
+        transaction,
+        user.id,
+      );
+      if (
+        !stateRepaired &&
+        (aliasNeedsWrite || ownershipChanged || needsRelink)
+      ) {
+        await forceAuthenticatedOwnerDue(transaction, user.id);
       }
       if (displaced && displaced !== user.id) {
-        await enqueueAuthenticatedOwner(transaction, displaced, true);
+        const displacedStateRepaired = await ensureAuthenticatedOwnerState(
+          transaction,
+          displaced,
+        );
+        if (!displacedStateRepaired) {
+          await forceAuthenticatedOwnerDue(transaction, displaced);
+        }
       }
     },
   };
 }
 
-async function enqueueAuthenticatedOwner(
+async function ensureAuthenticatedOwnerState(
   transaction: AccountLockTransaction,
   userId: string,
-  force: boolean,
-): Promise<void> {
-  await transaction.execute(sql`
+): Promise<boolean> {
+  const ensured = await transaction.execute<{ user_id: string }>(sql`
     INSERT INTO "revenuecat_customer_state" (
       "user_id", "canonicalization_state", "source_kind",
       "reconcile_reason", "reconcile_after"
@@ -494,14 +506,41 @@ async function enqueueAuthenticatedOwner(
     SELECT ${userId}, 'pending', 'none', 'authenticated', clock_timestamp()
     WHERE EXISTS (SELECT 1 FROM "users" WHERE "id" = ${userId})
     ON CONFLICT ("user_id") DO UPDATE SET
+      "canonicalization_state" = 'pending',
+      "source_kind" = 'none',
+      "source_environment" = NULL,
+      "last_snapshot_at" = NULL,
+      "last_operation_id" = NULL,
+      "last_reconciled_at" = NULL,
       "reconcile_reason" = 'authenticated',
       "reconcile_after" = LEAST(
         "revenuecat_customer_state"."reconcile_after", clock_timestamp()
       ),
+      "reconcile_attempt_count" = 0,
+      "reconcile_lease_id" = NULL,
+      "reconcile_lease_until" = NULL,
+      "reconcile_last_error_code" = NULL,
       "updated_at" = clock_timestamp()
-    WHERE ${force}
-       OR "revenuecat_customer_state"."canonicalization_state" = 'legacy_unverified'
-       OR "revenuecat_customer_state"."reconcile_after" <= clock_timestamp()
+    WHERE "revenuecat_customer_state"."canonicalization_state" = 'legacy_unverified'
+    RETURNING "user_id"
+  `);
+  return ensured.rows.length === 1;
+}
+
+async function forceAuthenticatedOwnerDue(
+  transaction: AccountLockTransaction,
+  userId: string,
+): Promise<void> {
+  await transaction.execute(sql`
+    UPDATE "revenuecat_customer_state"
+    SET "reconcile_reason" = 'authenticated',
+        "reconcile_after" = LEAST("reconcile_after", clock_timestamp()),
+        "updated_at" = clock_timestamp()
+    WHERE "user_id" = ${userId}
+      AND (
+        "reconcile_reason" <> 'authenticated'
+        OR "reconcile_after" > clock_timestamp()
+      )
   `);
 }
 

@@ -4156,6 +4156,180 @@ integrationTest(
 );
 
 integrationTest(
+  "exact authenticated aliases repair missing and legacy state once without churning healthy or due rows",
+  async () => {
+    const suffix = Date.now();
+    const missing = `auth-repair-missing-${suffix}`;
+    const legacy = `auth-repair-legacy-${suffix}`;
+    const healthy = `auth-repair-healthy-${suffix}`;
+    const due = `auth-repair-due-${suffix}`;
+    const users = [missing, legacy, healthy, due];
+    const hashes = users.map(subjectHash);
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      users,
+    ]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_aliases
+       (alias_hash,local_user_id,alias_kind,ownership_source,authenticated_at)
+       SELECT seeded.alias_hash,live_user.id,'authenticated','authenticated',
+              live_user.created_at
+       FROM unnest($1::text[],$2::text[]) AS seeded(user_id,alias_hash)
+       JOIN users AS live_user ON live_user.id=seeded.user_id`,
+      [users, hashes],
+    );
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_state
+       (user_id,canonicalization_state,source_kind,reconcile_reason,
+        reconcile_after,updated_at)
+       VALUES ($1,'legacy_unverified','legacy_unverified','legacy_bootstrap',
+               '2099-01-01T00:00:00Z','2026-09-02T02:00:00Z')`,
+      [legacy],
+    );
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_state
+       (user_id,canonicalization_state,source_kind,source_environment,
+        last_snapshot_at,last_operation_id,last_reconciled_at,
+        reconcile_reason,reconcile_after,updated_at)
+       VALUES ($1,'canonical','auth_canonical','sandbox',
+               '2026-09-02T01:59:00Z',
+               'auth:00000000-0000-0000-0000-000000000004',
+               '2026-09-02T01:59:01Z','scheduled',
+               '2099-01-01T00:00:00Z','2026-09-02T02:00:01Z')`,
+      [healthy],
+    );
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_state
+       (user_id,canonicalization_state,source_kind,reconcile_reason,
+        reconcile_after,updated_at)
+       VALUES ($1,'pending','none','authenticated',
+               '2026-09-01T00:00:00Z','2026-09-02T02:00:02Z')`,
+      [due],
+    );
+
+    async function state(userId) {
+      return (
+        await scopedPool.query(
+          `SELECT canonicalization_state,source_kind,source_environment,
+                  last_snapshot_at,last_operation_id,last_reconciled_at,
+                  reconcile_reason,reconcile_after,
+                  reconcile_attempt_count,reconcile_lease_id,
+                  reconcile_lease_until,reconcile_last_error_code,
+                  created_at,updated_at
+           FROM revenuecat_customer_state WHERE user_id=$1`,
+          [userId],
+        )
+      ).rows[0];
+    }
+    async function authenticate(userId) {
+      const user = {
+        id: userId,
+        email: null,
+        firstName: null,
+        lastName: null,
+        profileImageUrl: null,
+      };
+      assert.equal(
+        await provisionAuthenticatedUserIfActive(
+          user,
+          createRevenueCatAuthProvisioningCallback(user, processorConfig),
+        ),
+        "active",
+      );
+    }
+
+    assert.equal(await state(missing), undefined);
+    const legacyBefore = await state(legacy);
+    const healthyBefore = await state(healthy);
+    const dueBefore = await state(due);
+    for (const userId of users) await authenticate(userId);
+
+    const missingAfterRepair = await state(missing);
+    const legacyAfterRepair = await state(legacy);
+    assert.deepEqual(
+      {
+        canonicalization_state: missingAfterRepair.canonicalization_state,
+        source_kind: missingAfterRepair.source_kind,
+        reconcile_reason: missingAfterRepair.reconcile_reason,
+        due: missingAfterRepair.reconcile_after.getTime() <= Date.now(),
+      },
+      {
+        canonicalization_state: "pending",
+        source_kind: "none",
+        reconcile_reason: "authenticated",
+        due: true,
+      },
+    );
+    assert.deepEqual(
+      {
+        canonicalization_state: legacyAfterRepair.canonicalization_state,
+        source_kind: legacyAfterRepair.source_kind,
+        source_environment: legacyAfterRepair.source_environment,
+        last_snapshot_at: legacyAfterRepair.last_snapshot_at,
+        last_operation_id: legacyAfterRepair.last_operation_id,
+        last_reconciled_at: legacyAfterRepair.last_reconciled_at,
+        reconcile_reason: legacyAfterRepair.reconcile_reason,
+        due: legacyAfterRepair.reconcile_after.getTime() <= Date.now(),
+      },
+      {
+        canonicalization_state: "pending",
+        source_kind: "none",
+        source_environment: null,
+        last_snapshot_at: null,
+        last_operation_id: null,
+        last_reconciled_at: null,
+        reconcile_reason: "authenticated",
+        due: true,
+      },
+    );
+    assert.notEqual(
+      legacyAfterRepair.updated_at.getTime(),
+      legacyBefore.updated_at.getTime(),
+    );
+    assert.deepEqual(await state(healthy), healthyBefore);
+    assert.deepEqual(await state(due), dueBefore);
+
+    const afterFirstRequest = new Map(
+      await Promise.all(
+        users.map(async (userId) => [userId, await state(userId)]),
+      ),
+    );
+    for (const userId of users) await authenticate(userId);
+    for (const userId of users) {
+      assert.deepEqual(await state(userId), afterFirstRequest.get(userId));
+    }
+
+    const calls = [];
+    await reconcileTrustedUserOnDemand({
+      userId: missing,
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T02:01:00Z", { pro: true }),
+        },
+        calls,
+      ),
+    });
+    assert.deepEqual(calls, [missing]);
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT canonicalization_state,source_kind,
+                  reconcile_after>clock_timestamp() AS scheduled
+           FROM revenuecat_customer_state WHERE user_id=$1`,
+          [missing],
+        )
+      ).rows[0],
+      {
+        canonicalization_state: "canonical",
+        source_kind: "auth_canonical",
+        scheduled: true,
+      },
+    );
+  },
+);
+
+integrationTest(
   "authenticated provisioning expands over a concurrently rebound displaced owner",
   async () => {
     const suffix = Date.now();
