@@ -23,6 +23,11 @@ import {
   setAccountStorageAuthScope,
 } from "./accountSyncStorage";
 import { unregisterFromPush } from "./push";
+import {
+  canCompletePushLogout,
+  runPushSafeSignOut,
+  type PushLogoutDetachmentOutcome,
+} from "./pushOwnership";
 import { cancelAllReminders } from "./notifications";
 import { stopAllGeofences } from "./geofence";
 
@@ -268,25 +273,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     try {
       const firebaseAuth = await getFirebaseAuth();
-      let pushCleanupComplete = true;
+      let pushDetachment: PushLogoutDetachmentOutcome = {
+        serverDetached: true,
+        nativeDetached: false,
+        cleanupPending: false,
+      };
       if (firebaseAuth.currentUser?.uid) {
-        pushCleanupComplete = await settleWithin(
-          unregisterFromPush(firebaseAuth.currentUser.uid),
-          10_000,
-          false,
-        );
+        pushDetachment = await unregisterFromPush(firebaseAuth.currentUser.uid);
+      }
+      if (!canCompletePushLogout(pushDetachment)) {
+        const message =
+          "Elovia could not safely disconnect notifications. You are still signed in; check your connection and try signing out again.";
+        setAuthError(message);
+        if (Platform.OS !== "web") {
+          Alert.alert("Sign-out needs a retry", message);
+        }
+        return;
       }
       await settleWithin<unknown>(
         Promise.allSettled([cancelAllReminders(), stopAllGeofences()]),
         2_500,
         null,
       );
-      await signOut(firebaseAuth);
+      await runPushSafeSignOut(pushDetachment, () => signOut(firebaseAuth));
       setAccountStorageAuthScope(null, false);
       setUser(null);
-      const cleanupMessage = pushCleanupComplete
-        ? null
-        : "Signed out. Notification cleanup will retry when this account reconnects.";
+      const cleanupMessage = pushDetachment.cleanupPending
+        ? "Signed out safely. Server notification cleanup will retry when this account reconnects."
+        : null;
       setAuthError(cleanupMessage);
       if (cleanupMessage && Platform.OS !== "web") {
         Alert.alert("Signed out safely", cleanupMessage);

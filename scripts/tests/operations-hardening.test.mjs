@@ -6,6 +6,7 @@ import {
   persistPushOwnershipOrCompensate,
   planPushOwnershipTransition,
   resolvePushPermission,
+  runPushSafeSignOut,
   runPushOwnershipMutation,
 } from "../../artifacts/mobile/lib/pushOwnership.ts";
 import {
@@ -25,6 +26,11 @@ import {
 } from "../../artifacts/mobile/lib/pendingArrival.ts";
 import { runReminderReconciliation } from "../../artifacts/mobile/lib/reminderReconciliation.ts";
 import { runGeofenceReconciliation } from "../../artifacts/mobile/lib/geofenceReconciliation.ts";
+import {
+  emitPendingArrivalRecorded,
+  onPendingArrivalRecorded,
+} from "../../artifacts/mobile/lib/pendingArrivalSignal.ts";
+import { runNativeReconciliationWithRetry } from "../../artifacts/mobile/lib/nativeReconciliationRetry.ts";
 import {
   emitDataRestored,
   onDataRestored,
@@ -372,6 +378,96 @@ test("notification presentation fails closed across logout and account transfer"
     shouldPresentEloviaNotification(payload, "user-a", [], false),
     true,
   );
+
+  const geofencePayload = {
+    kind: "geofence",
+    eloviaGeofence: 1,
+    eloviaGeofenceOwner: "opaque-owner-a",
+  };
+  assert.equal(
+    shouldPresentEloviaNotification(
+      geofencePayload,
+      "user-a",
+      [],
+      false,
+      "opaque-owner-a",
+    ),
+    true,
+  );
+  assert.equal(
+    shouldPresentEloviaNotification(
+      geofencePayload,
+      "user-b",
+      [],
+      false,
+      "opaque-owner-b",
+    ),
+    false,
+  );
+  assert.equal(
+    shouldPresentEloviaNotification(
+      { kind: "geofence" },
+      "user-a",
+      [],
+      false,
+      "opaque-owner-a",
+    ),
+    false,
+  );
+});
+
+test("push-safe signout blocks both-failed detachment and allows either verified channel", async () => {
+  let signOutCalls = 0;
+  const signOut = async () => {
+    signOutCalls += 1;
+  };
+  assert.equal(
+    await runPushSafeSignOut(
+      {
+        serverDetached: false,
+        nativeDetached: false,
+        cleanupPending: true,
+      },
+      signOut,
+    ),
+    "blocked",
+  );
+  assert.equal(signOutCalls, 0);
+
+  const storage = new MemoryKeyValueStorage();
+  const cleanup = new PushCleanupStore(storage);
+  await cleanup.record(
+    { userId: "user-a", token: "ExponentPushToken[native-only]" },
+    300,
+  );
+  assert.equal(
+    await runPushSafeSignOut(
+      {
+        serverDetached: true,
+        nativeDetached: false,
+        cleanupPending: false,
+      },
+      signOut,
+    ),
+    "signed-out",
+  );
+  assert.equal(
+    await runPushSafeSignOut(
+      {
+        serverDetached: false,
+        nativeDetached: true,
+        cleanupPending: true,
+      },
+      signOut,
+    ),
+    "signed-out",
+  );
+  assert.equal(signOutCalls, 2);
+  assert.equal(
+    (await cleanup.read()).length,
+    1,
+    "native-only logout retains durable server cleanup",
+  );
 });
 
 test("lifecycle push permission observation cannot invoke the optional prompt", async () => {
@@ -452,16 +548,18 @@ test("reminder reconciliation stops stale account work and compensates an in-fli
   let currentUserId = "user-a";
   const cancelGate = deferred();
   const cancelled = [];
+  const firstOwned = new Set(["old-owned-reminder"]);
   let scheduledCount = 0;
 
   const cancelling = runReminderReconciliation({
     isCurrent: async () => currentUserId === "user-a",
-    listOwned: async () => ["old-owned-reminder"],
+    listOwned: async () => [...firstOwned],
     identifier: (identifier) => identifier,
     canRestore: () => true,
     async cancel(identifier) {
       cancelled.push(identifier);
       if (identifier === "old-owned-reminder") await cancelGate.promise;
+      firstOwned.delete(identifier);
     },
     permissionGranted: async () => true,
     scheduleCount: 1,
@@ -480,18 +578,21 @@ test("reminder reconciliation stops stale account work and compensates an in-fli
 
   currentUserId = "user-a";
   const scheduleGate = deferred();
+  const secondOwned = new Set();
   const scheduling = runReminderReconciliation({
     isCurrent: async () => currentUserId === "user-a",
-    listOwned: async () => [],
+    listOwned: async () => [...secondOwned],
     identifier: (identifier) => identifier,
     canRestore: () => true,
     async cancel(identifier) {
       cancelled.push(identifier);
+      secondOwned.delete(identifier);
     },
     permissionGranted: async () => true,
     scheduleCount: 1,
     async schedule() {
       await scheduleGate.promise;
+      secondOwned.add("stale-new-reminder");
       return "stale-new-reminder";
     },
     restore: async (identifier) => identifier,
@@ -583,6 +684,59 @@ test("reminder reconciliation never cancels an un-restorable previous request", 
   assert.equal(cancellationCalls, 0);
 });
 
+test("reminder retry is blocked when a partial desired set cannot be cancelled exactly", async () => {
+  const scheduled = new Set();
+  let firstItemSchedules = 0;
+  const outcome = await runReminderReconciliation({
+    isCurrent: async () => true,
+    listOwned: async () => [...scheduled],
+    identifier: (identifier) => identifier,
+    canRestore: () => true,
+    async cancel(identifier) {
+      if (identifier === "stuck-desired") {
+        throw new Error("injected rollback cancellation failure");
+      }
+      scheduled.delete(identifier);
+    },
+    permissionGranted: async () => true,
+    scheduleCount: 2,
+    async schedule(index) {
+      if (index === 1) throw new Error("injected partial scheduling failure");
+      firstItemSchedules += 1;
+      scheduled.add("stuck-desired");
+      return "stuck-desired";
+    },
+    restore: async (identifier) => identifier,
+  });
+  assert.equal(outcome, "failed");
+  assert.equal(firstItemSchedules, 1, "no retry starts over native leftovers");
+  assert.deepEqual([...scheduled], ["stuck-desired"]);
+});
+
+test("reminder success requires the exact observed identifier multiset", async () => {
+  const scheduled = [];
+  const outcome = await runReminderReconciliation({
+    isCurrent: async () => true,
+    listOwned: async () => [...scheduled],
+    identifier: (identifier) => identifier,
+    canRestore: () => true,
+    async cancel(identifier) {
+      const index = scheduled.indexOf(identifier);
+      if (index >= 0) scheduled.splice(index, 1);
+    },
+    permissionGranted: async () => true,
+    scheduleCount: 1,
+    async schedule() {
+      scheduled.push("desired", "unexpected-duplicate");
+      return "desired";
+    },
+    restore: async (identifier) => identifier,
+  });
+  assert.equal(outcome, "failed");
+  assert.notEqual(outcome, "reconciled");
+  assert.deepEqual(scheduled, []);
+});
+
 test("cloud restore listeners rerun native reconciliation and stale geofence starts compensate", async () => {
   const phases = [];
   const reconcileNativeState = async () => {
@@ -618,6 +772,61 @@ test("cloud restore listeners rerun native reconciliation and stale geofence sta
   });
   assert.equal(outcome, "stale");
   assert.equal(stops, 2, "the stale native regions are removed after start");
+});
+
+test("native restore reconciliation retries without blocking settled cloud data", async () => {
+  let attempts = 0;
+  assert.equal(
+    await runNativeReconciliationWithRetry({
+      isCurrent: () => true,
+      async reconcile() {
+        attempts += 1;
+        return attempts >= 2;
+      },
+      wait: async () => undefined,
+    }),
+    "reconciled",
+  );
+  assert.equal(attempts, 2);
+
+  let current = true;
+  attempts = 0;
+  assert.equal(
+    await runNativeReconciliationWithRetry({
+      isCurrent: () => current,
+      async reconcile() {
+        attempts += 1;
+        return false;
+      },
+      async wait() {
+        current = false;
+      },
+    }),
+    "stale",
+  );
+  assert.equal(attempts, 1, "account transition cancels the queued retry");
+
+  let permanentRetry;
+  const failures = [];
+  const unsubscribe = onDataRestored(() => {
+    permanentRetry = runNativeReconciliationWithRetry({
+      isCurrent: () => true,
+      reconcile: async () => false,
+      wait: async () => undefined,
+      maxAttempts: 2,
+      onFailure: (attempt, willRetry) => failures.push({ attempt, willRetry }),
+    });
+  });
+  try {
+    assert.deepEqual(await emitDataRestored(), { status: "reloaded" });
+    assert.equal(await permanentRetry, "pending");
+    assert.deepEqual(failures, [
+      { attempt: 1, willRetry: true },
+      { attempt: 2, willRetry: false },
+    ]);
+  } finally {
+    unsubscribe();
+  }
 });
 
 test("pending arrival leases survive remount, retry dropped navigation, and acknowledge once", async () => {
@@ -685,6 +894,41 @@ test("pending arrival leases survive remount, retry dropped navigation, and ackn
   });
 });
 
+test("a live account-safe arrival signal enters the durable lease flow", async () => {
+  const storage = new MemoryKeyValueStorage();
+  let nowMs = new Date("2026-09-01T12:10:00.000Z").getTime();
+  const store = new PendingArrivalStore(
+    storage,
+    () => nowMs,
+    () => "live-lease",
+  );
+  await store.record({
+    eventId: "arrival-live",
+    ownerUserId: "user-a",
+    placeId: "gym-live",
+    placeName: "Live Gym",
+    autoStartWorkout: true,
+    at: "2026-09-01T12:00:00.000Z",
+  });
+
+  let liveClaim = null;
+  const unsubscribe = onPendingArrivalRecorded((ownerUserId) => {
+    if (ownerUserId === "user-a") {
+      liveClaim = store.readForUser("user-a");
+    }
+  });
+  try {
+    emitPendingArrivalRecorded("user-b");
+    assert.equal(liveClaim, null);
+    emitPendingArrivalRecorded("user-a");
+    const claimed = await liveClaim;
+    assert.equal(claimed.status, "claimed");
+    assert.equal(claimed.arrival.eventId, "arrival-live");
+  } finally {
+    unsubscribe();
+  }
+});
+
 test("authentication recovery and native lifecycle are connected without launch permission prompts", async () => {
   const [
     authScreen,
@@ -695,6 +939,7 @@ test("authentication recovery and native lifecycle are connected without launch 
     workouts,
     auth,
     geofence,
+    geofenceTask,
     pushRoute,
     pushLib,
   ] = await Promise.all([
@@ -706,6 +951,7 @@ test("authentication recovery and native lifecycle are connected without launch 
     source("artifacts/mobile/app/(tabs)/workouts.tsx"),
     source("artifacts/mobile/lib/auth.tsx"),
     source("artifacts/mobile/lib/geofence.ts"),
+    source("artifacts/mobile/lib/geofenceTask.ts"),
     source("artifacts/api-server/src/routes/push.ts"),
     source("artifacts/api-server/src/lib/push.ts"),
   ]);
@@ -724,6 +970,9 @@ test("authentication recovery and native lifecycle are connected without launch 
   assert.match(coordinator, /stopAllGeofences/);
   assert.match(coordinator, /reconcilePushRegistration/);
   assert.match(coordinator, /readPendingArrival/);
+  assert.match(coordinator, /onPendingArrivalRecorded/);
+  assert.match(coordinator, /runNativeReconciliationWithRetry/);
+  assert.doesNotMatch(coordinator, /NativeRestoreReconciliationFailed/);
   assert.match(coordinator, /arrivalLeaseId/);
   assert.doesNotMatch(coordinator, /clearPendingArrival/);
   assert.match(workouts, /acknowledgePendingArrival/);
@@ -738,16 +987,18 @@ test("authentication recovery and native lifecycle are connected without launch 
   assert.doesNotMatch(reconcileBody, /requestPermissionsAsync/);
   assert.match(notifications, /cancelScheduledNotificationAsync/);
   assert.doesNotMatch(notifications, /cancelAllScheduledNotificationsAsync/);
-  assert.match(
-    auth,
-    /pushCleanupComplete = await settleWithin\([\s\S]{0,200}unregisterFromPush/,
-  );
+  assert.match(auth, /if \(!canCompletePushLogout\(pushDetachment\)\)/);
+  assert.match(auth, /runPushSafeSignOut/);
   assert.match(push, /preparePushLogout/);
+  assert.match(push, /nativeDetached/);
   assert.match(
     auth,
     /Promise\.allSettled\(\[cancelAllReminders\(\), stopAllGeofences\(\)\]\)/,
   );
   assert.match(geofence, /runGeofenceReconciliation/);
+  assert.match(geofence, /emitPendingArrivalRecorded/);
+  assert.match(geofenceTask, /eloviaGeofence/);
+  assert.match(geofenceTask, /ELOVIA_GEOFENCE_OWNER_KEY/);
 
   assert.match(pushRoute, /unregisterPushToken\(req\.user!\.id, token\)/);
   assert.doesNotMatch(pushRoute, /req\.log\.error\(\{\s*err\s*\}/);

@@ -13,9 +13,11 @@ import {
   reconcileReminderSchedule,
 } from "@/lib/notifications";
 import { serializePendingArrivalRouteContext } from "@/lib/pendingArrival";
+import { onPendingArrivalRecorded } from "@/lib/pendingArrivalSignal";
 import { reconcilePushRegistration } from "@/lib/push";
 import { onDataRestored } from "@/lib/syncEvents";
 import { reportClientError } from "@/lib/telemetry";
+import { runNativeReconciliationWithRetry } from "@/lib/nativeReconciliationRetry";
 
 let pendingArrivalOperation: Promise<void> = Promise.resolve();
 
@@ -86,17 +88,57 @@ export function NativeLifecycleCoordinator() {
       return reminderOk && geofenceOk;
     };
 
-    const unsubscribeRestore = onDataRestored(async () => {
-      if (!active || generation.current !== run) {
-        throw new Error("StaleNativeRestoreReconciliation");
+    const nativeRetryWaits = new Set<{
+      timer: ReturnType<typeof setTimeout>;
+      resolve(): void;
+    }>();
+    const waitForNativeRetry = (delayMs: number) =>
+      new Promise<void>((resolve) => {
+        const pending = {
+          timer: setTimeout(() => {
+            nativeRetryWaits.delete(pending);
+            resolve();
+          }, delayMs),
+          resolve,
+        };
+        nativeRetryWaits.add(pending);
+      });
+    let nativeRetryPromise: Promise<void> | null = null;
+    let nativeRetryRequested = false;
+    const enqueueNativeReconciliation = () => {
+      if (!active || generation.current !== run) return;
+      if (nativeRetryPromise) {
+        nativeRetryRequested = true;
+        return;
       }
-      if (!(await reconcileNativeState())) {
-        throw new Error("NativeRestoreReconciliationFailed");
-      }
+      nativeRetryPromise = runNativeReconciliationWithRetry({
+        isCurrent: () => active && generation.current === run,
+        reconcile: reconcileNativeState,
+        wait: waitForNativeRetry,
+        onFailure: (_attempt, willRetry) => {
+          reportLifecycleFailure(
+            willRetry
+              ? "NativeReconciliationRetryError"
+              : "NativeReconciliationPendingError",
+          );
+        },
+      })
+        .then(() => undefined)
+        .finally(() => {
+          nativeRetryPromise = null;
+          if (nativeRetryRequested) {
+            nativeRetryRequested = false;
+            enqueueNativeReconciliation();
+          }
+        });
+    };
+
+    // Cloud data has already been restored when this listener runs. Native
+    // failures remain pending/retriable and must not roll back that settlement.
+    const unsubscribeRestore = onDataRestored(() => {
+      enqueueNativeReconciliation();
     });
-    void reconcileNativeState().catch(() => {
-      reportLifecycleFailure("NativeReconciliationError");
-    });
+    enqueueNativeReconciliation();
 
     let pushRetryTimer: ReturnType<typeof setTimeout> | null = null;
     const reconcilePush = async () => {
@@ -177,18 +219,36 @@ export function NativeLifecycleCoordinator() {
         reportLifecycleFailure("PendingArrivalDeliveryError");
       });
 
+    const unsubscribePendingArrival = onPendingArrivalRecorded(
+      (ownerUserId) => {
+        if (
+          ownerUserId === userId &&
+          navigationReady &&
+          active &&
+          generation.current === run
+        ) {
+          void deliverPendingArrival();
+        }
+      },
+    );
     if (navigationReady) void deliverPendingArrival();
 
     return () => {
       active = false;
+      generation.current += 1;
       unsubscribeRestore();
+      unsubscribePendingArrival();
+      for (const pending of nativeRetryWaits) {
+        clearTimeout(pending.timer);
+        pending.resolve();
+      }
+      nativeRetryWaits.clear();
       if (pushRetryTimer) clearTimeout(pushRetryTimer);
       if (retryTimer) clearTimeout(retryTimer);
       if (activeLeaseId) {
         void releasePendingArrival(userId, activeLeaseId);
       }
       void Promise.allSettled([cancelAllReminders(), stopAllGeofences()]);
-      generation.current += 1;
     };
   }, [isAuthenticated, isLoading, rootNavigationState?.key, router, user?.id]);
 

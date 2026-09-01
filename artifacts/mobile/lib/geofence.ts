@@ -11,6 +11,7 @@ import {
   type PendingArrivalReadResult,
 } from "./pendingArrival";
 import { runGeofenceReconciliation } from "./geofenceReconciliation";
+import { emitPendingArrivalRecorded } from "./pendingArrivalSignal";
 
 export type { PendingArrival } from "./pendingArrival";
 
@@ -208,7 +209,9 @@ export async function releasePendingArrival(
 export async function recordPendingArrival(
   arrival: PendingArrival,
 ): Promise<boolean> {
-  return pendingArrivals.record(arrival);
+  const recorded = await pendingArrivals.record(arrival);
+  if (recorded) emitPendingArrivalRecorded(arrival.ownerUserId);
+  return recorded;
 }
 
 export type PermissionOutcome =

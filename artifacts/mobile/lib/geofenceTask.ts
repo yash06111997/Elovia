@@ -3,6 +3,11 @@ import {
   loadPlacesForBackgroundTaskContext,
   recordPendingArrival,
 } from "./geofence";
+import { notificationOwnerMarker } from "./notificationOwner";
+import {
+  ELOVIA_GEOFENCE_OWNER_KEY,
+  ELOVIA_GEOFENCE_PAYLOAD_VERSION,
+} from "./pushCleanup";
 
 /**
  * Background geofence handler.
@@ -63,18 +68,29 @@ const ARRIVAL_COPY: Record<string, { title: string; body: string }> = {
   other: { title: "You have arrived", body: "Tap to open Elovia." },
 };
 
-async function notifyArrival(placeName: string, kind: string): Promise<void> {
+async function notifyArrival(
+  placeName: string,
+  kind: string,
+  ownerUserId: string | null,
+): Promise<void> {
   const Notifications = loadNotifications();
   if (!Notifications) return;
 
   const copy = ARRIVAL_COPY[kind] ?? ARRIVAL_COPY.other;
+  const ownerMarker = await notificationOwnerMarker(ownerUserId);
+  if (!ownerMarker) return;
 
   try {
     await Notifications.scheduleNotificationAsync({
       content: {
         title: copy.title,
         body: `${placeName} — ${copy.body}`,
-        data: { kind: "geofence", placeName },
+        data: {
+          kind: "geofence",
+          placeName,
+          eloviaGeofence: ELOVIA_GEOFENCE_PAYLOAD_VERSION,
+          [ELOVIA_GEOFENCE_OWNER_KEY]: ownerMarker,
+        },
       },
       // A null trigger delivers immediately.
       trigger: null,
@@ -107,7 +123,7 @@ if (TaskManager && Location) {
           if (!place || !place.enabled) return;
 
           if (place.notifyOnArrive) {
-            await notifyArrival(place.name, place.kind);
+            await notifyArrival(place.name, place.kind, context.ownerUserId);
           }
 
           if (place.autoStartWorkout && context.ownerUserId) {

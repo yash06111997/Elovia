@@ -18,80 +18,124 @@ export interface ReminderReconciliationOperation<Snapshot> {
 
 const MAX_NATIVE_ATTEMPTS = 2;
 
+function identifierCounts(identifiers: readonly string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const identifier of identifiers) {
+    counts.set(identifier, (counts.get(identifier) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function sameIdentifierMultiset(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const leftCounts = identifierCounts(left);
+  const rightCounts = identifierCounts(right);
+  if (leftCounts.size !== rightCounts.size) return false;
+  for (const [identifier, count] of leftCounts) {
+    if (rightCounts.get(identifier) !== count) return false;
+  }
+  return true;
+}
+
 /**
  * Transactionally rebuild one account's reminder set.
  *
- * Native calls cannot be aborted. Every phase is generation-guarded, transient
- * failures receive one bounded retry, and a failed rebuild restores the exact
- * validated native requests captured before cancellation. Other apps'
- * notifications never enter listOwned and are therefore never touched.
+ * Native cancellation APIs only report that a request was accepted. Every
+ * destructive phase is therefore verified by listing the owned native set.
+ * A retry begins only from a confirmed empty set, and success is returned only
+ * when the exact identifier multiset created by this run is observable.
  */
 export async function runReminderReconciliation<Snapshot>(
   operation: ReminderReconciliationOperation<Snapshot>,
 ): Promise<ReminderReconciliationOutcome> {
-  if (!(await operation.isCurrent())) return "stale";
-  const previous = [...(await operation.listOwned())];
-  if (!(await operation.isCurrent())) return "stale";
-  // Never tear down a native request that cannot be recreated exactly enough
-  // to recover from a later cancellation/scheduling failure.
-  if (!previous.every(operation.canRestore)) return "failed";
-  const previousIds = new Set(previous.map(operation.identifier));
+  const listOwned = async (): Promise<readonly Snapshot[] | null> => {
+    try {
+      return await operation.listOwned();
+    } catch {
+      return null;
+    }
+  };
 
-  const cancelWithRetry = async (
-    identifier: string,
-  ): Promise<"cancelled" | "failed" | "stale"> => {
+  const listOwnedIdentifiers = async (): Promise<readonly string[] | null> => {
+    const snapshots = await listOwned();
+    return snapshots?.map(operation.identifier) ?? null;
+  };
+
+  const cancelIdentifier = async (identifier: string): Promise<boolean> => {
     for (let attempt = 0; attempt < MAX_NATIVE_ATTEMPTS; attempt += 1) {
-      if (!(await operation.isCurrent())) return "stale";
       try {
         await operation.cancel(identifier);
-        return (await operation.isCurrent()) ? "cancelled" : "stale";
+        return true;
       } catch {
-        if (attempt + 1 === MAX_NATIVE_ATTEMPTS) return "failed";
+        // Retry once. Verification below is still authoritative because a
+        // rejected native call may nevertheless have completed.
       }
     }
-    return "failed";
+    return false;
   };
 
-  const cancelKnownCreated = async (identifiers: readonly string[]) => {
-    for (const identifier of identifiers) {
-      for (let attempt = 0; attempt < MAX_NATIVE_ATTEMPTS; attempt += 1) {
-        try {
-          await operation.cancel(identifier);
-          break;
-        } catch {
-          // A later current reconciliation also removes every owned reminder.
-        }
+  const cleanupToEmpty = async (): Promise<boolean> => {
+    for (let pass = 0; pass < MAX_NATIVE_ATTEMPTS; pass += 1) {
+      const current = await listOwned();
+      if (current === null) return false;
+      if (current.length === 0) return true;
+      for (const snapshot of current) {
+        await cancelIdentifier(operation.identifier(snapshot));
       }
+      const remaining = await listOwnedIdentifiers();
+      if (remaining?.length === 0) return true;
     }
+    return false;
   };
+
+  if (!(await operation.isCurrent())) return "stale";
+  const previous = await listOwned();
+  if (previous === null) return "failed";
+  if (!(await operation.isCurrent())) return "stale";
+  if (!previous.every(operation.canRestore)) return "failed";
+  const previousIds = previous.map(operation.identifier);
+  const previousCounts = identifierCounts(previousIds);
 
   const restorePrevious = async (): Promise<boolean> => {
     if (!(await operation.isCurrent())) return false;
-    let current: readonly Snapshot[];
-    try {
-      current = await operation.listOwned();
-    } catch {
-      return false;
-    }
-    if (!(await operation.isCurrent())) return false;
-
-    // Remove anything created by a failed desired-set attempt.
-    for (const snapshot of current) {
-      const identifier = operation.identifier(snapshot);
-      if (!previousIds.has(identifier)) {
-        if ((await cancelWithRetry(identifier)) !== "cancelled") return false;
+    // Keep still-present previous requests, remove only extras from a failed
+    // desired attempt, and then recreate the missing previous requests.
+    for (let pass = 0; pass < MAX_NATIVE_ATTEMPTS; pass += 1) {
+      const current = await listOwned();
+      if (current === null) return false;
+      const seen = new Map<string, number>();
+      const extras: string[] = [];
+      for (const snapshot of current) {
+        const identifier = operation.identifier(snapshot);
+        const count = (seen.get(identifier) ?? 0) + 1;
+        seen.set(identifier, count);
+        if (count > (previousCounts.get(identifier) ?? 0)) {
+          extras.push(identifier);
+        }
       }
+      if (extras.length === 0) break;
+      for (const identifier of extras) await cancelIdentifier(identifier);
     }
 
-    let remainingSnapshots: readonly Snapshot[];
-    try {
-      remainingSnapshots = await operation.listOwned();
-    } catch {
-      return false;
+    const retained = await listOwnedIdentifiers();
+    if (retained === null) return false;
+    const retainedCounts = identifierCounts(retained);
+    for (const [identifier, count] of retainedCounts) {
+      if (count > (previousCounts.get(identifier) ?? 0)) return false;
     }
-    const remaining = new Set(remainingSnapshots.map(operation.identifier));
+
+    const consumed = new Map<string, number>();
     for (const snapshot of previous) {
-      if (remaining.has(operation.identifier(snapshot))) continue;
+      const identifier = operation.identifier(snapshot);
+      const retainedCount = retainedCounts.get(identifier) ?? 0;
+      const alreadyConsumed = consumed.get(identifier) ?? 0;
+      if (alreadyConsumed < retainedCount) {
+        consumed.set(identifier, alreadyConsumed + 1);
+        continue;
+      }
       let restored = false;
       for (let attempt = 0; attempt < MAX_NATIVE_ATTEMPTS; attempt += 1) {
         if (!(await operation.isCurrent())) return false;
@@ -103,47 +147,65 @@ export async function runReminderReconciliation<Snapshot>(
           restored = false;
         }
       }
-      if (!restored || !(await operation.isCurrent())) return false;
+      if (!restored) return false;
     }
-    return true;
+    const restoredIds = await listOwnedIdentifiers();
+    return (
+      restoredIds !== null &&
+      sameIdentifierMultiset(restoredIds, previousIds) &&
+      (await operation.isCurrent())
+    );
   };
 
-  for (const snapshot of previous) {
-    const cancelled = await cancelWithRetry(operation.identifier(snapshot));
-    if (cancelled === "stale") return "stale";
-    if (cancelled === "failed") {
-      await restorePrevious();
-      return "failed";
-    }
+  // Permission observation happens before destructive work. A denied optional
+  // permission preserves the known previous schedule without prompting.
+  if (operation.scheduleCount > 0) {
+    if (!(await operation.permissionGranted())) return "permission-denied";
+    if (!(await operation.isCurrent())) return "stale";
   }
 
+  if (!(await cleanupToEmpty())) {
+    await restorePrevious();
+    return (await operation.isCurrent()) ? "failed" : "stale";
+  }
+  if (!(await operation.isCurrent())) return "stale";
   if (operation.scheduleCount === 0) return "reconciled";
-  if (!(await operation.isCurrent())) return "stale";
-  if (!(await operation.permissionGranted())) return "permission-denied";
-  if (!(await operation.isCurrent())) return "stale";
 
   for (let attempt = 0; attempt < MAX_NATIVE_ATTEMPTS; attempt += 1) {
     const created: string[] = [];
-    let failed = false;
+    let schedulingFailed = false;
     for (let index = 0; index < operation.scheduleCount; index += 1) {
       if (!(await operation.isCurrent())) {
-        await cancelKnownCreated(created);
+        await cleanupToEmpty();
         return "stale";
       }
       try {
         created.push(await operation.schedule(index));
       } catch {
-        failed = true;
+        schedulingFailed = true;
         break;
       }
-      if (!(await operation.isCurrent())) {
-        await cancelKnownCreated(created);
-        return "stale";
-      }
     }
-    if (!failed) return "reconciled";
 
-    await cancelKnownCreated(created);
+    const observedIds = await listOwnedIdentifiers();
+    const exactDesiredSet =
+      !schedulingFailed &&
+      observedIds !== null &&
+      sameIdentifierMultiset(observedIds, created) &&
+      created.length === operation.scheduleCount;
+    if (exactDesiredSet) {
+      if (await operation.isCurrent()) return "reconciled";
+      await cleanupToEmpty();
+      return "stale";
+    }
+
+    // A failed or unverifiable attempt must be completely removed before a
+    // retry. Never report success or add another desired set over leftovers.
+    if (!(await cleanupToEmpty())) {
+      await restorePrevious();
+      return (await operation.isCurrent()) ? "failed" : "stale";
+    }
+    if (!(await operation.isCurrent())) return "stale";
     if (attempt + 1 === MAX_NATIVE_ATTEMPTS) {
       await restorePrevious();
       return "failed";

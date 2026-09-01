@@ -5,6 +5,7 @@ import {
   shouldPresentEloviaNotification,
 } from "./pushCleanup";
 import { isPushPresentationBlocked } from "./push";
+import { notificationOwnerMarker } from "./notificationOwner";
 
 const cleanupState = new PushCleanupStore(AsyncStorage);
 
@@ -22,5 +23,6 @@ export async function shouldPresentNotification(
     currentUserId,
     await cleanupState.read(),
     currentUserId ? isPushPresentationBlocked(currentUserId) : false,
+    await notificationOwnerMarker(currentUserId),
   );
 }

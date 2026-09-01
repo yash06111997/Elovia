@@ -13,6 +13,7 @@ import {
   planPushOwnershipTransition,
   resolvePushPermission,
   runPushOwnershipMutation,
+  type PushLogoutDetachmentOutcome,
   type PushOwnership,
 } from "./pushOwnership";
 
@@ -171,27 +172,45 @@ async function postPushOwnership(
   }
 }
 
-async function disableNativePushDelivery(): Promise<void> {
+async function disableNativePushDelivery(): Promise<boolean> {
   const N = loadNotifications();
-  if (!N || Platform.OS === "web") return;
+  if (
+    !N ||
+    Platform.OS === "web" ||
+    typeof N.unregisterForNotificationsAsync !== "function"
+  ) {
+    return false;
+  }
   const settleWithin = (operation: Promise<unknown>) =>
-    new Promise<void>((resolve) => {
-      const timeout = setTimeout(resolve, 2_000);
+    new Promise<boolean>((resolve) => {
+      const timeout = setTimeout(() => resolve(false), 2_000);
       void operation.then(
         () => {
           clearTimeout(timeout);
-          resolve();
+          resolve(true);
         },
         () => {
           clearTimeout(timeout);
-          resolve();
+          resolve(false);
         },
       );
     });
-  await Promise.allSettled([
-    settleWithin(N.dismissAllNotificationsAsync()),
-    settleWithin(N.unregisterForNotificationsAsync()),
-  ]);
+  try {
+    const unregisterOperation = N.unregisterForNotificationsAsync();
+    let dismissOperation: Promise<unknown> = Promise.resolve();
+    try {
+      dismissOperation = N.dismissAllNotificationsAsync();
+    } catch {
+      // Delivered-notification cleanup is secondary to token revocation.
+    }
+    const [nativeDetached] = await Promise.all([
+      settleWithin(unregisterOperation),
+      settleWithin(dismissOperation),
+    ]);
+    return nativeDetached;
+  } catch {
+    return false;
+  }
 }
 
 async function quarantineUnresolvedOwnership(
@@ -241,7 +260,7 @@ async function disableCachedOwnershipForCurrentUser(
   }
 }
 
-async function preparePushLogout(expectedUserId: string): Promise<void> {
+async function preparePushLogout(expectedUserId: string): Promise<boolean> {
   pushPresentationBlockedUsers.add(expectedUserId);
   try {
     const cached = parseCachedPushOwnership(
@@ -265,7 +284,7 @@ async function preparePushLogout(expectedUserId: string): Promise<void> {
   }
   // This runs before entering the serialized network queue so a slow in-flight
   // registration cannot postpone local privacy protection during logout.
-  await disableNativePushDelivery();
+  return disableNativePushDelivery();
 }
 
 async function registerPushOwnership(
@@ -448,65 +467,134 @@ export async function reconcilePushRegistration(
   return serializePushOperation(() => registerPushOwnership(false, userId));
 }
 
-/** Stop server-sent notifications while the owning user is still signed in. */
-export async function unregisterFromPush(
-  expectedUserId?: string,
-): Promise<boolean> {
-  if (expectedUserId) await preparePushLogout(expectedUserId);
-  return serializePushOperation(async () => {
-    try {
-      const cached = parseCachedPushOwnership(
-        await AsyncStorage.getItem(TOKEN_CACHE_KEY),
-      );
-      if (!cached) {
-        if (!expectedUserId) return true;
-        const pending = await pushCleanup.read();
-        if (!pending?.some((intent) => intent.userId === expectedUserId)) {
-          return pending !== null;
-        }
-        const pendingSession = await getAuthSession(expectedUserId);
-        if (!pendingSession) return false;
-        pushPresentationBlockedUsers.add(expectedUserId);
-        const cleanup = await retryPendingCleanup(pendingSession);
-        if (!cleanup.complete) await disableNativePushDelivery();
-        return cleanup.complete;
-      }
-      if (expectedUserId && cached.userId !== expectedUserId) return false;
-      const session = await getAuthSession(cached.userId);
-      if (!session) return false;
-      pushPresentationBlockedUsers.add(cached.userId);
-      const journaled = await pushCleanup.record(cached);
-      if (journaled) {
-        const raw = await AsyncStorage.getItem(TOKEN_CACHE_KEY);
-        if (parseCachedPushOwnership(raw)?.userId === cached.userId) {
-          await AsyncStorage.removeItem(TOKEN_CACHE_KEY);
-        }
-      }
+interface ServerPushCleanupOutcome {
+  serverDetached: boolean;
+  cleanupPending: boolean;
+}
 
-      let ok = false;
-      for (let attempt = 0; attempt < 2 && !ok; attempt += 1) {
+async function serverPushCleanupForLogout(
+  expectedUserId: string,
+): Promise<ServerPushCleanupOutcome> {
+  try {
+    const cached = parseCachedPushOwnership(
+      await AsyncStorage.getItem(TOKEN_CACHE_KEY),
+    );
+    if (cached && cached.userId !== expectedUserId) {
+      return { serverDetached: false, cleanupPending: true };
+    }
+
+    if (cached) {
+      const session = await getAuthSession(expectedUserId);
+      if (!session) return { serverDetached: false, cleanupPending: true };
+      const journaled = await pushCleanup.record(cached);
+      let detached = false;
+      for (let attempt = 0; attempt < 2 && !detached; attempt += 1) {
         try {
-          ok = await postPushOwnership(
+          detached = await postPushOwnership(
             "unregister",
             session,
             cached.token,
             4_000,
           );
         } catch {
-          ok = false;
+          detached = false;
         }
       }
-      if (ok) {
-        await pushCleanup.remove(cached);
-        if (!journaled) await AsyncStorage.removeItem(TOKEN_CACHE_KEY);
-        return true;
+      if (!detached) return { serverDetached: false, cleanupPending: true };
+      const journalRemoved = await pushCleanup.remove(cached);
+      try {
+        const current = parseCachedPushOwnership(
+          await AsyncStorage.getItem(TOKEN_CACHE_KEY),
+        );
+        if (
+          current?.userId === cached.userId &&
+          current.token === cached.token
+        ) {
+          await AsyncStorage.removeItem(TOKEN_CACHE_KEY);
+        }
+      } catch {
+        // Server detachment is authoritative even if local cleanup must retry.
       }
-      await disableNativePushDelivery();
-      return false;
-    } catch {
-      return false;
+      return {
+        serverDetached: true,
+        cleanupPending: !journaled || !journalRemoved,
+      };
     }
+
+    const pending = await pushCleanup.read();
+    if (pending === null) {
+      return { serverDetached: false, cleanupPending: true };
+    }
+    const currentIntents = pending.filter(
+      (intent) => intent.userId === expectedUserId,
+    );
+    if (currentIntents.length === 0) {
+      return { serverDetached: true, cleanupPending: false };
+    }
+
+    const session = await getAuthSession(expectedUserId);
+    if (!session) return { serverDetached: false, cleanupPending: true };
+    const intent = currentIntents[0];
+    if (!intent) return { serverDetached: false, cleanupPending: true };
+    let detached = false;
+    try {
+      detached = await postPushOwnership(
+        "unregister",
+        session,
+        intent.token,
+        4_000,
+      );
+    } catch {
+      detached = false;
+    }
+    if (!detached) return { serverDetached: false, cleanupPending: true };
+    const removed = await pushCleanup.remove(intent);
+    return {
+      serverDetached: currentIntents.length === 1,
+      cleanupPending: currentIntents.length > 1 || !removed,
+    };
+  } catch {
+    return { serverDetached: false, cleanupPending: true };
+  }
+}
+
+function boundedServerCleanup(
+  operation: Promise<ServerPushCleanupOutcome>,
+): Promise<ServerPushCleanupOutcome> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (outcome: ServerPushCleanupOutcome) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(outcome);
+    };
+    const timeout = setTimeout(
+      () => finish({ serverDetached: false, cleanupPending: true }),
+      8_500,
+    );
+    void operation.then(
+      (outcome) => finish(outcome),
+      () => finish({ serverDetached: false, cleanupPending: true }),
+    );
   });
+}
+
+/**
+ * Detach server and native push ownership before logout.
+ *
+ * At least one independently verified channel must be detached before auth is
+ * allowed to sign out. The durable journal remains when only native revocation
+ * succeeds, so server cleanup can resume when the same account reconnects.
+ */
+export async function unregisterFromPush(
+  expectedUserId: string,
+): Promise<PushLogoutDetachmentOutcome> {
+  const nativeDetached = await preparePushLogout(expectedUserId);
+  const serverCleanup = await boundedServerCleanup(
+    serializePushOperation(() => serverPushCleanupForLogout(expectedUserId)),
+  );
+  return { ...serverCleanup, nativeDetached };
 }
 
 /** Ask the server to push to this account, to verify the pipeline end to end. */

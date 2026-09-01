@@ -3,6 +3,27 @@ export interface PushOwnership {
   token: string;
 }
 
+export interface PushLogoutDetachmentOutcome {
+  serverDetached: boolean;
+  nativeDetached: boolean;
+  cleanupPending: boolean;
+}
+
+export function canCompletePushLogout(
+  outcome: PushLogoutDetachmentOutcome,
+): boolean {
+  return outcome.serverDetached || outcome.nativeDetached;
+}
+
+export async function runPushSafeSignOut(
+  outcome: PushLogoutDetachmentOutcome,
+  signOut: () => Promise<void>,
+): Promise<"signed-out" | "blocked"> {
+  if (!canCompletePushLogout(outcome)) return "blocked";
+  await signOut();
+  return "signed-out";
+}
+
 export type PushOwnershipTransition =
   | { action: "register" }
   | { action: "noop" }

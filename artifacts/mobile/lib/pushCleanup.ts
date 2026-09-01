@@ -10,16 +10,26 @@ export interface PushCleanupIntent extends PushOwnership {
 export const ELOVIA_PUSH_PAYLOAD_VERSION = 1;
 export const ELOVIA_PUSH_OWNER_KEY = "eloviaPushOwnerUserId";
 export const ELOVIA_REMINDER_ACCOUNT_KEY = "eloviaReminderAccountUserId";
+export const ELOVIA_GEOFENCE_PAYLOAD_VERSION = 1;
+export const ELOVIA_GEOFENCE_OWNER_KEY = "eloviaGeofenceOwner";
 
 export function shouldPresentEloviaNotification(
   data: Record<string, unknown>,
   currentUserId: string | null,
   cleanupIntents: readonly PushCleanupIntent[] | null,
   presentationBlocked = false,
+  currentNotificationOwnerMarker: string | null = null,
 ): boolean {
   if (data.eloviaOwner === "elovia-reminder-v1") {
     return (
       data[ELOVIA_REMINDER_ACCOUNT_KEY] === (currentUserId ?? "system:guest")
+    );
+  }
+
+  if (data.eloviaGeofence === ELOVIA_GEOFENCE_PAYLOAD_VERSION) {
+    return (
+      currentNotificationOwnerMarker !== null &&
+      data[ELOVIA_GEOFENCE_OWNER_KEY] === currentNotificationOwnerMarker
     );
   }
 
