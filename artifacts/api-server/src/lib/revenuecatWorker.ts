@@ -377,49 +377,95 @@ export function createRevenueCatAuthProvisioningCallback(
       return prior && prior !== user.id ? [prior] : [];
     },
     async afterProvision(transaction, createdAt) {
-      const prior = await transaction.execute<{ local_user_id: string }>(sql`
-        SELECT "local_user_id" FROM "revenuecat_customer_aliases"
+      // This exact subject-hash lookup is intentionally first: the forward
+      // index makes repeat authentication a bounded no-op when no pending
+      // delivery can benefit from relinking or an ownership wake-up.
+      const pendingMatches = await transaction.execute<{
+        event_id: string;
+        local_user_id: string | null;
+      }>(sql`
+        SELECT subject."event_id", subject."local_user_id"
+        FROM "revenuecat_event_subjects" AS subject
+        JOIN "revenuecat_webhook_events" AS event
+          ON event."event_id" = subject."event_id"
+        WHERE subject."subject_hash" = ${hash}
+          AND event."disposition" = 'pending'
+        ORDER BY subject."event_id" COLLATE "C"
+      `);
+      const prior = await transaction.execute<{
+        local_user_id: string;
+        alias_kind: string;
+        ownership_source: string;
+        source_event_at: Date | null;
+        source_event_id: string | null;
+        authenticated_at: Date | null;
+      }>(sql`
+        SELECT "local_user_id", "alias_kind", "ownership_source",
+               "source_event_at", "source_event_id", "authenticated_at"
+        FROM "revenuecat_customer_aliases"
         WHERE "alias_hash" = ${hash}
         FOR UPDATE
       `);
-      const displaced = prior.rows[0]?.local_user_id ?? null;
-      await transaction.execute(sql`
-        INSERT INTO "revenuecat_customer_aliases" (
-          "alias_hash", "local_user_id", "alias_kind", "ownership_source",
-          "source_event_at", "source_event_id", "authenticated_at"
-        ) VALUES (
-          ${hash}, ${user.id}, 'authenticated', 'authenticated', NULL, NULL,
-          ${createdAt}
-        )
-        ON CONFLICT ("alias_hash") DO UPDATE SET
-          "local_user_id" = EXCLUDED."local_user_id",
-          "alias_kind" = 'authenticated',
-          "ownership_source" = 'authenticated',
-          "source_event_at" = NULL,
-          "source_event_id" = NULL,
-          "authenticated_at" = EXCLUDED."authenticated_at",
-          "updated_at" = clock_timestamp()
-      `);
-      await transaction.execute(sql`
-        UPDATE "revenuecat_event_subjects" AS subject
-        SET "local_user_id" = ${user.id}
-        FROM "revenuecat_webhook_events" AS event
-        WHERE subject."event_id" = event."event_id"
-          AND subject."subject_hash" = ${hash}
-          AND event."disposition" = 'pending'
-      `);
-      await transaction.execute(sql`
-        UPDATE "revenuecat_webhook_events" AS event
-        SET "next_attempt_at" = LEAST(event."next_attempt_at", clock_timestamp())
-        WHERE event."disposition" = 'pending'
-          AND EXISTS (
-            SELECT 1 FROM "revenuecat_event_subjects" AS subject
+      const previous = prior.rows[0];
+      const displaced = previous?.local_user_id ?? null;
+      const aliasNeedsWrite =
+        !previous ||
+        previous.local_user_id !== user.id ||
+        previous.alias_kind !== "authenticated" ||
+        previous.ownership_source !== "authenticated" ||
+        previous.source_event_at !== null ||
+        previous.source_event_id !== null ||
+        previous.authenticated_at?.getTime() !== createdAt.getTime();
+      if (aliasNeedsWrite) {
+        await transaction.execute(sql`
+          INSERT INTO "revenuecat_customer_aliases" (
+            "alias_hash", "local_user_id", "alias_kind", "ownership_source",
+            "source_event_at", "source_event_id", "authenticated_at"
+          ) VALUES (
+            ${hash}, ${user.id}, 'authenticated', 'authenticated', NULL, NULL,
+            ${createdAt}
+          )
+          ON CONFLICT ("alias_hash") DO UPDATE SET
+            "local_user_id" = EXCLUDED."local_user_id",
+            "alias_kind" = 'authenticated',
+            "ownership_source" = 'authenticated',
+            "source_event_at" = NULL,
+            "source_event_id" = NULL,
+            "authenticated_at" = EXCLUDED."authenticated_at",
+            "updated_at" = clock_timestamp()
+        `);
+      }
+      const needsRelink = pendingMatches.rows.some(
+        (match) => match.local_user_id !== user.id,
+      );
+      if (needsRelink) {
+        await transaction.execute(sql`
+          WITH relinked AS (
+            UPDATE "revenuecat_event_subjects" AS subject
+            SET "local_user_id" = ${user.id}
+            FROM "revenuecat_webhook_events" AS event
             WHERE subject."event_id" = event."event_id"
               AND subject."subject_hash" = ${hash}
+              AND subject."local_user_id" IS DISTINCT FROM ${user.id}
+              AND event."disposition" = 'pending'
+            RETURNING subject."event_id"
           )
-      `);
+          UPDATE "revenuecat_webhook_events" AS event
+          SET "next_attempt_at" = LEAST(
+            event."next_attempt_at", clock_timestamp()
+          )
+          WHERE event."disposition" = 'pending'
+            AND event."event_id" IN (
+              SELECT relinked."event_id" FROM relinked
+            )
+        `);
+      }
       const ownershipChanged = Boolean(displaced && displaced !== user.id);
-      await enqueueAuthenticatedOwner(transaction, user.id, ownershipChanged);
+      await enqueueAuthenticatedOwner(
+        transaction,
+        user.id,
+        ownershipChanged || needsRelink,
+      );
       if (displaced && displaced !== user.id) {
         await enqueueAuthenticatedOwner(transaction, displaced, true);
       }
@@ -493,6 +539,13 @@ export async function claimPendingRevenueCatEvents(
       FROM "revenuecat_webhook_events"
       WHERE "disposition" = 'pending'
         AND "next_attempt_at" <= clock_timestamp()
+        AND NOT (
+          "pruned_identity_count" = "identity_count"
+          AND NOT EXISTS (
+            SELECT 1 FROM "revenuecat_event_subjects" AS subject
+            WHERE subject."event_id" = "revenuecat_webhook_events"."event_id"
+          )
+        )
         AND (
           "processing_lease_until" IS NULL
           OR "processing_lease_until" <= clock_timestamp()
@@ -535,12 +588,32 @@ async function retryEvent(
   return retried.rows.length === 1;
 }
 
-async function deferFullyPrunedEvent(claim: EventClaim): Promise<boolean> {
+async function settleClaimedFullyPrunedEvent(
+  claim: EventClaim,
+): Promise<boolean> {
+  const deleted = await db.execute<{ event_id: string }>(sql`
+    DELETE FROM "revenuecat_webhook_events"
+    WHERE "event_id" = ${claim.eventId}
+      AND "disposition" = 'pending'
+      AND "processing_lease_id" = ${claim.leaseId}
+      AND "processing_lease_until" > clock_timestamp()
+      AND "retention_until" <= clock_timestamp()
+      AND "pruned_identity_count" = "identity_count"
+      AND NOT EXISTS (
+        SELECT 1 FROM "revenuecat_event_subjects" AS subject
+        WHERE subject."event_id" = "revenuecat_webhook_events"."event_id"
+      )
+    RETURNING "event_id"
+  `);
+  if (deleted.rows.length === 1) return true;
   const deferred = await db.execute<{ event_id: string }>(sql`
     UPDATE "revenuecat_webhook_events"
     SET "processing_lease_id" = NULL,
         "processing_lease_until" = NULL,
-        "next_attempt_at" = GREATEST("next_attempt_at", "retention_until")
+        "next_attempt_at" = GREATEST(
+          "next_attempt_at", "retention_until",
+          clock_timestamp() + interval '1 minute'
+        )
     WHERE "event_id" = ${claim.eventId}
       AND "disposition" = 'pending'
       AND "processing_lease_id" = ${claim.leaseId}
@@ -553,6 +626,39 @@ async function deferFullyPrunedEvent(claim: EventClaim): Promise<boolean> {
     RETURNING "event_id"
   `);
   return deferred.rows.length === 1;
+}
+
+async function settleUnclaimedFullyPrunedEvents(): Promise<void> {
+  await db.execute(sql`
+    DELETE FROM "revenuecat_webhook_events"
+    WHERE "disposition" = 'pending'
+      AND "retention_until" <= clock_timestamp()
+      AND "pruned_identity_count" = "identity_count"
+      AND (
+        "processing_lease_until" IS NULL
+        OR "processing_lease_until" <= clock_timestamp()
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "revenuecat_event_subjects" AS subject
+        WHERE subject."event_id" = "revenuecat_webhook_events"."event_id"
+      )
+  `);
+  await db.execute(sql`
+    UPDATE "revenuecat_webhook_events"
+    SET "next_attempt_at" = GREATEST("next_attempt_at", "retention_until")
+    WHERE "disposition" = 'pending'
+      AND "retention_until" > clock_timestamp()
+      AND "next_attempt_at" < "retention_until"
+      AND "pruned_identity_count" = "identity_count"
+      AND (
+        "processing_lease_until" IS NULL
+        OR "processing_lease_until" <= clock_timestamp()
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "revenuecat_event_subjects" AS subject
+        WHERE subject."event_id" = "revenuecat_webhook_events"."event_id"
+      )
+  `);
 }
 
 class EventOwnershipExpansion extends Error {
@@ -656,7 +762,7 @@ export async function recoverClaimedRevenueCatEvent(
     return;
   }
   if (subjects.rows.length === 0) {
-    await deferFullyPrunedEvent(claim);
+    await settleClaimedFullyPrunedEvent(claim);
     return;
   }
   const decision = classifyRawlessRevenueCatEvent({
@@ -882,9 +988,6 @@ export async function recoverClaimedRevenueCatEvent(
             const isRedeemer = Boolean(
               subject.role_mask & REVENUECAT_SUBJECT_ROLE_MASKS.redeemedBy,
             );
-            const transferredFrom = Boolean(
-              subject.role_mask & REVENUECAT_SUBJECT_ROLE_MASKS.transferredFrom,
-            );
             const redemptionMayAlias =
               lockedEvent.metadata["redemptionOutcome"] === "alias" ||
               lockedEvent.metadata["redemptionOutcome"] === "redeemer_owns";
@@ -894,8 +997,6 @@ export async function recoverClaimedRevenueCatEvent(
             } else if (lockedEvent.type === "TRANSFER") {
               if (!lockedDecision.destinationOwner) {
                 target = resolved.owner;
-              } else if (transferredFrom && !resolved.owner) {
-                target = null;
               } else {
                 target = lockedDecision.destinationOwner;
               }
@@ -1053,6 +1154,14 @@ export async function runPendingEventBatch(
   }>,
 ): Promise<number> {
   const limit = input.limit ?? EVENT_BATCH_SIZE;
+  try {
+    await settleUnclaimedFullyPrunedEvents();
+  } catch (error) {
+    logger.error(
+      { errorCode: sanitizeRevenueCatErrorCode(error) },
+      "RevenueCat fully-pruned event cleanup failed",
+    );
+  }
   let claimed = 0;
   while (claimed < limit) {
     const claim = (await claimPendingRevenueCatEvents(1))[0];
@@ -1068,35 +1177,232 @@ export async function runPendingEventBatch(
   return claimed;
 }
 
+type CleanupAuthorityRow = Readonly<{
+  subject_hash: string;
+  direct_owner: string | null;
+  alias_owner: string | null;
+}>;
+
+class CleanupAuthorityExpansion extends Error {
+  constructor(readonly owners: readonly string[]) {
+    super("RevenueCat cleanup authority expanded.");
+  }
+}
+
+function cleanupAuthorityQuery(eventId: string) {
+  return sql`
+    SELECT subject."subject_hash",
+           CASE WHEN direct_user."id" IS NOT NULL
+                  AND direct_deletion."user_id" IS NULL
+             THEN subject."local_user_id" ELSE NULL END AS "direct_owner",
+           CASE WHEN alias_user."id" IS NOT NULL
+                  AND alias_deletion."user_id" IS NULL
+             THEN alias."local_user_id" ELSE NULL END AS "alias_owner"
+    FROM "revenuecat_event_subjects" AS subject
+    LEFT JOIN "users" AS direct_user
+      ON direct_user."id" = subject."local_user_id"
+    LEFT JOIN "account_deletions" AS direct_deletion
+      ON direct_deletion."user_id" = direct_user."id"
+    LEFT JOIN "revenuecat_customer_aliases" AS alias
+      ON alias."alias_hash" = subject."subject_hash"
+    LEFT JOIN "users" AS alias_user ON alias_user."id" = alias."local_user_id"
+    LEFT JOIN "account_deletions" AS alias_deletion
+      ON alias_deletion."user_id" = alias_user."id"
+    WHERE subject."event_id" = ${eventId}
+    ORDER BY subject."subject_hash" COLLATE "C"
+  `;
+}
+
+function cleanupAuthorityOwners(
+  rows: readonly CleanupAuthorityRow[],
+): string[] {
+  return byteOrdered(
+    rows.flatMap((row) => [
+      ...(row.direct_owner ? [row.direct_owner] : []),
+      ...(row.alias_owner ? [row.alias_owner] : []),
+    ]),
+  );
+}
+
+async function enqueueWebhookFailureOwners(
+  transaction: AccountLockTransaction,
+  owners: readonly string[],
+): Promise<void> {
+  if (owners.length === 0) return;
+  await transaction.execute(sql`
+    INSERT INTO "revenuecat_customer_state" (
+      "user_id", "canonicalization_state", "source_kind",
+      "reconcile_reason", "reconcile_after"
+    )
+    SELECT live_user."id", 'pending', 'none',
+           'webhook_failure', clock_timestamp()
+    FROM "users" AS live_user
+    WHERE live_user."id" IN (${sql.join(
+      owners.map((owner) => sql`${owner}`),
+      sql`, `,
+    )})
+      AND NOT EXISTS (
+        SELECT 1 FROM "account_deletions" AS deletion
+        WHERE deletion."user_id" = live_user."id"
+      )
+    ON CONFLICT ("user_id") DO UPDATE SET
+      "reconcile_reason" = 'webhook_failure',
+      "reconcile_after" = LEAST(
+        "revenuecat_customer_state"."reconcile_after", clock_timestamp()
+      ),
+      "updated_at" = clock_timestamp()
+  `);
+}
+
+async function satisfyThirtyDayEntitlementPhase(
+  eventId: string,
+  expansionAttempt = 0,
+  inheritedOwners: readonly string[] = [],
+): Promise<void> {
+  const observed = await db.execute<CleanupAuthorityRow>(
+    cleanupAuthorityQuery(eventId),
+  );
+  const lockOwners = byteOrdered([
+    ...inheritedOwners,
+    ...cleanupAuthorityOwners(observed.rows),
+  ]);
+  if (lockOwners.length === 0) return;
+  try {
+    await withAccountLocks(lockOwners, async (transaction) => {
+      const eventRows = await transaction.execute<{ received_at: Date }>(sql`
+        SELECT "received_at"
+        FROM "revenuecat_webhook_events"
+        WHERE "event_id" = ${eventId}
+          AND "disposition" = 'pending'
+          AND "type" <> 'TRANSFER'
+          AND "entitlement_applied_at" IS NULL
+          AND "received_at" <= clock_timestamp() - interval '30 days'
+          AND (
+            "processing_lease_until" IS NULL
+            OR "processing_lease_until" <= clock_timestamp()
+          )
+        FOR UPDATE
+      `);
+      const event = eventRows.rows[0];
+      if (!event) return;
+      const locked = await transaction.execute<CleanupAuthorityRow>(
+        cleanupAuthorityQuery(eventId),
+      );
+      const lockedOwners = cleanupAuthorityOwners(locked.rows);
+      const expanded = lockedOwners.filter(
+        (owner) => !lockOwners.includes(owner),
+      );
+      if (expanded.length > 0) {
+        throw new CleanupAuthorityExpansion(expanded);
+      }
+      const everySubjectHasAuthority =
+        locked.rows.length > 0 &&
+        locked.rows.every((row) => row.direct_owner || row.alias_owner);
+      if (!everySubjectHasAuthority) {
+        await enqueueWebhookFailureOwners(transaction, lockedOwners);
+        return;
+      }
+      const canonical = await transaction.execute<{
+        user_id: string;
+        canonicalization_state: string;
+        last_reconciled_at: Date | null;
+      }>(sql`
+        SELECT "user_id", "canonicalization_state", "last_reconciled_at"
+        FROM "revenuecat_customer_state"
+        WHERE "user_id" IN (${sql.join(
+          lockedOwners.map((owner) => sql`${owner}`),
+          sql`, `,
+        )})
+      `);
+      const canonicalAfterEvent = new Set(
+        canonical.rows.flatMap((state) =>
+          state.canonicalization_state === "canonical" &&
+          state.last_reconciled_at !== null &&
+          state.last_reconciled_at.getTime() >= event.received_at.getTime()
+            ? [state.user_id]
+            : [],
+        ),
+      );
+      if (lockedOwners.some((owner) => !canonicalAfterEvent.has(owner))) {
+        await enqueueWebhookFailureOwners(transaction, lockedOwners);
+        return;
+      }
+      await transaction.execute(sql`
+        UPDATE "revenuecat_webhook_events"
+        SET "entitlement_applied_at" = COALESCE(
+              "entitlement_applied_at", clock_timestamp()
+            ),
+            "next_attempt_at" = LEAST(
+              "next_attempt_at", clock_timestamp()
+            )
+        WHERE "event_id" = ${eventId}
+          AND "disposition" = 'pending'
+          AND "type" <> 'TRANSFER'
+          AND "entitlement_applied_at" IS NULL
+          AND (
+            "processing_lease_until" IS NULL
+            OR "processing_lease_until" <= clock_timestamp()
+          )
+      `);
+    });
+  } catch (error) {
+    if (
+      error instanceof CleanupAuthorityExpansion &&
+      expansionAttempt + 1 < MAX_EVENT_LOCK_EXPANSIONS
+    ) {
+      await satisfyThirtyDayEntitlementPhase(
+        eventId,
+        expansionAttempt + 1,
+        byteOrdered([...lockOwners, ...error.owners]),
+      );
+      return;
+    }
+    if (error instanceof CleanupAuthorityExpansion) {
+      const observedOwners = byteOrdered([...lockOwners, ...error.owners]);
+      await withAccountLocks(observedOwners, async (transaction) => {
+        await enqueueWebhookFailureOwners(transaction, observedOwners);
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
+async function runThirtyDayCleanup(): Promise<void> {
+  let cursor = "";
+  while (true) {
+    const page = await db.execute<{ event_id: string }>(sql`
+      SELECT "event_id"
+      FROM "revenuecat_webhook_events"
+      WHERE "disposition" = 'pending'
+        AND "type" <> 'TRANSFER'
+        AND "entitlement_applied_at" IS NULL
+        AND "received_at" <= clock_timestamp() - interval '30 days'
+        AND "event_id" COLLATE "C" > ${cursor} COLLATE "C"
+        AND (
+          "processing_lease_until" IS NULL
+          OR "processing_lease_until" <= clock_timestamp()
+        )
+      ORDER BY "event_id" COLLATE "C"
+      LIMIT 100
+    `);
+    if (page.rows.length === 0) return;
+    for (const event of page.rows) {
+      await satisfyThirtyDayEntitlementPhase(event.event_id);
+    }
+    cursor = page.rows.at(-1)!.event_id;
+  }
+}
+
 export async function cleanupRevenueCatEvents(
   options?: Readonly<{
     alert?: (value: Readonly<{ type: string; count: number }>) => void;
   }>,
 ): Promise<void> {
   // Generic canonical observations may satisfy only non-transfer entitlement
-  // work. They never complete identity and never write either TRANSFER phase.
-  await db.execute(sql`
-    UPDATE "revenuecat_webhook_events" AS event
-    SET "entitlement_applied_at" = COALESCE(
-          event."entitlement_applied_at", clock_timestamp()
-        ),
-        "next_attempt_at" = LEAST(event."next_attempt_at", clock_timestamp())
-    WHERE event."disposition" = 'pending'
-      AND event."type" <> 'TRANSFER'
-      AND event."received_at" <= clock_timestamp() - interval '30 days'
-      AND (event."processing_lease_until" IS NULL OR event."processing_lease_until" <= clock_timestamp())
-      AND NOT EXISTS (
-        SELECT 1 FROM "revenuecat_event_subjects" AS subject
-        LEFT JOIN "revenuecat_customer_state" AS state
-          ON state."user_id" = subject."local_user_id"
-        WHERE subject."event_id" = event."event_id"
-          AND (
-            state."canonicalization_state" IS DISTINCT FROM 'canonical'
-            OR state."last_reconciled_at" IS NULL
-            OR state."last_reconciled_at" < event."received_at"
-          )
-      )
-  `);
+  // work. Current direct and alias authorities are re-read under their ordered
+  // account locks; identity and every TRANSFER phase remain event-worker only.
+  await runThirtyDayCleanup();
   await db.execute(sql`
     DELETE FROM "revenuecat_webhook_events"
     WHERE (

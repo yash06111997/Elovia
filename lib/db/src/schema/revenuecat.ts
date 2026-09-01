@@ -159,6 +159,10 @@ export const revenuecatEventSubjectsTable = pgTable(
       table.localUserId,
       table.eventId,
     ),
+    index("IDX_revenuecat_event_subjects_hash").on(
+      table.subjectHash,
+      table.eventId,
+    ),
   ],
 );
 

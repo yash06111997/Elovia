@@ -327,6 +327,7 @@ integrationTest(
         "0002_account_deletion_tombstones.sql",
         "0003_account_deletion_identity_outbox.sql",
         "0004_revenuecat_entitlement_integrity.sql",
+        "0005_revenuecat_worker_authority.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -359,6 +360,10 @@ integrationTest(
             name: "0004_revenuecat_entitlement_integrity.sql",
             application_count: 1,
           },
+          {
+            name: "0005_revenuecat_worker_authority.sql",
+            application_count: 1,
+          },
         ]);
         await pool.query(`
           INSERT INTO users (id) VALUES ('bootstrap-ready-user');
@@ -389,6 +394,7 @@ integrationTest(
         "0002_account_deletion_tombstones.sql",
         "0003_account_deletion_identity_outbox.sql",
         "0004_revenuecat_entitlement_integrity.sql",
+        "0005_revenuecat_worker_authority.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -417,6 +423,10 @@ integrationTest(
             name: "0004_revenuecat_entitlement_integrity.sql",
             application_count: 1,
           },
+          {
+            name: "0005_revenuecat_worker_authority.sql",
+            application_count: 1,
+          },
         ]);
       } finally {
         await pool.end();
@@ -437,6 +447,7 @@ integrationTest(
       "0002_account_deletion_tombstones.sql",
       "0003_account_deletion_identity_outbox.sql",
       "0004_revenuecat_entitlement_integrity.sql",
+      "0005_revenuecat_worker_authority.sql",
     ];
 
     try {
@@ -788,6 +799,7 @@ integrationTest(
         "0002_account_deletion_tombstones.sql",
         "0003_account_deletion_identity_outbox.sql",
         "0004_revenuecat_entitlement_integrity.sql",
+        "0005_revenuecat_worker_authority.sql",
       ],
     );
 

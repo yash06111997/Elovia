@@ -20,6 +20,7 @@ const migrationNames = [
   "0002_account_deletion_tombstones.sql",
   "0003_account_deletion_identity_outbox.sql",
   "0004_revenuecat_entitlement_integrity.sql",
+  "0005_revenuecat_worker_authority.sql",
 ];
 const revenuecatTableNames = [
   "revenuecat_customer_aliases",
@@ -82,6 +83,7 @@ const expectedIndexColumns = {
     "user_id",
   ],
   IDX_revenuecat_event_subjects_local: ["local_user_id", "event_id"],
+  IDX_revenuecat_event_subjects_hash: ["subject_hash", "event_id"],
   IDX_revenuecat_events_pending_due: [
     "disposition",
     "next_attempt_at",
@@ -183,6 +185,10 @@ const baselineMigrationUrl = new URL(
 );
 const revenuecatMigrationUrl = new URL(
   "../../lib/db/migrations/0004_revenuecat_entitlement_integrity.sql",
+  import.meta.url,
+);
+const revenuecatWorkerAuthorityMigrationUrl = new URL(
+  "../../lib/db/migrations/0005_revenuecat_worker_authority.sql",
   import.meta.url,
 );
 const processorUrl = new URL(
@@ -394,7 +400,7 @@ async function makeOnlyEventDue(eventId) {
   await scopedPool.query(
     `UPDATE revenuecat_webhook_events
      SET next_attempt_at=CASE WHEN event_id=$1
-       THEN '2000-01-01T00:00:00Z'::timestamptz
+       THEN received_at
        ELSE '2099-01-01T00:00:00Z'::timestamptz END,
          processing_lease_id=NULL,
          processing_lease_until=NULL
@@ -412,7 +418,7 @@ async function insertRawlessEvent({
   entitlementApplied = false,
   eventAt = "2026-09-01T10:00:00Z",
   receivedAt = "2026-09-01T10:00:01Z",
-  nextAttemptAt = "2000-01-01T00:00:00Z",
+  nextAttemptAt = receivedAt,
   retentionUntil = "2099-01-01T00:00:00Z",
 }) {
   await insertEvent(scopedPool, {
@@ -552,8 +558,13 @@ test("unsupported parsed deliveries are acknowledged without PostgreSQL, identit
 
 test("the forward-only RevenueCat migration contract is present", async () => {
   let sql;
+  let authoritySql;
   try {
     sql = await readFile(revenuecatMigrationUrl, "utf8");
+    authoritySql = await readFile(
+      revenuecatWorkerAuthorityMigrationUrl,
+      "utf8",
+    );
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
@@ -585,6 +596,11 @@ test("the forward-only RevenueCat migration contract is present", async () => {
   );
   assert.match(sql, /CREATE TRIGGER "TR_revenuecat_guard_event_capacity"/);
   assert.doesNotMatch(sql, /INSERT INTO "revenuecat_webhook_events"/);
+  assert.ok(authoritySql, "expected immutable 0005 worker-authority migration");
+  assert.match(
+    authoritySql,
+    /CREATE INDEX "IDX_revenuecat_event_subjects_hash"\s+ON "revenuecat_event_subjects" \("subject_hash","event_id"\)/,
+  );
 });
 
 if (testDatabaseUrl) {
@@ -2907,7 +2923,10 @@ integrationTest(
           await pool.end();
         }
 
-        assert.deepEqual(await runMigrations(databaseUrl), [migrationNames[4]]);
+        assert.deepEqual(
+          await runMigrations(databaseUrl),
+          migrationNames.slice(4),
+        );
         const verifyPool = new Pool({ connectionString: databaseUrl });
         try {
           const states = await verifyPool.query(`
@@ -3087,6 +3106,26 @@ integrationTest(
       ).definition,
       /event_at DESC/,
     );
+    await scopedPool.query("SET enable_seqscan=off");
+    try {
+      const explained = await scopedPool.query(
+        `EXPLAIN (FORMAT TEXT, COSTS OFF)
+         SELECT subject.event_id,subject.local_user_id
+         FROM revenuecat_event_subjects AS subject
+         JOIN revenuecat_webhook_events AS event
+           ON event.event_id=subject.event_id
+         WHERE subject.subject_hash=$1::char(64)
+           AND event.disposition='pending'
+         ORDER BY subject.event_id COLLATE "C"`,
+        ["f".repeat(64)],
+      );
+      assert.match(
+        explained.rows.map((row) => row["QUERY PLAN"]).join("\n"),
+        /IDX_revenuecat_event_subjects_hash/,
+      );
+    } finally {
+      await scopedPool.query("RESET enable_seqscan");
+    }
 
     const primaryKeys = await scopedPool.query(
       `SELECT relation.relname AS table_name, pg_get_constraintdef(constraint_record.oid) AS definition
@@ -3948,11 +3987,41 @@ integrationTest(
        WHERE user_id=$1`,
       [active],
     );
+    const noOpEvent = `auth_noop_${suffix}`;
+    await insertEvent(scopedPool, {
+      eventId: noOpEvent,
+      eventAt: "2026-09-01T01:15:00Z",
+      receivedAt: "2026-09-01T01:15:01Z",
+      identityCount: 1,
+      identityRequired: true,
+      entitlementRequired: true,
+      nextAttemptAt: "2099-01-01T00:00:00Z",
+      retentionUntil: "2099-02-01T00:00:00Z",
+    });
+    await scopedPool.query(
+      `INSERT INTO revenuecat_event_subjects
+       (event_id,subject_hash,role_mask,local_user_id) VALUES ($1,$2,1,$3)`,
+      [noOpEvent, hash, active],
+    );
+    await scopedPool.query(
+      `UPDATE revenuecat_customer_aliases
+       SET updated_at='2026-09-02T01:15:02Z' WHERE alias_hash=$1`,
+      [hash],
+    );
     const before = (
       await scopedPool.query(
-        `SELECT reconcile_reason,reconcile_after,updated_at
-         FROM revenuecat_customer_state WHERE user_id=$1`,
-        [active],
+        `SELECT state.reconcile_reason,state.reconcile_after,
+                state.updated_at AS state_updated_at,
+                alias.updated_at AS alias_updated_at,
+                event.next_attempt_at AS event_next_attempt_at,
+                subject.local_user_id
+         FROM revenuecat_customer_state AS state
+         JOIN revenuecat_customer_aliases AS alias ON alias.local_user_id=state.user_id
+         JOIN revenuecat_webhook_events AS event ON event.event_id=$2
+         JOIN revenuecat_event_subjects AS subject
+           ON subject.event_id=event.event_id AND subject.subject_hash=alias.alias_hash
+         WHERE state.user_id=$1`,
+        [active, noOpEvent],
       )
     ).rows[0];
     assert.equal(
@@ -3965,12 +4034,82 @@ integrationTest(
     assert.deepEqual(
       (
         await scopedPool.query(
-          `SELECT reconcile_reason,reconcile_after,updated_at
-           FROM revenuecat_customer_state WHERE user_id=$1`,
-          [active],
+          `SELECT state.reconcile_reason,state.reconcile_after,
+                  state.updated_at AS state_updated_at,
+                  alias.updated_at AS alias_updated_at,
+                  event.next_attempt_at AS event_next_attempt_at,
+                  subject.local_user_id
+           FROM revenuecat_customer_state AS state
+           JOIN revenuecat_customer_aliases AS alias ON alias.local_user_id=state.user_id
+           JOIN revenuecat_webhook_events AS event ON event.event_id=$2
+           JOIN revenuecat_event_subjects AS subject
+             ON subject.event_id=event.event_id AND subject.subject_hash=alias.alias_hash
+           WHERE state.user_id=$1`,
+          [active, noOpEvent],
         )
       ).rows[0],
       before,
+    );
+    await scopedPool.query(
+      `UPDATE revenuecat_customer_aliases
+       SET alias_kind='ordinary',ownership_source='webhook',
+           source_event_at='2026-09-01T01:15:00Z',
+           source_event_id=$2,updated_at=clock_timestamp()
+       WHERE alias_hash=$1`,
+      [hash, `auth_same_owner_provenance_${suffix}`],
+    );
+    const sameOwnerBefore = (
+      await scopedPool.query(
+        `SELECT state.updated_at AS state_updated_at,
+                event.next_attempt_at AS event_next_attempt_at,
+                subject.local_user_id
+         FROM revenuecat_customer_state AS state
+         JOIN revenuecat_webhook_events AS event ON event.event_id=$2
+         JOIN revenuecat_event_subjects AS subject
+           ON subject.event_id=event.event_id AND subject.subject_hash=$3
+         WHERE state.user_id=$1`,
+        [active, noOpEvent, hash],
+      )
+    ).rows[0];
+    assert.equal(
+      await provisionAuthenticatedUserIfActive(
+        activeUser,
+        createRevenueCatAuthProvisioningCallback(activeUser, processorConfig),
+      ),
+      "active",
+    );
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT state.updated_at AS state_updated_at,
+                  event.next_attempt_at AS event_next_attempt_at,
+                  subject.local_user_id
+           FROM revenuecat_customer_state AS state
+           JOIN revenuecat_webhook_events AS event ON event.event_id=$2
+           JOIN revenuecat_event_subjects AS subject
+             ON subject.event_id=event.event_id AND subject.subject_hash=$3
+           WHERE state.user_id=$1`,
+          [active, noOpEvent, hash],
+        )
+      ).rows[0],
+      sameOwnerBefore,
+    );
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT alias_kind,ownership_source,local_user_id,
+                  source_event_at,source_event_id
+           FROM revenuecat_customer_aliases WHERE alias_hash=$1`,
+          [hash],
+        )
+      ).rows[0],
+      {
+        alias_kind: "authenticated",
+        ownership_source: "authenticated",
+        local_user_id: active,
+        source_event_at: null,
+        source_event_id: null,
+      },
     );
 
     await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [deleted]);
@@ -5009,6 +5148,178 @@ integrationTest(
 );
 
 integrationTest(
+  "rawless mixed transfer links an unresolved source to its destination while newer authority still wins",
+  async () => {
+    const suffix = Date.now();
+    const destination = `mixed-transfer-destination-${suffix}`;
+    const futureOwner = `mixed-transfer-future-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      [destination, futureOwner],
+    ]);
+
+    const unresolvedEvent = `mixed_transfer_unresolved_${suffix}`;
+    const unresolvedSourceHash = subjectHash(
+      `mixed-transfer-unresolved-source-${suffix}`,
+    );
+    const destinationHash = subjectHash(destination);
+    await insertRawlessEvent({
+      eventId: unresolvedEvent,
+      type: "TRANSFER",
+      subjects: [
+        { hash: unresolvedSourceHash, roleMask: 8, localUserId: null },
+        { hash: destinationHash, roleMask: 16, localUserId: destination },
+      ],
+    });
+    const unresolvedCalls = [];
+    await runPendingEventBatch({
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T00:05:00Z", { pro: true }),
+        },
+        unresolvedCalls,
+      ),
+      limit: 1,
+    });
+    assert.deepEqual(unresolvedCalls, [destination]);
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT disposition,identity_applied_at IS NOT NULL AS identity_done,
+                  entitlement_applied_at IS NOT NULL AS entitlement_done
+           FROM revenuecat_webhook_events WHERE event_id=$1`,
+          [unresolvedEvent],
+        )
+      ).rows[0],
+      { disposition: "applied", identity_done: true, entitlement_done: true },
+    );
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT subject.local_user_id,alias.local_user_id AS alias_owner,
+                  alias.alias_kind,alias.source_event_id
+           FROM revenuecat_event_subjects AS subject
+           LEFT JOIN revenuecat_customer_aliases AS alias
+             ON alias.alias_hash=subject.subject_hash
+           WHERE subject.event_id=$1 AND subject.subject_hash=$2`,
+          [unresolvedEvent, unresolvedSourceHash],
+        )
+      ).rows[0],
+      {
+        local_user_id: destination,
+        alias_owner: destination,
+        alias_kind: "transferred",
+        source_event_id: unresolvedEvent,
+      },
+    );
+
+    const orderedEvent = `mixed_transfer_ordered_${suffix}`;
+    const orderedSourceHash = subjectHash(
+      `mixed-transfer-ordered-source-${suffix}`,
+    );
+    const futureEvent = `future_transfer_${suffix}`;
+    const futureDestinationHash = subjectHash(futureOwner);
+    await insertRawlessEvent({
+      eventId: futureEvent,
+      type: "TRANSFER",
+      eventAt: "2026-09-02T09:00:00Z",
+      receivedAt: "2026-09-02T09:00:01Z",
+      subjects: [
+        { hash: orderedSourceHash, roleMask: 8, localUserId: null },
+        {
+          hash: futureDestinationHash,
+          roleMask: 16,
+          localUserId: futureOwner,
+        },
+      ],
+    });
+    const futureCalls = [];
+    await runPendingEventBatch({
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T09:00:02Z", { pro: true }),
+        },
+        futureCalls,
+      ),
+      limit: 1,
+    });
+    assert.deepEqual(futureCalls, [futureOwner]);
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT event.disposition,alias.local_user_id,alias.source_event_id
+           FROM revenuecat_webhook_events AS event
+           JOIN revenuecat_event_subjects AS subject
+             ON subject.event_id=event.event_id AND subject.subject_hash=$2
+           JOIN revenuecat_customer_aliases AS alias
+             ON alias.alias_hash=subject.subject_hash
+           WHERE event.event_id=$1`,
+          [futureEvent, orderedSourceHash],
+        )
+      ).rows[0],
+      {
+        disposition: "applied",
+        local_user_id: futureOwner,
+        source_event_id: futureEvent,
+      },
+    );
+    await insertRawlessEvent({
+      eventId: orderedEvent,
+      type: "TRANSFER",
+      eventAt: "2026-09-01T10:00:00Z",
+      subjects: [
+        { hash: orderedSourceHash, roleMask: 8, localUserId: null },
+        { hash: destinationHash, roleMask: 16, localUserId: destination },
+      ],
+    });
+    const orderedCalls = [];
+    await runPendingEventBatch({
+      config: processorConfig,
+      client: fakeClient(
+        (uid) => ({
+          lookup: "existing",
+          snapshot: snapshot("2026-09-02T10:00:00Z", {
+            pro: uid === destination,
+            coaching: false,
+          }),
+        }),
+        orderedCalls,
+      ),
+      limit: 1,
+    });
+    assert.deepEqual(
+      new Set(orderedCalls),
+      new Set([destination, futureOwner]),
+    );
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT subject.local_user_id,alias.local_user_id AS alias_owner,
+                  alias.source_event_id,event.disposition,
+                  event.identity_applied_at IS NOT NULL AS identity_done
+           FROM revenuecat_event_subjects AS subject
+           JOIN revenuecat_webhook_events AS event ON event.event_id=subject.event_id
+           JOIN revenuecat_customer_aliases AS alias
+             ON alias.alias_hash=subject.subject_hash
+           WHERE subject.event_id=$1 AND subject.subject_hash=$2`,
+          [orderedEvent, orderedSourceHash],
+        )
+      ).rows[0],
+      {
+        local_user_id: futureOwner,
+        alias_owner: futureOwner,
+        source_event_id: futureEvent,
+        disposition: "applied",
+        identity_done: true,
+      },
+    );
+  },
+);
+
+integrationTest(
   "direct UID links without aliases survive both event phase-crash directions",
   async () => {
     const suffix = Date.now();
@@ -5111,7 +5422,7 @@ integrationTest(
 );
 
 integrationTest(
-  "fully pruned rawless events defer without provider IO until retention cleanup",
+  "fully pruned rawless events are parked without entering the normal claim queue",
   async () => {
     const suffix = Date.now();
     const userId = `worker-pruned-${suffix}`;
@@ -5130,11 +5441,14 @@ integrationTest(
     await scopedPool.query("DELETE FROM users WHERE id=$1", [userId]);
     await makeOnlyEventDue(eventId);
     const calls = [];
-    await runPendingEventBatch({
-      config: processorConfig,
-      client: fakeClient(null, calls),
-      limit: 1,
-    });
+    assert.equal(
+      await runPendingEventBatch({
+        config: processorConfig,
+        client: fakeClient(null, calls),
+        limit: 1,
+      }),
+      0,
+    );
     assert.deepEqual(calls, []);
     assert.deepEqual(
       (
@@ -5154,6 +5468,105 @@ integrationTest(
         processing_lease_id: null,
       },
     );
+  },
+);
+
+integrationTest(
+  "an expired fully-pruned cleanup failure cannot starve the next recoverable event",
+  async () => {
+    const suffix = Date.now();
+    const prunedUser = `pruned-failure-user-${suffix}`;
+    const peerUser = `pruned-failure-peer-${suffix}`;
+    const prunedEvent = `pruned_cleanup_failure_${suffix}`;
+    const peerEvent = `pruned_cleanup_peer_${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      [prunedUser, peerUser],
+    ]);
+    await insertRawlessEvent({
+      eventId: prunedEvent,
+      subjects: [
+        {
+          hash: subjectHash(`pruned-cleanup-failure-${suffix}`),
+          roleMask: 1,
+          localUserId: prunedUser,
+        },
+      ],
+      eventAt: "2026-05-01T00:00:00Z",
+      receivedAt: "2026-05-01T00:00:01Z",
+      retentionUntil: "2026-08-01T00:00:00Z",
+    });
+    await scopedPool.query("DELETE FROM users WHERE id=$1", [prunedUser]);
+    await insertRawlessEvent({
+      eventId: peerEvent,
+      subjects: [
+        {
+          hash: subjectHash(`pruned-cleanup-peer-${suffix}`),
+          roleMask: 1,
+          localUserId: peerUser,
+        },
+      ],
+    });
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET next_attempt_at=CASE event_id
+         WHEN $1 THEN received_at
+         WHEN $2 THEN received_at
+         ELSE '2099-01-01T00:00:00Z'::timestamptz END,
+           processing_lease_id=NULL,processing_lease_until=NULL
+       WHERE disposition='pending'`,
+      [prunedEvent, peerEvent],
+    );
+    await scopedPool.query(`
+      CREATE FUNCTION reject_test_pruned_cleanup() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF OLD.event_id LIKE 'pruned_cleanup_failure_%' THEN
+          RAISE EXCEPTION 'injected cleanup failure';
+        END IF;
+        RETURN OLD;
+      END;
+      $$;
+      CREATE TRIGGER reject_test_pruned_cleanup
+      BEFORE DELETE ON revenuecat_webhook_events
+      FOR EACH ROW EXECUTE FUNCTION reject_test_pruned_cleanup();
+    `);
+    try {
+      const calls = [];
+      assert.equal(
+        await runPendingEventBatch({
+          config: processorConfig,
+          client: fakeClient(
+            {
+              lookup: "existing",
+              snapshot: snapshot("2026-09-02T00:12:00Z", { pro: true }),
+            },
+            calls,
+          ),
+          limit: 1,
+        }),
+        1,
+      );
+      assert.deepEqual(calls, [peerUser]);
+      assert.deepEqual(
+        (
+          await scopedPool.query(
+            `SELECT disposition,attempt_count,processing_lease_id
+             FROM revenuecat_webhook_events WHERE event_id=$1`,
+            [prunedEvent],
+          )
+        ).rows[0],
+        {
+          disposition: "pending",
+          attempt_count: 0,
+          processing_lease_id: null,
+        },
+      );
+    } finally {
+      await scopedPool.query(`
+        DROP TRIGGER reject_test_pruned_cleanup ON revenuecat_webhook_events;
+        DROP FUNCTION reject_test_pruned_cleanup();
+      `);
+    }
   },
 );
 
@@ -5305,7 +5718,7 @@ integrationTest(
       ],
     });
     await scopedPool.query(
-      `UPDATE revenuecat_webhook_events SET next_attempt_at='2000-01-01T00:00:00Z'
+      `UPDATE revenuecat_webhook_events SET next_attempt_at=received_at
        WHERE event_id=ANY($1::text[])`,
       [[slowEvent, peerEvent]],
     );
@@ -5610,6 +6023,124 @@ integrationTest(
 );
 
 integrationTest(
+  "30-day cleanup requires post-event canonical observations for stale direct and current alias authorities",
+  async () => {
+    const suffix = Date.now();
+    const aliasOwner = `cleanup-authority-alias-${suffix}`;
+    const staleDirectOwner = `cleanup-authority-direct-${suffix}`;
+    const eventId = `cleanup_authority_${suffix}`;
+    const hash = subjectHash(`cleanup-authority-hash-${suffix}`);
+    await scopedPool.query("INSERT INTO users (id) SELECT unnest($1::text[])", [
+      [aliasOwner, staleDirectOwner],
+    ]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_state
+       (user_id,canonicalization_state,source_kind,reconcile_reason,reconcile_after)
+       VALUES ($1,'pending','none','scheduled','2099-01-01T00:00:00Z')`,
+      [aliasOwner],
+    );
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_state
+       (user_id,canonicalization_state,source_kind,source_environment,
+        last_snapshot_at,last_operation_id,last_reconciled_at,
+        reconcile_reason,reconcile_after)
+       VALUES ($1,'canonical','worker_canonical','sandbox',
+               '2026-08-01T00:00:00Z',$2,'2026-08-01T00:00:01Z',
+               'scheduled','2099-01-01T00:00:00Z')`,
+      [staleDirectOwner, `worker:cleanup-authority-direct-${suffix}`],
+    );
+    await insertRawlessEvent({
+      eventId,
+      subjects: [{ hash, roleMask: 1, localUserId: staleDirectOwner }],
+      eventAt: "2026-07-01T00:00:00Z",
+      receivedAt: "2026-07-01T00:00:01Z",
+      retentionUntil: "2026-11-01T00:00:00Z",
+    });
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_aliases
+       (alias_hash,local_user_id,alias_kind,ownership_source,source_event_at,source_event_id)
+       VALUES ($1,$2,'ordinary','webhook','2026-08-01T00:00:00Z',$3)`,
+      [hash, aliasOwner, `cleanup_authority_alias_${suffix}`],
+    );
+
+    await cleanupRevenueCatEvents();
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT disposition,identity_applied_at,entitlement_applied_at
+           FROM revenuecat_webhook_events WHERE event_id=$1`,
+          [eventId],
+        )
+      ).rows[0],
+      {
+        disposition: "pending",
+        identity_applied_at: null,
+        entitlement_applied_at: null,
+      },
+    );
+    assert.deepEqual(
+      new Map(
+        (
+          await scopedPool.query(
+            `SELECT user_id,reconcile_reason,
+                    reconcile_after<=clock_timestamp() AS due
+             FROM revenuecat_customer_state
+             WHERE user_id=ANY($1::text[]) ORDER BY user_id`,
+            [[aliasOwner, staleDirectOwner]],
+          )
+        ).rows.map((row) => [row.user_id, row]),
+      ),
+      new Map([
+        [
+          aliasOwner,
+          {
+            user_id: aliasOwner,
+            reconcile_reason: "webhook_failure",
+            due: true,
+          },
+        ],
+        [
+          staleDirectOwner,
+          {
+            user_id: staleDirectOwner,
+            reconcile_reason: "webhook_failure",
+            due: true,
+          },
+        ],
+      ]),
+    );
+
+    await scopedPool.query(
+      `UPDATE revenuecat_customer_state
+       SET canonicalization_state='canonical',source_kind='worker_canonical',
+           source_environment='sandbox',last_snapshot_at='2026-08-15T00:00:00Z',
+           last_operation_id='worker:cleanup-authority-ready',
+           last_reconciled_at='2026-08-15T00:00:01Z',
+           reconcile_reason='scheduled',reconcile_after='2099-01-01T00:00:00Z',
+           updated_at=clock_timestamp()
+       WHERE user_id=ANY($1::text[])`,
+      [[aliasOwner, staleDirectOwner]],
+    );
+    await cleanupRevenueCatEvents();
+    assert.deepEqual(
+      (
+        await scopedPool.query(
+          `SELECT disposition,identity_applied_at,
+                  entitlement_applied_at IS NOT NULL AS entitlement_done
+           FROM revenuecat_webhook_events WHERE event_id=$1`,
+          [eventId],
+        )
+      ).rows[0],
+      {
+        disposition: "pending",
+        identity_applied_at: null,
+        entitlement_done: true,
+      },
+    );
+  },
+);
+
+integrationTest(
   "90-day cleanup retains only live null-linked alias authority, enqueues it, and recovery completes",
   async () => {
     const suffix = Date.now();
@@ -5741,7 +6272,7 @@ integrationTest(
     await scopedPool.query(
       `UPDATE revenuecat_webhook_events
        SET next_attempt_at=CASE WHEN event_id=ANY($1::text[])
-         THEN '2000-01-01T00:00:00Z'::timestamptz
+         THEN received_at
          ELSE '2099-01-01T00:00:00Z'::timestamptz END,
            processing_lease_id=NULL,processing_lease_until=NULL
        WHERE disposition='pending'`,
