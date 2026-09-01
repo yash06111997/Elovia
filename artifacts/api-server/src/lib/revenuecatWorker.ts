@@ -1108,11 +1108,26 @@ export async function cleanupRevenueCatEvents(
       AND NOT EXISTS (
         SELECT 1
         FROM "revenuecat_event_subjects" AS subject
-        JOIN "users" AS live_user ON live_user."id" = subject."local_user_id"
+        LEFT JOIN "revenuecat_customer_aliases" AS alias
+          ON alias."alias_hash" = subject."subject_hash"
         WHERE subject."event_id" = "revenuecat_webhook_events"."event_id"
-          AND NOT EXISTS (
-            SELECT 1 FROM "account_deletions" AS deletion
-            WHERE deletion."user_id" = live_user."id"
+          AND (
+            EXISTS (
+              SELECT 1 FROM "users" AS direct_user
+              WHERE direct_user."id" = subject."local_user_id"
+                AND NOT EXISTS (
+                  SELECT 1 FROM "account_deletions" AS direct_deletion
+                  WHERE direct_deletion."user_id" = direct_user."id"
+                )
+            )
+            OR EXISTS (
+              SELECT 1 FROM "users" AS alias_user
+              WHERE alias_user."id" = alias."local_user_id"
+                AND NOT EXISTS (
+                  SELECT 1 FROM "account_deletions" AS alias_deletion
+                  WHERE alias_deletion."user_id" = alias_user."id"
+                )
+            )
           )
       )
       AND ("processing_lease_until" IS NULL OR "processing_lease_until" <= clock_timestamp())
@@ -1127,32 +1142,64 @@ export async function cleanupRevenueCatEvents(
       AND EXISTS (
         SELECT 1
         FROM "revenuecat_event_subjects" AS subject
-        JOIN "users" AS live_user ON live_user."id" = subject."local_user_id"
+        LEFT JOIN "revenuecat_customer_aliases" AS alias
+          ON alias."alias_hash" = subject."subject_hash"
         WHERE subject."event_id" = event."event_id"
-          AND NOT EXISTS (
-            SELECT 1 FROM "account_deletions" AS deletion
-            WHERE deletion."user_id" = live_user."id"
+          AND (
+            EXISTS (
+              SELECT 1 FROM "users" AS direct_user
+              WHERE direct_user."id" = subject."local_user_id"
+                AND NOT EXISTS (
+                  SELECT 1 FROM "account_deletions" AS direct_deletion
+                  WHERE direct_deletion."user_id" = direct_user."id"
+                )
+            )
+            OR EXISTS (
+              SELECT 1 FROM "users" AS alias_user
+              WHERE alias_user."id" = alias."local_user_id"
+                AND NOT EXISTS (
+                  SELECT 1 FROM "account_deletions" AS alias_deletion
+                  WHERE alias_deletion."user_id" = alias_user."id"
+                )
+            )
           )
       )
   `);
   await db.execute(sql`
-    UPDATE "revenuecat_customer_state" AS state
-    SET "reconcile_reason" = 'webhook_failure',
-        "reconcile_after" = LEAST(state."reconcile_after", clock_timestamp()),
-        "updated_at" = clock_timestamp()
-    WHERE EXISTS (
-      SELECT 1
+    INSERT INTO "revenuecat_customer_state" (
+      "user_id", "canonicalization_state", "source_kind",
+      "reconcile_reason", "reconcile_after"
+    )
+    SELECT DISTINCT owner."user_id", 'pending', 'none',
+           'webhook_failure', clock_timestamp()
+    FROM (
+      SELECT subject."local_user_id" AS "user_id"
       FROM "revenuecat_event_subjects" AS subject
       JOIN "revenuecat_webhook_events" AS event
         ON event."event_id" = subject."event_id"
-      WHERE subject."local_user_id" = state."user_id"
-        AND event."disposition" = 'pending'
+      WHERE event."disposition" = 'pending'
         AND event."retention_until" <= clock_timestamp()
-        AND NOT EXISTS (
-          SELECT 1 FROM "account_deletions" AS deletion
-          WHERE deletion."user_id" = state."user_id"
-        )
+      UNION
+      SELECT alias."local_user_id" AS "user_id"
+      FROM "revenuecat_event_subjects" AS subject
+      JOIN "revenuecat_webhook_events" AS event
+        ON event."event_id" = subject."event_id"
+      JOIN "revenuecat_customer_aliases" AS alias
+        ON alias."alias_hash" = subject."subject_hash"
+      WHERE event."disposition" = 'pending'
+        AND event."retention_until" <= clock_timestamp()
+    ) AS owner
+    JOIN "users" AS live_user ON live_user."id" = owner."user_id"
+    WHERE NOT EXISTS (
+      SELECT 1 FROM "account_deletions" AS deletion
+      WHERE deletion."user_id" = owner."user_id"
     )
+    ON CONFLICT ("user_id") DO UPDATE SET
+      "reconcile_reason" = 'webhook_failure',
+      "reconcile_after" = LEAST(
+        "revenuecat_customer_state"."reconcile_after", clock_timestamp()
+      ),
+      "updated_at" = clock_timestamp()
   `);
   const alerts = await db.execute<{ type: string; count: number }>(sql`
     SELECT "type", count(*)::integer AS "count"
@@ -1162,11 +1209,26 @@ export async function cleanupRevenueCatEvents(
       AND EXISTS (
         SELECT 1
         FROM "revenuecat_event_subjects" AS subject
-        JOIN "users" AS live_user ON live_user."id" = subject."local_user_id"
+        LEFT JOIN "revenuecat_customer_aliases" AS alias
+          ON alias."alias_hash" = subject."subject_hash"
         WHERE subject."event_id" = "revenuecat_webhook_events"."event_id"
-          AND NOT EXISTS (
-            SELECT 1 FROM "account_deletions" AS deletion
-            WHERE deletion."user_id" = live_user."id"
+          AND (
+            EXISTS (
+              SELECT 1 FROM "users" AS direct_user
+              WHERE direct_user."id" = subject."local_user_id"
+                AND NOT EXISTS (
+                  SELECT 1 FROM "account_deletions" AS direct_deletion
+                  WHERE direct_deletion."user_id" = direct_user."id"
+                )
+            )
+            OR EXISTS (
+              SELECT 1 FROM "users" AS alias_user
+              WHERE alias_user."id" = alias."local_user_id"
+                AND NOT EXISTS (
+                  SELECT 1 FROM "account_deletions" AS alias_deletion
+                  WHERE alias_deletion."user_id" = alias_user."id"
+                )
+            )
           )
       )
     GROUP BY "type"
