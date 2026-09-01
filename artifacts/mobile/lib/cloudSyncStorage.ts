@@ -9,6 +9,17 @@ export interface SyncStorageAdapter {
   multiRemove(keys: string[]): Promise<void>;
 }
 
+export interface SyncKeyAdoptionMigration {
+  /** Stable version identifier; changing the managed-key set requires a new version. */
+  readonly version: string;
+  /** Keys that existed locally before they joined the synchronized contract. */
+  readonly keys: readonly string[];
+}
+
+export interface SyncStorageCoordinatorOptions {
+  readonly adoptionMigrations?: readonly SyncKeyAdoptionMigration[];
+}
+
 export interface StaleCurrentUser {
   readonly status: "stale";
 }
@@ -118,6 +129,22 @@ export function scopedSyncCacheKey(
   return `@elovia_sync_cache:${encodeURIComponent(storedOwner)}:${encodeURIComponent(storageKey)}`;
 }
 
+export function scopedSyncAdoptionKey(
+  storedOwner: string,
+  version: string,
+): string {
+  if (
+    storedOwner !== LOCAL_SYNC_GUEST_OWNER &&
+    !isStoredUserOwner(storedOwner)
+  ) {
+    throw new Error("Sync adoption keys require an encoded stored owner.");
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(version)) {
+    throw new Error("Sync adoption migration version is invalid.");
+  }
+  return `@elovia_sync_adoption:${encodeURIComponent(storedOwner)}:${encodeURIComponent(version)}`;
+}
+
 export type SyncGenerationKind = "change" | "clean";
 
 export interface SyncGenerationState {
@@ -156,10 +183,16 @@ function generationKeysForUser(userId: string | null): {
   changeKey: string;
   cleanKey: string;
 } {
-  const owner = storedOwnerForUserId(userId);
+  return generationKeysForStoredOwner(storedOwnerForUserId(userId));
+}
+
+function generationKeysForStoredOwner(storedOwner: string): {
+  changeKey: string;
+  cleanKey: string;
+} {
   return {
-    changeKey: scopedSyncGenerationKey(owner, "change"),
-    cleanKey: scopedSyncGenerationKey(owner, "clean"),
+    changeKey: scopedSyncGenerationKey(storedOwner, "change"),
+    cleanKey: scopedSyncGenerationKey(storedOwner, "clean"),
   };
 }
 
@@ -369,10 +402,41 @@ export class SyncStorageCoordinator {
   private tail: Promise<void> = Promise.resolve();
   private readonly storage: SyncStorageAdapter;
   private readonly syncKeys: readonly string[];
+  private readonly adoptionMigrations: readonly SyncKeyAdoptionMigration[];
+  private readonly adoptionKeys: readonly string[];
+  private readonly completedAdoptions = new Set<string>();
 
-  constructor(storage: SyncStorageAdapter, syncKeys: readonly string[]) {
+  constructor(
+    storage: SyncStorageAdapter,
+    syncKeys: readonly string[],
+    options: SyncStorageCoordinatorOptions = {},
+  ) {
     this.storage = storage;
-    this.syncKeys = syncKeys;
+    this.syncKeys = [...syncKeys];
+    const syncKeySet = new Set(syncKeys);
+    const versions = new Set<string>();
+    this.adoptionMigrations = (options.adoptionMigrations ?? []).map(
+      (migration) => {
+        scopedSyncAdoptionKey(LOCAL_SYNC_GUEST_OWNER, migration.version);
+        if (versions.has(migration.version)) {
+          throw new Error("Sync adoption migration versions must be unique.");
+        }
+        versions.add(migration.version);
+        if (
+          migration.keys.length === 0 ||
+          new Set(migration.keys).size !== migration.keys.length ||
+          migration.keys.some((key) => !syncKeySet.has(key))
+        ) {
+          throw new Error(
+            "Sync adoption migrations require unique synchronized keys.",
+          );
+        }
+        return { version: migration.version, keys: [...migration.keys] };
+      },
+    );
+    this.adoptionKeys = [
+      ...new Set(this.adoptionMigrations.flatMap(({ keys }) => keys)),
+    ];
   }
 
   private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -425,6 +489,93 @@ export class SyncStorageCoordinator {
     await this.storage.setItem(
       LOCAL_SYNC_TRANSITION_EPOCH_KEY,
       String(current + 1),
+    );
+  }
+
+  private async adoptManagedKeysForOwnerLocked(
+    adoptionOwner: string,
+    stableOwner: string | null,
+    loadSourceValues: () => Promise<ReadonlyMap<string, string | null>>,
+    expectedUserId: string | null,
+    currentUserId: CurrentUserId,
+  ): Promise<OwnerPreparationOutcome> {
+    let changed = false;
+    let sourceValues: ReadonlyMap<string, string | null> | null = null;
+
+    for (const migration of this.adoptionMigrations) {
+      const markerKey = scopedSyncAdoptionKey(adoptionOwner, migration.version);
+      if (this.completedAdoptions.has(markerKey)) continue;
+      const { changeKey, cleanKey } =
+        generationKeysForStoredOwner(adoptionOwner);
+      const metadata = new Map(
+        await this.storage.multiGet([markerKey, changeKey, cleanKey]),
+      );
+      const marker = metadata.get(markerKey) ?? null;
+      if (marker === "complete") {
+        this.completedAdoptions.add(markerKey);
+        continue;
+      }
+      if (marker !== null) {
+        throw new Error("Sync adoption migration marker is invalid.");
+      }
+
+      const values: ReadonlyMap<string, string | null> =
+        sourceValues ?? (await loadSourceValues());
+      sourceValues = values;
+      const hasAdoptedData = migration.keys.some(
+        (key) => (values.get(key) ?? null) !== null,
+      );
+      const finalSets: (readonly [string, string])[] = [
+        [markerKey, "complete"],
+      ];
+      if (hasAdoptedData) {
+        const generations = parseGenerationState(
+          metadata.get(changeKey) ?? null,
+          metadata.get(cleanKey) ?? null,
+        );
+        if (!generations.dirty) {
+          if (generations.changeGeneration === Number.MAX_SAFE_INTEGER) {
+            throw new Error(
+              "Sync change generation cannot be advanced safely.",
+            );
+          }
+          finalSets.push([changeKey, String(generations.changeGeneration + 1)]);
+        }
+      }
+
+      const committed = await this.commitOwnedLocked(
+        stableOwner,
+        expectedUserId,
+        currentUserId,
+        [],
+        [],
+        finalSets,
+        `key-adoption-${migration.version}`,
+        [],
+      );
+      if (committed.status === "stale") return committed;
+      this.completedAdoptions.add(markerKey);
+      changed = true;
+    }
+
+    return { status: "ready", changed };
+  }
+
+  private async readGlobalAdoptionValues(): Promise<
+    ReadonlyMap<string, string | null>
+  > {
+    return new Map(await this.storage.multiGet([...this.adoptionKeys]));
+  }
+
+  private async readCachedAdoptionValues(
+    owner: string,
+  ): Promise<ReadonlyMap<string, string | null>> {
+    const cacheKeys = this.adoptionKeys.map((key) =>
+      scopedSyncCacheKey(owner, key),
+    );
+    const cached = await this.storage.multiGet(cacheKeys);
+    return new Map(
+      this.adoptionKeys.map((key, index) => [key, cached[index]?.[1] ?? null]),
     );
   }
 
@@ -610,15 +761,39 @@ export class SyncStorageCoordinator {
       );
       const owner = normalized.owner;
       if (storedOwnerMatches(owner, expectedUserId)) {
-        return { status: "ready", changed: normalized.changed };
+        const adopted = await this.adoptManagedKeysForOwnerLocked(
+          storedOwnerForUserId(expectedUserId),
+          owner,
+          () => this.readGlobalAdoptionValues(),
+          expectedUserId,
+          currentUserId,
+        );
+        if (adopted.status === "stale") return adopted;
+        if (!currentUserMatches(await currentUserId(), expectedUserId)) {
+          return { status: "stale" };
+        }
+        return {
+          status: "ready",
+          changed: normalized.changed || adopted.changed,
+        };
       }
 
       if (owner === null) {
         if (!currentUserMatches(await currentUserId(), expectedUserId))
           return { status: "stale" };
+        const adopted = await this.adoptManagedKeysForOwnerLocked(
+          storedOwnerForUserId(expectedUserId),
+          owner,
+          () => this.readGlobalAdoptionValues(),
+          expectedUserId,
+          currentUserId,
+        );
+        if (adopted.status === "stale") return adopted;
         // Unowned guest data stays unowned so the first authenticated account
         // can claim it in place without an unnecessary cache round trip.
-        if (expectedUserId === null) return { status: "ready", changed: false };
+        if (expectedUserId === null) {
+          return { status: "ready", changed: adopted.changed };
+        }
 
         // A guest-created snapshot becomes the first account's local snapshot.
         // Mark it dirty before assigning the owner so it cannot be overwritten
@@ -667,12 +842,28 @@ export class SyncStorageCoordinator {
       if (!currentUserMatches(await currentUserId(), expectedUserId))
         return { status: "stale" };
 
-      await this.transitionOwner(
+      const priorAdopted = await this.adoptManagedKeysForOwnerLocked(
         owner,
-        expectedUserId === null
-          ? LOCAL_SYNC_GUEST_OWNER
-          : storedSyncUserOwner(expectedUserId),
+        owner,
+        () => this.readGlobalAdoptionValues(),
+        expectedUserId,
+        currentUserId,
       );
+      if (priorAdopted.status === "stale") return priorAdopted;
+      const targetOwner = storedOwnerForUserId(expectedUserId);
+      const targetAdopted = await this.adoptManagedKeysForOwnerLocked(
+        targetOwner,
+        owner,
+        () => this.readCachedAdoptionValues(targetOwner),
+        expectedUserId,
+        currentUserId,
+      );
+      if (targetAdopted.status === "stale") return targetAdopted;
+      if (!currentUserMatches(await currentUserId(), expectedUserId)) {
+        return { status: "stale" };
+      }
+
+      await this.transitionOwner(owner, targetOwner);
       if (!currentUserMatches(await currentUserId(), expectedUserId))
         return { status: "stale" };
       return { status: "ready", changed: true };

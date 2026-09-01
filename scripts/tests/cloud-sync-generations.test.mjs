@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   LOCAL_SYNC_JOURNAL_KEY,
   LOCAL_SYNC_OWNER_KEY,
+  scopedSyncAdoptionKey,
+  scopedSyncCacheKey,
   scopedSyncGenerationKey,
   STALE_CURRENT_USER,
   storedSyncUserOwner,
@@ -68,11 +70,55 @@ class FailingMemoryStorage extends MemoryStorage {
   }
 }
 
+class BlockingMemoryStorage extends MemoryStorage {
+  constructor(entries) {
+    super(entries);
+    this.entered = new Promise((resolve) => {
+      this.markEntered = resolve;
+    });
+    this.gate = new Promise((resolve) => {
+      this.release = resolve;
+    });
+  }
+  async multiSet(entries) {
+    this.markEntered();
+    await this.gate;
+    await super.multiSet(entries);
+  }
+}
+
 const SYNC_KEYS = ["state", "activeSession"];
 const currentA = async () => "A";
 const ownerA = storedSyncUserOwner("A");
 const changeA = scopedSyncGenerationKey(ownerA, "change");
 const cleanA = scopedSyncGenerationKey(ownerA, "clean");
+const ADOPTION_VERSION = "sync-contract-18";
+const ADOPTED_KEYS = ["@elovia_reminder_prefs", "@elovia_places"];
+const PRIOR_CONTRACT_KEYS = [
+  "@elovia_state",
+  "@elovia_plan",
+  "@elovia_custom_plans",
+  "@elovia_active_plan_type",
+  "@elovia_active_custom_plan_id",
+  "@elovia_active_session",
+  "@elovia_sessions",
+  "@elovia_prs",
+  "@elovia_meal_plan",
+  "@elovia_food_log",
+  "@elovia_custom_meal_plans",
+  "@elovia_active_meal_plan_type",
+  "@elovia_active_custom_meal_plan_id",
+  "@elovia_health_data",
+  "@elovia_wellness",
+  "@elovia_water_goal",
+];
+const UPGRADED_SYNC_KEYS = [...PRIOR_CONTRACT_KEYS, ...ADOPTED_KEYS];
+
+function adoptionOptions() {
+  return {
+    adoptionMigrations: [{ version: ADOPTION_VERSION, keys: ADOPTED_KEYS }],
+  };
+}
 
 function storageForA(entries = []) {
   return new MemoryStorage([[LOCAL_SYNC_OWNER_KEY, ownerA], ...entries]);
@@ -85,6 +131,189 @@ function deferred() {
   });
   return { promise, resolve };
 }
+
+test("a clean prior-contract account adopts reminder and place values before restore", async () => {
+  assert.equal(PRIOR_CONTRACT_KEYS.length, 16);
+  assert.equal(UPGRADED_SYNC_KEYS.length, 18);
+  const reminderPrefs = '{"workout":true,"hour":8,"minute":30}';
+  const places = '[{"id":"gym","name":"Local gym"}]';
+  const storage = storageForA([
+    ["@elovia_reminder_prefs", reminderPrefs],
+    ["@elovia_places", places],
+    [changeA, "7"],
+    [cleanA, "7"],
+  ]);
+  const coordinator = new SyncStorageCoordinator(
+    storage,
+    UPGRADED_SYNC_KEYS,
+    adoptionOptions(),
+  );
+
+  assert.deepEqual(await coordinator.prepareOwner("A", currentA), {
+    status: "ready",
+    changed: true,
+  });
+  const snapshot = await coordinator.readSyncSnapshotOwned("A", currentA, [
+    ...ADOPTED_KEYS,
+  ]);
+  assert.equal(snapshot.status, "ready");
+  assert.equal(snapshot.value.dirty, true);
+  assert.equal(snapshot.value.changeGeneration, 8);
+  assert.equal(snapshot.value.cleanGeneration, 7);
+
+  assert.deepEqual(
+    await coordinator.commitRestoreOwned(
+      "A",
+      currentA,
+      snapshot.value.changeGeneration,
+      [],
+      [...ADOPTED_KEYS],
+      [],
+      "upgrade-regression",
+    ),
+    { status: "ready", value: { committed: false } },
+  );
+  assert.equal(await storage.getItem("@elovia_reminder_prefs"), reminderPrefs);
+  assert.equal(await storage.getItem("@elovia_places"), places);
+  assert.equal(
+    await storage.getItem(scopedSyncAdoptionKey(ownerA, ADOPTION_VERSION)),
+    "complete",
+  );
+
+  assert.deepEqual(await coordinator.prepareOwner("A", currentA), {
+    status: "ready",
+    changed: false,
+  });
+  assert.equal(await storage.getItem(changeA), "8");
+});
+
+test("adoption dirties a stored owner that is not the mounted account", async () => {
+  const ownerB = storedSyncUserOwner("B");
+  const changeB = scopedSyncGenerationKey(ownerB, "change");
+  const cleanB = scopedSyncGenerationKey(ownerB, "clean");
+  const bPlaces = '[{"id":"B-gym"}]';
+  const aReminders = '{"workout":true,"hour":7,"minute":15}';
+  const storage = new MemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, ownerB],
+    ["@elovia_places", bPlaces],
+    [changeB, "11"],
+    [cleanB, "11"],
+    [scopedSyncCacheKey(ownerA, "@elovia_reminder_prefs"), aReminders],
+    [changeA, "3"],
+    [cleanA, "3"],
+  ]);
+  const coordinator = new SyncStorageCoordinator(
+    storage,
+    UPGRADED_SYNC_KEYS,
+    adoptionOptions(),
+  );
+  let currentUser = "A";
+  const current = async () => currentUser;
+
+  assert.deepEqual(await coordinator.prepareOwner("A", current), {
+    status: "ready",
+    changed: true,
+  });
+  assert.equal(await storage.getItem(changeB), "12");
+  assert.equal(await storage.getItem(cleanB), "11");
+  assert.equal(
+    await storage.getItem(scopedSyncAdoptionKey(ownerB, ADOPTION_VERSION)),
+    "complete",
+  );
+  assert.equal(
+    await storage.getItem(scopedSyncCacheKey(ownerB, "@elovia_places")),
+    bPlaces,
+  );
+  assert.equal(await storage.getItem(changeA), "4");
+  assert.equal(await storage.getItem(cleanA), "3");
+  assert.equal(
+    await storage.getItem(scopedSyncAdoptionKey(ownerA, ADOPTION_VERSION)),
+    "complete",
+  );
+  assert.equal(await storage.getItem("@elovia_reminder_prefs"), aReminders);
+
+  currentUser = "B";
+  await coordinator.prepareOwner("B", current);
+  const restoredB = await coordinator.readSyncSnapshotOwned("B", current, [
+    "@elovia_places",
+  ]);
+  assert.equal(restoredB.status, "ready");
+  assert.equal(restoredB.value.dirty, true);
+  assert.equal(new Map(restoredB.value.entries).get("@elovia_places"), bPlaces);
+});
+
+test("adoption is journaled and crash-recoverable at every mutation phase", async () => {
+  for (let failAt = 1; failAt <= 5; failAt++) {
+    const places = '[{"id":"offline-gym"}]';
+    const storage = new FailingMemoryStorage([
+      [LOCAL_SYNC_OWNER_KEY, ownerA],
+      ["@elovia_places", places],
+      [changeA, "4"],
+      [cleanA, "4"],
+    ]);
+    storage.setFailure(failAt);
+    const coordinator = new SyncStorageCoordinator(
+      storage,
+      UPGRADED_SYNC_KEYS,
+      adoptionOptions(),
+    );
+
+    await assert.rejects(coordinator.prepareOwner("A", currentA));
+    storage.clearFailure();
+
+    const restarted = new SyncStorageCoordinator(
+      storage,
+      UPGRADED_SYNC_KEYS,
+      adoptionOptions(),
+    );
+    assert.deepEqual(await restarted.prepareOwner("A", currentA), {
+      status: "ready",
+      changed: true,
+    });
+    assert.equal(await storage.getItem("@elovia_places"), places);
+    assert.equal(await storage.getItem(changeA), "5");
+    assert.equal(await storage.getItem(cleanA), "4");
+    assert.equal(await storage.getItem(LOCAL_SYNC_JOURNAL_KEY), null);
+    assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), ownerA);
+    assert.equal(
+      await storage.getItem(scopedSyncAdoptionKey(ownerA, ADOPTION_VERSION)),
+      "complete",
+    );
+  }
+});
+
+test("same-account ABA invalidation rolls adoption metadata back", async () => {
+  const places = '[{"id":"A-gym"}]';
+  const storage = new BlockingMemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, ownerA],
+    ["@elovia_places", places],
+    [changeA, "6"],
+    [cleanA, "6"],
+  ]);
+  const coordinator = new SyncStorageCoordinator(
+    storage,
+    UPGRADED_SYNC_KEYS,
+    adoptionOptions(),
+  );
+  let generationIsCurrent = true;
+  const current = async () => (generationIsCurrent ? "A" : STALE_CURRENT_USER);
+
+  const preparing = coordinator.prepareOwner("A", current);
+  await storage.entered;
+  generationIsCurrent = false;
+  storage.release();
+
+  assert.deepEqual(await preparing, { status: "stale" });
+  assert.equal(await storage.getItem("@elovia_places"), places);
+  assert.equal(await storage.getItem(changeA), "6");
+  assert.equal(await storage.getItem(cleanA), "6");
+  assert.equal(
+    await storage.getItem(scopedSyncAdoptionKey(ownerA, ADOPTION_VERSION)),
+    null,
+  );
+  assert.equal(await storage.getItem(LOCAL_SYNC_OWNER_KEY), ownerA);
+  assert.equal(await storage.getItem(LOCAL_SYNC_JOURNAL_KEY), null);
+});
 
 test("cold dirty local state chooses backup and never starts a cloud GET", async () => {
   const storage = storageForA([

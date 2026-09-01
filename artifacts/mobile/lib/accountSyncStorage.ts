@@ -30,6 +30,13 @@ export const SYNC_KEYS = [
 
 export type SyncKey = (typeof SYNC_KEYS)[number];
 
+// v18 is the first sync contract that owns these previously device-global
+// values. The coordinator adopts any existing values before cloud restore.
+const SYNC_CONTRACT_18_ADOPTION = {
+  version: "sync-contract-18",
+  keys: ["@elovia_reminder_prefs", "@elovia_places"],
+} as const;
+
 interface AuthScope {
   ready: boolean;
   uid: string | null;
@@ -71,6 +78,7 @@ let authScope: AuthScope = { ready: false, uid: null, generation: 0 };
 export const syncStorageCoordinator = new SyncStorageCoordinator(
   AsyncStorage,
   SYNC_KEYS,
+  { adoptionMigrations: [SYNC_CONTRACT_18_ADOPTION] },
 );
 
 export function setAccountStorageAuthScope(

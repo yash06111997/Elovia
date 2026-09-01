@@ -36,6 +36,8 @@ test("every synchronized context key participates in cloud and account isolation
   ]) {
     assert.match(text, new RegExp(key));
   }
+  assert.match(text, /version: "sync-contract-18"/);
+  assert.match(text, /adoptionMigrations: \[SYNC_CONTRACT_18_ADOPTION\]/);
 
   const cloud = await source("lib/cloudSync.ts");
   assert.match(cloud, /"@elovia_active_session": "activeSession"/);
