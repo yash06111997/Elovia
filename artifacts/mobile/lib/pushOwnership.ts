@@ -12,6 +12,7 @@ export type PersistedPushRegistrationState =
       /** False only for the short-lived Task 6 pre-versioned upgrade shape. */
       versioned: boolean;
     }
+  | { status: "registering"; ownership: PushOwnership }
   | { status: "detached" }
   | { status: "legacy-token"; token: string }
   | { status: "unknown" };
@@ -140,6 +141,17 @@ export function parsePersistedPushRegistrationState(
     }
     if (
       candidate.version === PUSH_REGISTRATION_STATE_VERSION &&
+      candidate.status === "registering" &&
+      isNonEmptyBoundedString(candidate.userId, 256) &&
+      isExpoPushToken(candidate.token)
+    ) {
+      return {
+        status: "registering",
+        ownership: { userId: candidate.userId, token: candidate.token },
+      };
+    }
+    if (
+      candidate.version === PUSH_REGISTRATION_STATE_VERSION &&
       candidate.status === "owned" &&
       isNonEmptyBoundedString(candidate.userId, 256) &&
       isExpoPushToken(candidate.token)
@@ -179,6 +191,16 @@ export function serializeOwnedPushRegistrationState(
   });
 }
 
+export function serializeRegisteringPushRegistrationState(
+  ownership: PushOwnership,
+): string {
+  return JSON.stringify({
+    version: PUSH_REGISTRATION_STATE_VERSION,
+    status: "registering",
+    ...ownership,
+  });
+}
+
 export function serializeDetachedPushRegistrationState(): string {
   return JSON.stringify({
     version: PUSH_REGISTRATION_STATE_VERSION,
@@ -186,11 +208,47 @@ export function serializeDetachedPushRegistrationState(): string {
   });
 }
 
+/** Write-ahead registration intent. The versioned state is authoritative. */
+export async function beginPushRegistrationIntent(options: {
+  ownership: PushOwnership;
+  previousOwnership: PushOwnership | null;
+  preserve(ownership: PushOwnership): Promise<boolean>;
+  persistRegistering(serialized: string): Promise<void>;
+}): Promise<boolean> {
+  if (
+    options.previousOwnership &&
+    !(await options.preserve(options.previousOwnership))
+  ) {
+    return false;
+  }
+  try {
+    await options.persistRegistering(
+      serializeRegisteringPushRegistrationState(options.ownership),
+    );
+  } catch {
+    return false;
+  }
+  // State is already durable even if the redundant journal write fails.
+  await options.preserve(options.ownership).catch(() => false);
+  return true;
+}
+
 export function hasVerifiedServerDetachment(
   state: PersistedPushRegistrationState,
   authenticatedUnregisterSucceeded: boolean,
 ): boolean {
   return authenticatedUnregisterSucceeded || state.status === "detached";
+}
+
+export function isVerifiedPushMutationResponse(
+  operation: "register" | "unregister",
+  body: unknown,
+): boolean {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  const result = body as Record<string, unknown>;
+  return operation === "register"
+    ? result.registered === true
+    : result.unregistered === true;
 }
 
 export interface PushServerCleanupPlan {
@@ -205,14 +263,17 @@ export function planPushServerCleanup(
   expectedUserId: string,
   pending: readonly PushOwnership[],
 ): PushServerCleanupPlan {
-  if (state.status === "detached") {
-    return { alreadyDetached: true, ownershipConflict: false, candidates: [] };
-  }
   if (state.status === "owned" && state.ownership.userId !== expectedUserId) {
     return { alreadyDetached: false, ownershipConflict: true, candidates: [] };
   }
+  if (
+    state.status === "registering" &&
+    state.ownership.userId !== expectedUserId
+  ) {
+    return { alreadyDetached: false, ownershipConflict: true, candidates: [] };
+  }
   const candidates = new Map<string, PushOwnership>();
-  if (state.status === "owned") {
+  if (state.status === "owned" || state.status === "registering") {
     candidates.set(state.ownership.token, state.ownership);
   } else if (state.status === "legacy-token") {
     candidates.set(state.token, { userId: expectedUserId, token: state.token });
@@ -221,6 +282,9 @@ export function planPushServerCleanup(
     if (ownership.userId === expectedUserId) {
       candidates.set(ownership.token, ownership);
     }
+  }
+  if (state.status === "detached" && candidates.size === 0) {
+    return { alreadyDetached: true, ownershipConflict: false, candidates: [] };
   }
   return {
     alreadyDetached: false,

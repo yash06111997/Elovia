@@ -244,23 +244,55 @@ const nativeLifecycleState = new NativeLifecycleStateStore(AsyncStorage);
 let nativeLifecycleOperation: Promise<void> = Promise.resolve();
 let currentAuthOwnerUserId: string | null = null;
 const suspendedOwners = new Set<string>();
+let authLifecycleGeneration = 0;
+
+export interface NativeLifecycleFence {
+  ownerUserId: string | null;
+  generation: number;
+}
 
 /** Synchronous auth-generation fence for the gap around Firebase sign-out. */
 export function setNativeLifecycleAuthOwner(ownerUserId: string | null): void {
+  const ownerChanged = currentAuthOwnerUserId !== ownerUserId;
+  const suspensionCleared =
+    ownerUserId !== null && suspendedOwners.delete(ownerUserId);
+  if (ownerChanged || suspensionCleared) authLifecycleGeneration += 1;
   currentAuthOwnerUserId = ownerUserId;
   if (ownerUserId === null) {
     suspendedOwners.clear();
-  } else {
-    suspendedOwners.delete(ownerUserId);
   }
 }
 
 export function suspendNativeLifecycleOwner(ownerUserId: string): void {
+  authLifecycleGeneration += 1;
   suspendedOwners.add(ownerUserId);
 }
 
 export function resumeNativeLifecycleOwner(ownerUserId: string): void {
+  authLifecycleGeneration += 1;
   suspendedOwners.delete(ownerUserId);
+}
+
+export function captureNativeLifecycleFence(
+  ownerUserId: string | null,
+): NativeLifecycleFence | null {
+  if (
+    currentAuthOwnerUserId !== ownerUserId ||
+    (ownerUserId !== null && suspendedOwners.has(ownerUserId))
+  ) {
+    return null;
+  }
+  return { ownerUserId, generation: authLifecycleGeneration };
+}
+
+export function isNativeLifecycleFenceCurrent(
+  fence: NativeLifecycleFence,
+): boolean {
+  return (
+    fence.generation === authLifecycleGeneration &&
+    fence.ownerUserId === currentAuthOwnerUserId &&
+    (fence.ownerUserId === null || !suspendedOwners.has(fence.ownerUserId))
+  );
 }
 
 export function isNativeLifecycleOwnerCurrent(ownerUserId: string): boolean {

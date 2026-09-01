@@ -141,6 +141,10 @@ export async function runReminderReconciliation<Snapshot>(
         if (!(await operation.isCurrent())) return false;
         try {
           await operation.restore(snapshot);
+          if (!(await operation.isCurrent())) {
+            await cleanupToEmpty();
+            return false;
+          }
           restored = true;
           break;
         } catch {
@@ -150,10 +154,12 @@ export async function runReminderReconciliation<Snapshot>(
       if (!restored) return false;
     }
     const restoredIds = await listOwnedIdentifiers();
+    if (!(await operation.isCurrent())) {
+      await cleanupToEmpty();
+      return false;
+    }
     return (
-      restoredIds !== null &&
-      sameIdentifierMultiset(restoredIds, previousIds) &&
-      (await operation.isCurrent())
+      restoredIds !== null && sameIdentifierMultiset(restoredIds, previousIds)
     );
   };
 
@@ -208,10 +214,10 @@ export async function runReminderReconciliation<Snapshot>(
     if (!(await operation.isCurrent())) return "stale";
     if (attempt + 1 === MAX_NATIVE_ATTEMPTS) {
       await restorePrevious();
-      return "failed";
+      return (await operation.isCurrent()) ? "failed" : "stale";
     }
   }
 
   await restorePrevious();
-  return "failed";
+  return (await operation.isCurrent()) ? "failed" : "stale";
 }

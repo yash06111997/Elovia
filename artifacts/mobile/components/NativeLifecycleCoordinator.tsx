@@ -19,8 +19,9 @@ import { onDataRestored } from "@/lib/syncEvents";
 import { reportClientError } from "@/lib/telemetry";
 import { runNativeReconciliationWithRetry } from "@/lib/nativeReconciliationRetry";
 import {
+  captureNativeLifecycleFence,
   clearNativeAccountState,
-  isNativeLifecycleOwnerCurrent,
+  isNativeLifecycleFenceCurrent,
   reconcileNativeAccountState,
 } from "@/lib/nativeLifecycleCleanup";
 
@@ -118,17 +119,22 @@ export function NativeLifecycleCoordinator() {
     }
 
     const reconcileNativeState = async () => {
+      const lifecycleFence = captureNativeLifecycleFence(userId);
+      if (!lifecycleFence) return false;
       const reconciled = await reconcileNativeAccountState({
         ownerUserId: userId,
         isCurrent: () =>
           active &&
           generation.current === run &&
-          isNativeLifecycleOwnerCurrent(userId),
+          isNativeLifecycleFenceCurrent(lifecycleFence),
         cancelReminders: cancelAllReminders,
         stopGeofences: stopAllGeofences,
         reconcileReminders: () =>
-          reconcileReminderSchedule({ expectedUserId: userId }),
-        reconcileGeofences: () => reconcileGeofences(userId),
+          reconcileReminderSchedule({
+            expectedUserId: userId,
+            lifecycleFence,
+          }),
+        reconcileGeofences: () => reconcileGeofences(userId, lifecycleFence),
       });
       if (!reconciled && active && generation.current === run) {
         reportLifecycleFailure("NativeOwnerReconciliationError");

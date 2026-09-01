@@ -8,7 +8,9 @@ import {
   type PushCleanupIntent,
 } from "./pushCleanup";
 import {
+  beginPushRegistrationIntent,
   hasVerifiedServerDetachment,
+  isVerifiedPushMutationResponse,
   persistPushOwnershipOrCompensate,
   parsePersistedPushRegistrationState,
   planPushServerCleanup,
@@ -20,6 +22,11 @@ import {
   type PushLogoutDetachmentOutcome,
   type PushOwnership,
 } from "./pushOwnership";
+import {
+  captureNativeLifecycleFence,
+  isNativeLifecycleFenceCurrent,
+  type NativeLifecycleFence,
+} from "./nativeLifecycleCleanup";
 
 /**
  * Expo push registration.
@@ -60,10 +67,12 @@ interface AuthSession {
   userId: string;
   authToken: string;
   authUser: User;
+  lifecycleFence: NativeLifecycleFence | null;
 }
 
 async function getAuthSession(
   expectedUserId?: string,
+  requireLifecycleFence = true,
 ): Promise<AuthSession | null> {
   try {
     const auth = await getFirebaseAuth();
@@ -71,15 +80,43 @@ async function getAuthSession(
     if (!current || (expectedUserId && current.uid !== expectedUserId)) {
       return null;
     }
+    const lifecycleFence = captureNativeLifecycleFence(current.uid);
+    if (requireLifecycleFence && !lifecycleFence) return null;
     const authToken = await current.getIdToken();
-    if (!authToken || auth.currentUser !== current) return null;
-    return { userId: current.uid, authToken, authUser: current };
+    if (
+      !authToken ||
+      auth.currentUser !== current ||
+      (requireLifecycleFence &&
+        (!lifecycleFence || !isNativeLifecycleFenceCurrent(lifecycleFence)))
+    ) {
+      return null;
+    }
+    return {
+      userId: current.uid,
+      authToken,
+      authUser: current,
+      lifecycleFence,
+    };
   } catch {
     return null;
   }
 }
 
 async function sessionStillCurrent(session: AuthSession): Promise<boolean> {
+  try {
+    return (
+      (await getFirebaseAuth())?.currentUser === session.authUser &&
+      session.lifecycleFence !== null &&
+      isNativeLifecycleFenceCurrent(session.lifecycleFence)
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function firebaseSessionStillCurrent(
+  session: AuthSession,
+): Promise<boolean> {
   try {
     return (await getFirebaseAuth())?.currentUser === session.authUser;
   } catch {
@@ -188,7 +225,9 @@ async function postPushOwnership(
       ),
       signal: controller.signal,
     });
-    return response.ok;
+    if (!response.ok) return false;
+    const result: unknown = await response.json().catch(() => null);
+    return isVerifiedPushMutationResponse(path, result);
   } finally {
     clearTimeout(timeout);
   }
@@ -243,6 +282,44 @@ async function quarantineUnresolvedOwnership(
   await disableNativePushDelivery();
 }
 
+async function finalizeVerifiedServerDetachment(
+  ownership: PushOwnership,
+): Promise<boolean> {
+  const state = await readPersistedPushState().catch(() => ({
+    status: "unknown" as const,
+  }));
+  const stateMatches =
+    (state.status === "owned" || state.status === "registering") &&
+    state.ownership.userId === ownership.userId &&
+    state.ownership.token === ownership.token;
+  const detachedDurably =
+    state.status === "detached" ||
+    (stateMatches && (await persistVerifiedDetachedState()));
+  if (detachedDurably) {
+    await pushCleanup.remove(ownership);
+    return true;
+  }
+  await quarantineUnresolvedOwnership(ownership);
+  return false;
+}
+
+async function compensateStaleRegistration(
+  session: AuthSession,
+  ownership: PushOwnership,
+): Promise<boolean> {
+  const compensated = await postPushOwnership(
+    "unregister",
+    session,
+    ownership.token,
+  );
+  if (!compensated) {
+    await quarantineUnresolvedOwnership(ownership);
+    return false;
+  }
+  await finalizeVerifiedServerDetachment(ownership);
+  return true;
+}
+
 async function retryPendingCleanup(session: AuthSession): Promise<{
   complete: boolean;
   intents: readonly PushCleanupIntent[] | null;
@@ -273,7 +350,7 @@ async function disableCachedOwnershipForCurrentUser(
 ): Promise<void> {
   const state = await readPersistedPushState();
   const ownership =
-    state.status === "owned"
+    state.status === "owned" || state.status === "registering"
       ? state.ownership
       : state.status === "legacy-token" && expectedUserId
         ? { userId: expectedUserId, token: state.token }
@@ -295,7 +372,8 @@ async function preparePushLogout(expectedUserId: string): Promise<boolean> {
   try {
     const state = await readPersistedPushState();
     const ownership =
-      state.status === "owned" && state.ownership.userId === expectedUserId
+      (state.status === "owned" || state.status === "registering") &&
+      state.ownership.userId === expectedUserId
         ? state.ownership
         : state.status === "legacy-token"
           ? { userId: expectedUserId, token: state.token }
@@ -349,13 +427,22 @@ async function registerPushOwnership(
     const session = await getAuthSession(expectedUserId);
     if (!session) return { ok: false, reason: "unauthenticated" };
     const cleanup = await retryPendingCleanup(session);
+    if (!(await sessionStillCurrent(session))) {
+      return { ok: false, reason: "unauthenticated" };
+    }
 
     const existing = await N.getPermissionsAsync();
+    if (!(await sessionStillCurrent(session))) {
+      return { ok: false, reason: "unauthenticated" };
+    }
     const granted = await resolvePushPermission(
       existing.granted,
       requestPermission,
       async () => (await N.requestPermissionsAsync()).granted,
     );
+    if (!(await sessionStillCurrent(session))) {
+      return { ok: false, reason: "unauthenticated" };
+    }
     if (!granted) {
       await disableCachedOwnershipForCurrentUser(expectedUserId);
       return { ok: false, reason: "denied" };
@@ -363,13 +450,27 @@ async function registerPushOwnership(
 
     const projectId = getProjectId();
     if (!projectId) return { ok: false, reason: "no_project_id" };
+    if (!(await sessionStillCurrent(session))) {
+      return { ok: false, reason: "unauthenticated" };
+    }
 
     const { data: token } = await N.getExpoPushTokenAsync({ projectId });
     if (!token) return { ok: false, reason: "unsupported" };
+    if (!(await sessionStillCurrent(session))) {
+      return { ok: false, reason: "unauthenticated" };
+    }
 
     const persistedState = await readPersistedPushState();
+    if (!(await sessionStillCurrent(session))) {
+      return { ok: false, reason: "unauthenticated" };
+    }
     const cached =
       persistedState.status === "owned" ? persistedState.ownership : null;
+    const previousUnsettledOwnership =
+      persistedState.status === "owned" ||
+      persistedState.status === "registering"
+        ? persistedState.ownership
+        : null;
     // A crash can leave both the cache and its write-ahead cleanup intent.
     // Treat that token as unregistered even if cleanup failed: registration is
     // an idempotent upsert and restores the desired current-account state.
@@ -381,6 +482,25 @@ async function registerPushOwnership(
       session.userId,
       token,
     );
+    const registeringOwnership: PushOwnership = {
+      userId: session.userId,
+      token,
+    };
+    if (transition.action !== "noop") {
+      const intentDurable = await beginPushRegistrationIntent({
+        ownership: registeringOwnership,
+        previousOwnership: previousUnsettledOwnership,
+        preserve: (ownership) => pushCleanup.record(ownership),
+        persistRegistering: (serialized) =>
+          AsyncStorage.setItem(TOKEN_CACHE_KEY, serialized),
+      });
+      if (!intentDurable) {
+        return { ok: false, reason: "network" };
+      }
+      if (!(await sessionStillCurrent(session))) {
+        return { ok: false, reason: "unauthenticated" };
+      }
+    }
     const mutation = await runPushOwnershipMutation({
       session,
       token,
@@ -395,7 +515,9 @@ async function registerPushOwnership(
       return { ok: false, reason: "network" };
     }
     if (mutation.status === "stale") {
-      if (!mutation.compensated) {
+      if (mutation.compensated && transition.action !== "noop") {
+        await finalizeVerifiedServerDetachment(registeringOwnership);
+      } else if (!mutation.compensated) {
         await quarantineUnresolvedOwnership({
           userId: session.userId,
           token,
@@ -409,17 +531,10 @@ async function registerPushOwnership(
 
     if (mutation.status === "registered") {
       if (!(await sessionStillCurrent(session))) {
-        const compensated = await postPushOwnership(
-          "unregister",
+        const compensated = await compensateStaleRegistration(
           session,
-          token,
+          registeringOwnership,
         );
-        if (!compensated) {
-          await quarantineUnresolvedOwnership({
-            userId: session.userId,
-            token,
-          });
-        }
         return {
           ok: false,
           reason: compensated ? "unauthenticated" : "network",
@@ -429,6 +544,16 @@ async function registerPushOwnership(
       const serializedOwnership =
         serializeOwnedPushRegistrationState(ownership);
       await pushCleanup.record(ownership);
+      if (!(await sessionStillCurrent(session))) {
+        const compensated = await compensateStaleRegistration(
+          session,
+          ownership,
+        );
+        return {
+          ok: false,
+          reason: compensated ? "unauthenticated" : "network",
+        };
+      }
       const persistence = await persistPushOwnershipOrCompensate({
         session,
         ownership,
@@ -440,7 +565,7 @@ async function registerPushOwnership(
       });
       if (persistence.status === "persistence-failed") {
         if (persistence.compensated) {
-          await pushCleanup.remove(ownership);
+          await finalizeVerifiedServerDetachment(ownership);
         } else {
           await quarantineUnresolvedOwnership(ownership);
         }
@@ -450,29 +575,38 @@ async function registerPushOwnership(
         };
       }
       if (!(await sessionStillCurrent(session))) {
-        const compensated = await postPushOwnership(
-          "unregister",
+        const compensated = await compensateStaleRegistration(
           session,
-          token,
+          ownership,
         );
-        if (
-          (await AsyncStorage.getItem(TOKEN_CACHE_KEY)) === serializedOwnership
-        ) {
-          if (compensated) await persistVerifiedDetachedState();
-        }
-        if (compensated) {
-          await pushCleanup.remove(ownership);
-        } else {
-          await quarantineUnresolvedOwnership(ownership);
-        }
         return {
           ok: false,
           reason: compensated ? "unauthenticated" : "network",
         };
       }
       await pushCleanup.removeToken(token);
+      if (!(await sessionStillCurrent(session))) {
+        const compensated = await compensateStaleRegistration(
+          session,
+          ownership,
+        );
+        return {
+          ok: false,
+          reason: compensated ? "unauthenticated" : "network",
+        };
+      }
       if (cached?.userId === session.userId && cached.token !== token) {
         await pushCleanup.removeToken(cached.token);
+        if (!(await sessionStillCurrent(session))) {
+          const compensated = await compensateStaleRegistration(
+            session,
+            ownership,
+          );
+          return {
+            ok: false,
+            reason: compensated ? "unauthenticated" : "network",
+          };
+        }
       }
     } else if (
       mutation.status === "noop" &&
@@ -489,6 +623,19 @@ async function registerPushOwnership(
       }
     }
     const remainingCleanup = await pushCleanup.read();
+    if (!(await sessionStillCurrent(session))) {
+      if (mutation.status === "registered") {
+        const compensated = await compensateStaleRegistration(
+          session,
+          registeringOwnership,
+        );
+        return {
+          ok: false,
+          reason: compensated ? "unauthenticated" : "network",
+        };
+      }
+      return { ok: false, reason: "unauthenticated" };
+    }
     if (
       remainingCleanup === null ||
       remainingCleanup.some((intent) => intent.userId === session.userId)
@@ -551,11 +698,11 @@ async function serverPushCleanupForLogout(
       return { serverDetached: false, cleanupPending: true };
     }
 
-    const session = await getAuthSession(expectedUserId);
+    const session = await getAuthSession(expectedUserId, false);
     if (!session) return { serverDetached: false, cleanupPending: true };
     let cleanupPending = pending === null;
     const primaryOwnership =
-      state.status === "owned"
+      state.status === "owned" || state.status === "registering"
         ? state.ownership
         : state.status === "legacy-token"
           ? { userId: expectedUserId, token: state.token }
@@ -565,6 +712,9 @@ async function serverPushCleanupForLogout(
         !(await pushCleanup.record(primaryOwnership)) || cleanupPending;
     }
     for (const ownership of plan.candidates) {
+      if (!(await firebaseSessionStillCurrent(session))) {
+        return { serverDetached: false, cleanupPending: true };
+      }
       let detached = false;
       for (let attempt = 0; attempt < 2 && !detached; attempt += 1) {
         try {

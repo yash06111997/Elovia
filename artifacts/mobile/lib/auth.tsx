@@ -22,22 +22,44 @@ import {
   getAccountStorageScopeKey,
   setAccountStorageAuthScope,
 } from "./accountSyncStorage";
-import { unregisterFromPush } from "./push";
+import { reconcilePushRegistration, unregisterFromPush } from "./push";
 import {
   canCompletePushLogout,
   runPushSafeSignOut,
   type PushLogoutDetachmentOutcome,
 } from "./pushOwnership";
-import { cancelAllReminders } from "./notifications";
-import { stopAllGeofences } from "./geofence";
+import { cancelAllReminders, reconcileReminderSchedule } from "./notifications";
+import { reconcileGeofences, stopAllGeofences } from "./geofence";
 import {
   canCompleteNativeStateLogout,
+  captureNativeLifecycleFence,
   clearNativeAccountState,
+  isNativeLifecycleFenceCurrent,
+  reconcileNativeAccountState,
   resumeNativeLifecycleOwner,
   setNativeLifecycleAuthOwner,
   suspendNativeLifecycleOwner,
   type NativeCleanupOutcome,
 } from "./nativeLifecycleCleanup";
+
+function resumeLifecycleAfterBlockedLogout(ownerUserId: string): void {
+  resumeNativeLifecycleOwner(ownerUserId);
+  const lifecycleFence = captureNativeLifecycleFence(ownerUserId);
+  if (!lifecycleFence) return;
+  void reconcilePushRegistration(ownerUserId);
+  void reconcileNativeAccountState({
+    ownerUserId,
+    isCurrent: () => isNativeLifecycleFenceCurrent(lifecycleFence),
+    cancelReminders: cancelAllReminders,
+    stopGeofences: stopAllGeofences,
+    reconcileReminders: () =>
+      reconcileReminderSchedule({
+        expectedUserId: ownerUserId,
+        lifecycleFence,
+      }),
+    reconcileGeofences: () => reconcileGeofences(ownerUserId, lifecycleFence),
+  });
+}
 
 function generateUUID(): string {
   return Crypto.randomUUID();
@@ -306,7 +328,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           Alert.alert("Sign-out needs a retry", message);
         }
         if (suspendedOwnerUserId) {
-          resumeNativeLifecycleOwner(suspendedOwnerUserId);
+          resumeLifecycleAfterBlockedLogout(suspendedOwnerUserId);
           suspendedOwnerUserId = null;
         }
         return;
@@ -324,7 +346,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     } catch (err) {
       if (suspendedOwnerUserId) {
-        resumeNativeLifecycleOwner(suspendedOwnerUserId);
+        resumeLifecycleAfterBlockedLogout(suspendedOwnerUserId);
       }
       console.error("Logout error:", err);
       const msg = getErrorMessage(err);

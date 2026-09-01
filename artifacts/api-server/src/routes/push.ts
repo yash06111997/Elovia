@@ -63,7 +63,11 @@ router.post(
     }
 
     try {
-      await unregisterPushToken(req.user!.id, token);
+      const unregistered = await unregisterPushToken(req.user!.id, token);
+      if (!unregistered) {
+        res.status(404).json({ unregistered: false, code: "not_found" });
+        return;
+      }
       res.json({ unregistered: true });
     } catch (err) {
       req.log.error(

@@ -73,13 +73,15 @@ export async function registerPushToken(params: {
 export async function unregisterPushToken(
   userId: string,
   token: string,
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const affected = await db
     .update(pushTokensTable)
     .set({ enabled: false, updatedAt: new Date() })
     .where(
       and(eq(pushTokensTable.userId, userId), eq(pushTokensTable.token, token)),
-    );
+    )
+    .returning({ id: pushTokensTable.id });
+  return affected.length > 0;
 }
 
 /** Live tokens for a user: enabled and not marked dead by Expo. */

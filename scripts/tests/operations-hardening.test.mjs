@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  beginPushRegistrationIntent,
   canCompletePushLogout,
   hasVerifiedServerDetachment,
+  isVerifiedPushMutationResponse,
   parseCachedPushOwnership,
   parsePersistedPushRegistrationState,
   persistPushOwnershipOrCompensate,
@@ -14,6 +16,7 @@ import {
   runPushOwnershipMutation,
   serializeDetachedPushRegistrationState,
   serializeOwnedPushRegistrationState,
+  serializeRegisteringPushRegistrationState,
 } from "../../artifacts/mobile/lib/pushOwnership.ts";
 import {
   PushCleanupStore,
@@ -39,6 +42,8 @@ import {
 import { runNativeReconciliationWithRetry } from "../../artifacts/mobile/lib/nativeReconciliationRetry.ts";
 import {
   canCompleteNativeStateLogout,
+  captureNativeLifecycleFence,
+  isNativeLifecycleFenceCurrent,
   isNativeLifecycleOwnerCurrent,
   NativeLifecycleStateStore,
   resumeNativeLifecycleOwner,
@@ -228,6 +233,14 @@ test("push logout requires explicit versioned detachment evidence across upgrade
     ),
     { status: "owned", ownership, versioned: true },
   );
+  const registeringRaw = serializeRegisteringPushRegistrationState(ownership);
+  const registering = parsePersistedPushRegistrationState(registeringRaw);
+  assert.deepEqual(registering, { status: "registering", ownership });
+  assert.deepEqual(planPushServerCleanup(registering, "user-a", []), {
+    alreadyDetached: false,
+    ownershipConflict: false,
+    candidates: [ownership],
+  });
 
   const legacy = parsePersistedPushRegistrationState(
     "ExponentPushToken[legacy]",
@@ -287,8 +300,95 @@ test("push logout requires explicit versioned detachment evidence across upgrade
     ownershipConflict: false,
     candidates: [],
   });
+  assert.deepEqual(planPushServerCleanup(detached, "user-a", [ownership]), {
+    alreadyDetached: false,
+    ownershipConflict: false,
+    candidates: [ownership],
+  });
   assert.equal(hasVerifiedServerDetachment(detached, false), true);
   assert.equal(hasVerifiedServerDetachment(legacy, true), true);
+  assert.equal(
+    isVerifiedPushMutationResponse("unregister", { unregistered: false }),
+    false,
+    "a legacy zero-row response is not detachment evidence",
+  );
+  assert.equal(
+    isVerifiedPushMutationResponse("unregister", { unregistered: true }),
+    true,
+  );
+  assert.equal(
+    isVerifiedPushMutationResponse("register", { registered: true }),
+    true,
+  );
+});
+
+test("push registration write-ahead intent survives every persistence boundary", async () => {
+  const ownership = {
+    userId: "user-a",
+    token: "ExponentPushToken[crash-window]",
+  };
+  const previous = {
+    userId: "user-a",
+    token: "ExponentPushToken[previous]",
+  };
+  const preserved = [];
+  let raw = null;
+  assert.equal(
+    await beginPushRegistrationIntent({
+      ownership,
+      previousOwnership: previous,
+      async preserve(candidate) {
+        preserved.push(candidate);
+        return false;
+      },
+      async persistRegistering() {
+        throw new Error("must not overwrite an unpreserved previous owner");
+      },
+    }),
+    false,
+  );
+  assert.equal(raw, null);
+
+  assert.equal(
+    await beginPushRegistrationIntent({
+      ownership,
+      previousOwnership: previous,
+      async preserve(candidate) {
+        preserved.push(candidate);
+        return true;
+      },
+      async persistRegistering() {
+        throw new Error("injected registering-state write failure");
+      },
+    }),
+    false,
+  );
+  assert.deepEqual(preserved.at(-1), previous);
+
+  assert.equal(
+    await beginPushRegistrationIntent({
+      ownership,
+      previousOwnership: previous,
+      async preserve(candidate) {
+        if (candidate.token === ownership.token) {
+          throw new Error("injected redundant journal failure");
+        }
+        return true;
+      },
+      async persistRegistering(serialized) {
+        raw = serialized;
+      },
+    }),
+    true,
+    "versioned registering state alone closes the post-write crash window",
+  );
+  const registering = parsePersistedPushRegistrationState(raw);
+  assert.deepEqual(registering, { status: "registering", ownership });
+  assert.deepEqual(planPushServerCleanup(registering, "user-a", []), {
+    alreadyDetached: false,
+    ownershipConflict: false,
+    candidates: [ownership],
+  });
 });
 
 test("stale push registration compensates with the captured account credential before the next retry", async () => {
@@ -348,6 +448,97 @@ test("stale push registration compensates with the captured account credential b
     null,
     "a is not restored when b registration fails",
   );
+});
+
+test("logout suspension compensates a registration response already in flight", async () => {
+  setNativeLifecycleAuthOwner("user-a");
+  const lifecycleFence = captureNativeLifecycleFence("user-a");
+  assert.ok(lifecycleFence);
+  const responseGate = deferred();
+  let serverOwner = null;
+  const calls = [];
+  const operation = runPushOwnershipMutation({
+    session: {
+      userId: "user-a",
+      authToken: "captured-a",
+      lifecycleFence,
+    },
+    token: "ExponentPushToken[queued-logout]",
+    transition: { action: "register" },
+    isSessionCurrent: async (session) =>
+      isNativeLifecycleFenceCurrent(session.lifecycleFence),
+    async register(session, token) {
+      calls.push(["register", session.authToken]);
+      await responseGate.promise;
+      serverOwner = { userId: session.userId, token };
+      return true;
+    },
+    async unregister(session, token) {
+      calls.push(["compensate", session.authToken]);
+      if (
+        serverOwner?.userId === session.userId &&
+        serverOwner.token === token
+      ) {
+        serverOwner = null;
+        return true;
+      }
+      return false;
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  suspendNativeLifecycleOwner("user-a");
+  responseGate.resolve();
+  assert.deepEqual(await operation, { status: "stale", compensated: true });
+  assert.equal(serverOwner, null);
+  assert.deepEqual(calls, [
+    ["register", "captured-a"],
+    ["compensate", "captured-a"],
+  ]);
+  resumeNativeLifecycleOwner("user-a");
+  setNativeLifecycleAuthOwner(null);
+});
+
+test("a registration queued behind cleanup cannot reattach during suspended logout", async () => {
+  setNativeLifecycleAuthOwner("user-a");
+  const cleanupGate = deferred();
+  let queue = Promise.resolve();
+  const serialize = (operation) => {
+    const result = queue.then(operation);
+    queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  };
+  const cleanup = serialize(() => cleanupGate.promise);
+  let registerCalls = 0;
+  const queuedRegistration = serialize(async () => {
+    const fence = captureNativeLifecycleFence("user-a");
+    if (!fence) return "suspended";
+    const result = await runPushOwnershipMutation({
+      session: { lifecycleFence: fence },
+      token: "ExponentPushToken[queued-after-cleanup]",
+      transition: { action: "register" },
+      isSessionCurrent: async ({ lifecycleFence }) =>
+        isNativeLifecycleFenceCurrent(lifecycleFence),
+      async register() {
+        registerCalls += 1;
+        return true;
+      },
+      async unregister() {
+        return true;
+      },
+    });
+    return result.status;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  suspendNativeLifecycleOwner("user-a");
+  cleanupGate.resolve();
+  await cleanup;
+  assert.equal(await queuedRegistration, "suspended");
+  assert.equal(registerCalls, 0);
+  resumeNativeLifecycleOwner("user-a");
+  setNativeLifecycleAuthOwner(null);
 });
 
 test("push registration compensates immediately when ownership persistence fails", async () => {
@@ -703,10 +894,18 @@ test("account transition clears the previous native owner before rebuilding", as
 
 test("logout suspension closes the auth-to-native transition race", () => {
   setNativeLifecycleAuthOwner("user-a");
+  const beforeLogout = captureNativeLifecycleFence("user-a");
+  assert.ok(beforeLogout);
   assert.equal(isNativeLifecycleOwnerCurrent("user-a"), true);
   suspendNativeLifecycleOwner("user-a");
+  assert.equal(isNativeLifecycleFenceCurrent(beforeLogout), false);
   assert.equal(isNativeLifecycleOwnerCurrent("user-a"), false);
   resumeNativeLifecycleOwner("user-a");
+  assert.equal(
+    isNativeLifecycleFenceCurrent(beforeLogout),
+    false,
+    "resume cannot revive an ABA-stale operation",
+  );
   assert.equal(isNativeLifecycleOwnerCurrent("user-a"), true);
 
   setNativeLifecycleAuthOwner("user-b");
@@ -714,6 +913,101 @@ test("logout suspension closes the auth-to-native transition race", () => {
   assert.equal(isNativeLifecycleOwnerCurrent("user-b"), true);
   setNativeLifecycleAuthOwner(null);
   assert.equal(isNativeLifecycleOwnerCurrent("user-b"), false);
+});
+
+test("direct reminder rebuild compensates when logout suspends its generation", async () => {
+  setNativeLifecycleAuthOwner("user-a");
+  const lifecycleFence = captureNativeLifecycleFence("user-a");
+  assert.ok(lifecycleFence);
+  const scheduleGate = deferred();
+  let owned = [];
+  const reconciliation = runReminderReconciliation({
+    isCurrent: async () => isNativeLifecycleFenceCurrent(lifecycleFence),
+    listOwned: async () => owned,
+    identifier: (snapshot) => snapshot.identifier,
+    canRestore: () => true,
+    async cancel(identifier) {
+      owned = owned.filter((item) => item.identifier !== identifier);
+    },
+    permissionGranted: async () => true,
+    scheduleCount: 1,
+    async schedule() {
+      await scheduleGate.promise;
+      owned.push({ identifier: "direct-reminder" });
+      return "direct-reminder";
+    },
+    restore: async (snapshot) => snapshot.identifier,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  suspendNativeLifecycleOwner("user-a");
+  scheduleGate.resolve();
+  assert.equal(await reconciliation, "stale");
+  assert.deepEqual(owned, [], "the crossed schedule is cancelled");
+  resumeNativeLifecycleOwner("user-a");
+  setNativeLifecycleAuthOwner(null);
+});
+
+test("reminder rollback cannot recreate a previous schedule across suspension", async () => {
+  setNativeLifecycleAuthOwner("user-a");
+  const lifecycleFence = captureNativeLifecycleFence("user-a");
+  assert.ok(lifecycleFence);
+  const restoreGate = deferred();
+  let owned = [{ identifier: "previous-reminder" }];
+  const reconciliation = runReminderReconciliation({
+    isCurrent: async () => isNativeLifecycleFenceCurrent(lifecycleFence),
+    listOwned: async () => owned,
+    identifier: (snapshot) => snapshot.identifier,
+    canRestore: () => true,
+    async cancel(identifier) {
+      owned = owned.filter((item) => item.identifier !== identifier);
+    },
+    permissionGranted: async () => true,
+    scheduleCount: 1,
+    async schedule() {
+      throw new Error("injected desired-schedule failure");
+    },
+    async restore(snapshot) {
+      await restoreGate.promise;
+      owned.push(snapshot);
+      return snapshot.identifier;
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  suspendNativeLifecycleOwner("user-a");
+  restoreGate.resolve();
+  assert.equal(await reconciliation, "stale");
+  assert.deepEqual(owned, [], "the crossed rollback schedule is cancelled");
+  resumeNativeLifecycleOwner("user-a");
+  setNativeLifecycleAuthOwner(null);
+});
+
+test("direct places sync compensates a geofence start crossing suspension", async () => {
+  setNativeLifecycleAuthOwner("user-a");
+  const lifecycleFence = captureNativeLifecycleFence("user-a");
+  assert.ok(lifecycleFence);
+  const startGate = deferred();
+  let stops = 0;
+  let starts = 0;
+  const reconciliation = runGeofenceReconciliation({
+    isCurrent: async () => isNativeLifecycleFenceCurrent(lifecycleFence),
+    async stop() {
+      stops += 1;
+    },
+    permissionGranted: async () => true,
+    hasEnabledPlaces: true,
+    async start() {
+      starts += 1;
+      await startGate.promise;
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  suspendNativeLifecycleOwner("user-a");
+  startGate.resolve();
+  assert.equal(await reconciliation, "stale");
+  assert.equal(starts, 1);
+  assert.equal(stops, 2, "initial stop plus stale-start compensation");
+  resumeNativeLifecycleOwner("user-a");
+  setNativeLifecycleAuthOwner(null);
 });
 
 test("lifecycle push permission observation cannot invoke the optional prompt", async () => {
@@ -1239,27 +1533,38 @@ test("authentication recovery and native lifecycle are connected without launch 
   assert.match(auth, /!canCompleteNativeStateLogout\(nativeCleanup\)/);
   assert.match(auth, /clearNativeAccountState/);
   assert.match(auth, /suspendNativeLifecycleOwner/);
+  assert.match(auth, /resumeLifecycleAfterBlockedLogout/);
   assert.match(auth, /setNativeLifecycleAuthOwner\(null\)/);
   assert.match(auth, /runPushSafeSignOut/);
   assert.match(push, /preparePushLogout/);
   assert.match(push, /nativeDetached/);
+  assert.match(push, /beginPushRegistrationIntent/);
+  assert.match(push, /sessionStillCurrent/);
   assert.doesNotMatch(auth, /Promise\.allSettled/);
   assert.match(
     notifications,
     /remaining\.some\(isEloviaReminderNotification\)/,
   );
+  assert.match(notifications, /captureNativeLifecycleFence/);
+  assert.match(notifications, /isNativeLifecycleFenceCurrent/);
   assert.match(geofence, /runGeofenceReconciliation/);
+  assert.match(geofence, /captureNativeLifecycleFence/);
+  assert.match(geofence, /isNativeLifecycleFenceCurrent/);
   assert.match(geofence, /hasStartedGeofencingAsync/);
   assert.match(geofence, /emitPendingArrivalRecorded/);
   assert.match(geofenceTask, /eloviaGeofence/);
   assert.match(geofenceTask, /ELOVIA_GEOFENCE_OWNER_KEY/);
 
   assert.match(pushRoute, /unregisterPushToken\(req\.user!\.id, token\)/);
+  assert.match(pushRoute, /res\.status\(404\)/);
+  assert.match(pushRoute, /unregistered: false/);
   assert.doesNotMatch(pushRoute, /req\.log\.error\(\{\s*err\s*\}/);
   assert.match(pushRoute, /errorType: errorType\(err\)/);
   assert.match(
     pushLib,
     /and\([\s\S]*eq\(pushTokensTable\.userId, userId\)[\s\S]*eq\(pushTokensTable\.token, token\)/,
   );
+  assert.match(pushLib, /\.returning\(\{ id: pushTokensTable\.id \}\)/);
+  assert.match(pushLib, /return affected\.length > 0/);
   assert.match(pushLib, /eloviaPushOwnerUserId: userId/);
 });

@@ -4,6 +4,11 @@ import { shouldPresentNotification } from "./notificationPresentation";
 import { ELOVIA_REMINDER_ACCOUNT_KEY } from "./pushCleanup";
 import { runReminderReconciliation } from "./reminderReconciliation";
 import {
+  captureNativeLifecycleFence,
+  isNativeLifecycleFenceCurrent,
+  type NativeLifecycleFence,
+} from "./nativeLifecycleCleanup";
+import {
   buildReminderSchedule,
   DEFAULT_REMINDERS,
   ELOVIA_REMINDER_OWNER,
@@ -260,15 +265,26 @@ export async function rescheduleAllReminders(
 
   try {
     const accountStorage = captureAccountStorageSession();
+    const lifecycleFence = captureNativeLifecycleFence(
+      accountStorage.ownerToken.uid,
+    );
+    if (!lifecycleFence) return false;
     const normalized = normalizeReminderPreferences(prefs);
     await accountStorage.setItem(PREFS_KEY, JSON.stringify(normalized));
+    if (!isNativeLifecycleFenceCurrent(lifecycleFence)) return false;
     if (normalized.enabled && !(await requestNotificationPermission())) {
       return false;
     }
-    if (!(await accountStorage.isCurrent())) return false;
+    if (
+      !(await accountStorage.isCurrent()) ||
+      !isNativeLifecycleFenceCurrent(lifecycleFence)
+    ) {
+      return false;
+    }
     return reconcileReminderSchedule({
       expectedUserId: accountStorage.ownerToken.uid,
       preferences: normalized,
+      lifecycleFence,
     });
   } catch {
     return false;
@@ -279,6 +295,8 @@ export interface ReconcileReminderScheduleOptions {
   /** The authenticated owner that initiated this lifecycle run. */
   expectedUserId?: string | null;
   preferences?: ReminderPreferences;
+  /** Preserve the initiating generation across an explicit settings flow. */
+  lifecycleFence?: NativeLifecycleFence;
 }
 
 /** Rebuild enabled reminders without ever prompting for optional permission. */
@@ -297,6 +315,12 @@ export async function reconcileReminderSchedule(
       ) {
         return false;
       }
+      const lifecycleFence =
+        options.lifecycleFence ??
+        captureNativeLifecycleFence(accountStorage.ownerToken.uid);
+      if (!lifecycleFence || !isNativeLifecycleFenceCurrent(lifecycleFence)) {
+        return false;
+      }
       const stored = options.preferences
         ? null
         : await accountStorage.getItem(PREFS_KEY);
@@ -305,12 +329,21 @@ export async function reconcileReminderSchedule(
           (stored ? JSON.parse(stored) : DEFAULT_REMINDERS),
       );
       const schedule = prefs.enabled ? buildReminderSchedule(prefs) : [];
+      if (
+        !(await accountStorage.isCurrent()) ||
+        !isNativeLifecycleFenceCurrent(lifecycleFence)
+      ) {
+        return false;
+      }
       if (schedule.length > 0) {
         await ensureAndroidChannel(N);
       }
+      if (!isNativeLifecycleFenceCurrent(lifecycleFence)) return false;
 
       const outcome = await runReminderReconciliation({
-        isCurrent: () => accountStorage.isCurrent(),
+        isCurrent: async () =>
+          (await accountStorage.isCurrent()) &&
+          isNativeLifecycleFenceCurrent(lifecycleFence),
         async listOwned() {
           const scheduled = await N.getAllScheduledNotificationsAsync();
           return scheduled.filter(isEloviaReminderNotification);
@@ -394,7 +427,12 @@ export async function countScheduledReminders(): Promise<number> {
 export async function suppressTodayStreakReminder(): Promise<void> {
   try {
     const accountStorage = captureAccountStorageSession();
+    const lifecycleFence = captureNativeLifecycleFence(
+      accountStorage.ownerToken.uid,
+    );
+    if (!lifecycleFence) return;
     const stored = await accountStorage.getItem(PREFS_KEY);
+    if (!isNativeLifecycleFenceCurrent(lifecycleFence)) return;
     const prefs = normalizeReminderPreferences(
       stored ? JSON.parse(stored) : DEFAULT_REMINDERS,
     );
@@ -403,10 +441,16 @@ export async function suppressTodayStreakReminder(): Promise<void> {
       streakSuppressedOn: localDateKey(new Date()),
     });
     await accountStorage.setItem(PREFS_KEY, JSON.stringify(suppressed));
-    if (!(await accountStorage.isCurrent())) return;
+    if (
+      !(await accountStorage.isCurrent()) ||
+      !isNativeLifecycleFenceCurrent(lifecycleFence)
+    ) {
+      return;
+    }
     await reconcileReminderSchedule({
       expectedUserId: accountStorage.ownerToken.uid,
       preferences: suppressed,
+      lifecycleFence,
     });
   } catch {
     // Best effort.

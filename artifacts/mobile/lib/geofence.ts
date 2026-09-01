@@ -12,6 +12,11 @@ import {
 } from "./pendingArrival";
 import { runGeofenceReconciliation } from "./geofenceReconciliation";
 import { emitPendingArrivalRecorded } from "./pendingArrivalSignal";
+import {
+  captureNativeLifecycleFence,
+  isNativeLifecycleFenceCurrent,
+  type NativeLifecycleFence,
+} from "./nativeLifecycleCleanup";
 
 export type { PendingArrival } from "./pendingArrival";
 
@@ -260,6 +265,7 @@ export async function hasBackgroundPermission(): Promise<boolean> {
  */
 export async function reconcileGeofences(
   expectedUserId?: string | null,
+  initiatingFence?: NativeLifecycleFence,
 ): Promise<boolean> {
   const Location = loadLocation();
   const TaskManager = loadTaskManager();
@@ -274,15 +280,29 @@ export async function reconcileGeofences(
       ) {
         return false;
       }
+      const lifecycleFence =
+        initiatingFence ??
+        captureNativeLifecycleFence(accountStorage.ownerToken.uid);
+      if (!lifecycleFence || !isNativeLifecycleFenceCurrent(lifecycleFence)) {
+        return false;
+      }
       const places = parsePlaces(await accountStorage.getItem(PLACES_KEY))
         .filter((place) => place.enabled)
         .slice(0, MAX_PLACES);
+      if (
+        !(await accountStorage.isCurrent()) ||
+        !isNativeLifecycleFenceCurrent(lifecycleFence)
+      ) {
+        return false;
+      }
 
       const outcome = await runGeofenceReconciliation({
-        isCurrent: () => accountStorage.isCurrent(),
+        isCurrent: async () =>
+          (await accountStorage.isCurrent()) &&
+          isNativeLifecycleFenceCurrent(lifecycleFence),
         async stop() {
-          if (await TaskManager.isTaskRegisteredAsync(GEOFENCE_TASK)) {
-            await Location.stopGeofencingAsync(GEOFENCE_TASK);
+          if (!(await stopGeofencesVerifiedNative(Location, TaskManager))) {
+            throw new Error("Geofence stop could not be verified.");
           }
         },
         hasEnabledPlaces: places.length > 0,
@@ -311,7 +331,11 @@ export async function reconcileGeofences(
 export async function syncGeofences(): Promise<boolean> {
   try {
     const accountStorage = captureAccountStorageSession();
-    return reconcileGeofences(accountStorage.ownerToken.uid);
+    const lifecycleFence = captureNativeLifecycleFence(
+      accountStorage.ownerToken.uid,
+    );
+    if (!lifecycleFence) return false;
+    return reconcileGeofences(accountStorage.ownerToken.uid, lifecycleFence);
   } catch {
     return false;
   }
@@ -334,6 +358,23 @@ async function isGeofenceRegistrationActive(
   }
 }
 
+async function stopGeofencesVerifiedNative(
+  Location: LocationModule,
+  TaskManager: TaskManagerModule,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const active = await isGeofenceRegistrationActive(Location, TaskManager);
+    if (active === false) return true;
+    if (active === null) return false;
+    try {
+      await Location.stopGeofencingAsync(GEOFENCE_TASK);
+    } catch {
+      // Verification is authoritative; retry only while native state remains.
+    }
+  }
+  return (await isGeofenceRegistrationActive(Location, TaskManager)) === false;
+}
+
 export async function stopAllGeofences(): Promise<boolean> {
   const Location = loadLocation();
   const TaskManager = loadTaskManager();
@@ -341,24 +382,9 @@ export async function stopAllGeofences(): Promise<boolean> {
   if (!Location || !TaskManager) return false;
 
   try {
-    return await serializeGeofenceOperation(async () => {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const active = await isGeofenceRegistrationActive(
-          Location,
-          TaskManager,
-        );
-        if (active === false) return true;
-        if (active === null) return false;
-        try {
-          await Location.stopGeofencingAsync(GEOFENCE_TASK);
-        } catch {
-          // Verification is authoritative; retry only if native state remains.
-        }
-      }
-      return (
-        (await isGeofenceRegistrationActive(Location, TaskManager)) === false
-      );
-    });
+    return await serializeGeofenceOperation(() =>
+      stopGeofencesVerifiedNative(Location, TaskManager),
+    );
   } catch {
     return false;
   }
