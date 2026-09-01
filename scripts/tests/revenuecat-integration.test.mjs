@@ -214,6 +214,7 @@ let usersTable;
 let revenuecatSchema;
 let processRevenueCatDelivery;
 let applyTrustedSnapshot;
+let tombstoneAndDeleteAccountData;
 let runMigrations;
 let unregisterTsx;
 let temporaryDatabaseCounter = 0;
@@ -395,6 +396,12 @@ test("processor source contract is fenced, privacy-minimized, and provisioning-n
     processorSource,
     /Math\.min\(deletedHashes\.size,\s*existing\.event\.pruned_identity_count\)/,
   );
+  assert.match(processorSource, /beforeClaimLocks/);
+  assert.match(
+    processorSource,
+    /"metadata", "identity_count", "pruned_identity_count", "identity_required"/,
+  );
+  assert.doesNotMatch(processorSource, /comparisonIdentityCount/);
   assert.match(reconcilerSource, /export async function applyTrustedSnapshot/);
   assert.match(reconcilerSource, /"source_operation_id" COLLATE "C"/);
   assert.match(reconcilerSource, /subscriptions/);
@@ -514,6 +521,8 @@ if (testDatabaseUrl) {
     revenuecatSchema = await import("../../lib/db/src/schema/revenuecat.ts");
     ({ processRevenueCatDelivery } =
       await import("../../artifacts/api-server/src/lib/revenuecatProcessor.ts"));
+    ({ tombstoneAndDeleteAccountData } =
+      await import("../../artifacts/api-server/src/lib/accountDeletion.ts"));
     ({ applyTrustedSnapshot } =
       await import("../../artifacts/api-server/src/lib/revenuecatReconciler.ts"));
     scopedPool = new Pool({ connectionString: databaseUrl });
@@ -761,6 +770,76 @@ integrationTest(
 );
 
 integrationTest(
+  "unconfigured products and mismatched environments fail closed without compatibility grants",
+  async () => {
+    const suffix = Date.now();
+    const userId = `product-fail-closed-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [userId]);
+    const event = delivery({
+      eventId: `product_fail_closed_${suffix}`,
+      userId,
+    });
+    const configWithoutObservedProduct = {
+      ...processorConfig,
+      proProducts: Object.freeze([
+        Object.freeze({ id: "different_pro", kind: "auto_renewing" }),
+      ]),
+    };
+    assert.equal(
+      (
+        await processRevenueCatDelivery({
+          delivery: event,
+          config: configWithoutObservedProduct,
+          client: fakeClient(
+            {
+              lookup: "existing",
+              snapshot: snapshot("2026-09-01T10:00:05.500Z"),
+            },
+            [],
+          ),
+        })
+      ).status,
+      200,
+    );
+    const entitlements = await scopedPool.query(
+      `SELECT entitlement_id,active FROM subscription_entitlements
+       WHERE user_id=$1 ORDER BY entitlement_id`,
+      [userId],
+    );
+    assert.deepEqual(entitlements.rows, [
+      { entitlement_id: "elovia_coaching", active: false },
+      { entitlement_id: "elovia_pro", active: false },
+    ]);
+    const compatibility = await scopedPool.query(
+      `SELECT entitlement_active,entitlement_id,status
+       FROM subscriptions WHERE user_id=$1`,
+      [userId],
+    );
+    assert.deepEqual(compatibility.rows[0], {
+      entitlement_active: false,
+      entitlement_id: null,
+      status: "expired",
+    });
+
+    const wrongEnvironment = delivery({
+      eventId: `product_wrong_environment_${suffix}`,
+      userId,
+      metadata: { environment: "PRODUCTION" },
+    });
+    const calls = [];
+    assert.deepEqual(
+      await processRevenueCatDelivery({
+        delivery: wrongEnvironment,
+        config: processorConfig,
+        client: fakeClient(null, calls),
+      }),
+      { status: 200, disposition: "ignored_environment" },
+    );
+    assert.deepEqual(calls, []);
+  },
+);
+
+integrationTest(
   "an authoritative transfer reconciles both sides atomically and moves aliases by event order",
   async () => {
     const suffix = Date.now();
@@ -958,6 +1037,172 @@ integrationTest(
 );
 
 integrationTest(
+  "a terminal shared transfer accepts its complete-set duplicate after deletion but rejects a surviving role-mask collision",
+  async () => {
+    const suffix = Date.now();
+    const source = `terminal-shared-source-${suffix}`;
+    const destination = `terminal-shared-destination-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1),($2)", [
+      source,
+      destination,
+    ]);
+    const event = delivery({
+      eventId: `terminal_shared_${suffix}`,
+      type: "TRANSFER",
+      kind: "transfer",
+      transferredFrom: [source],
+      transferredTo: [destination],
+    });
+    delete event.userId;
+    delete event.originalUserId;
+    delete event.aliases;
+    assert.equal(
+      (
+        await processRevenueCatDelivery({
+          delivery: event,
+          config: processorConfig,
+          client: fakeClient(
+            (uid) => ({
+              lookup: "existing",
+              snapshot:
+                uid === source
+                  ? snapshot("2026-09-01T10:00:10.500Z", {
+                      pro: false,
+                      coaching: false,
+                    })
+                  : snapshot("2026-09-01T10:00:10.500Z"),
+            }),
+            [],
+          ),
+        })
+      ).status,
+      200,
+    );
+    await tombstoneAndDeleteAccountData(
+      source,
+      `terminal-shared-delete-${suffix}`,
+    );
+    const duplicateCalls = [];
+    assert.equal(
+      (
+        await processRevenueCatDelivery({
+          delivery: event,
+          config: processorConfig,
+          client: fakeClient(null, duplicateCalls),
+        })
+      ).status,
+      200,
+    );
+    assert.deepEqual(duplicateCalls, []);
+    const retained = await scopedPool.query(
+      `SELECT e.identity_count,e.retained_identity_count,e.pruned_identity_count,
+              s.subject_hash,s.role_mask,s.local_user_id
+       FROM revenuecat_webhook_events e
+       JOIN revenuecat_event_subjects s ON s.event_id=e.event_id
+       WHERE e.event_id=$1`,
+      [event.eventId],
+    );
+    assert.deepEqual(retained.rows[0], {
+      identity_count: 2,
+      retained_identity_count: 1,
+      pruned_identity_count: 1,
+      subject_hash: subjectHash(destination),
+      role_mask: 16,
+      local_user_id: destination,
+    });
+    assert.deepEqual(
+      await processRevenueCatDelivery({
+        delivery: {
+          ...event,
+          transferredFrom: [source, destination],
+        },
+        config: processorConfig,
+        client: fakeClient(null, duplicateCalls),
+      }),
+      { status: 400, disposition: "event_collision" },
+    );
+  },
+);
+
+integrationTest(
+  "a pending pruned transfer validates the complete role-mask set and resumes from only its shared survivor",
+  async () => {
+    const suffix = Date.now();
+    const source = `pending-role-source-${suffix}`;
+    const destination = `pending-role-destination-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1),($2)", [
+      source,
+      destination,
+    ]);
+    const event = delivery({
+      eventId: `pending_role_${suffix}`,
+      type: "TRANSFER",
+      kind: "transfer",
+      transferredFrom: [source],
+      transferredTo: [destination],
+    });
+    delete event.userId;
+    delete event.originalUserId;
+    delete event.aliases;
+    await processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      client: {
+        async getSubscriber() {
+          throw new Error("leave pending");
+        },
+      },
+    });
+    await tombstoneAndDeleteAccountData(
+      source,
+      `pending-role-delete-${suffix}`,
+    );
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET next_attempt_at=now(),processing_lease_id=NULL,processing_lease_until=NULL
+       WHERE event_id=$1`,
+      [event.eventId],
+    );
+    assert.deepEqual(
+      await processRevenueCatDelivery({
+        delivery: { ...event, transferredFrom: [source, destination] },
+        config: processorConfig,
+        client: fakeClient(null, []),
+      }),
+      { status: 400, disposition: "event_collision" },
+    );
+    const calls = [];
+    assert.equal(
+      (
+        await processRevenueCatDelivery({
+          delivery: event,
+          config: processorConfig,
+          client: fakeClient(
+            {
+              lookup: "existing",
+              snapshot: snapshot("2026-09-01T10:00:10.750Z"),
+            },
+            calls,
+          ),
+        })
+      ).status,
+      200,
+    );
+    assert.deepEqual(calls, [destination]);
+    const retained = await scopedPool.query(
+      `SELECT identity_count,retained_identity_count,pruned_identity_count
+       FROM revenuecat_webhook_events WHERE event_id=$1`,
+      [event.eventId],
+    );
+    assert.deepEqual(retained.rows[0], {
+      identity_count: 2,
+      retained_identity_count: 1,
+      pruned_identity_count: 1,
+    });
+  },
+);
+
+integrationTest(
   "tombstoned transfer identities are excluded before claim, hashing persistence, and GET",
   async () => {
     const suffix = Date.now();
@@ -1038,7 +1283,8 @@ integrationTest(
       assert.equal(outcome.status, 200, scenario.name);
       assert.deepEqual(calls, scenario.calls, scenario.name);
       const persisted = await scopedPool.query(
-        `SELECT e.identity_count,s.subject_hash,s.local_user_id
+        `SELECT e.identity_count,e.retained_identity_count,
+                e.pruned_identity_count,e.metadata,s.subject_hash,s.local_user_id
          FROM revenuecat_webhook_events e
          LEFT JOIN revenuecat_event_subjects s ON s.event_id=e.event_id
          WHERE e.event_id=$1 ORDER BY s.subject_hash`,
@@ -1047,9 +1293,20 @@ integrationTest(
       if (scenario.retained.length === 0) {
         assert.equal(persisted.rowCount, 0, scenario.name);
       } else {
-        assert.equal(
-          persisted.rows[0].identity_count,
-          scenario.retained.length,
+        assert.deepEqual(
+          {
+            identityCount: persisted.rows[0].identity_count,
+            retainedCount: persisted.rows[0].retained_identity_count,
+            prunedCount: persisted.rows[0].pruned_identity_count,
+            metadata: persisted.rows[0].metadata,
+          },
+          {
+            identityCount: 2,
+            retainedCount: scenario.retained.length,
+            prunedCount: 2 - scenario.retained.length,
+            metadata: { schemaVersion: 1, identityCount: 2 },
+          },
+          scenario.name,
         );
         assert.deepEqual(
           persisted.rows.map((row) => row.subject_hash),
@@ -1067,6 +1324,71 @@ integrationTest(
         scenario.name,
       );
     }
+  },
+);
+
+integrationTest(
+  "a deletion after initial resolution but before claim locks cannot persist, fetch, or transfer the tombstoned subject",
+  async () => {
+    const suffix = Date.now();
+    const source = `preclaim-source-${suffix}`;
+    const destination = `preclaim-destination-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1),($2)", [
+      source,
+      destination,
+    ]);
+    const event = delivery({
+      eventId: `preclaim_delete_${suffix}`,
+      type: "TRANSFER",
+      kind: "transfer",
+      transferredFrom: [source],
+      transferredTo: [destination],
+    });
+    delete event.userId;
+    delete event.originalUserId;
+    delete event.aliases;
+    const calls = [];
+    let hookCalls = 0;
+    const outcome = await processRevenueCatDelivery({
+      delivery: event,
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "existing",
+          snapshot: snapshot("2026-09-01T10:01:00.500Z"),
+        },
+        calls,
+      ),
+      beforeClaimLocks: async () => {
+        hookCalls += 1;
+        await tombstoneAndDeleteAccountData(
+          source,
+          `preclaim-delete-request-${suffix}`,
+        );
+      },
+    });
+    assert.equal(hookCalls, 1);
+    assert.equal(outcome.status, 200);
+    assert.deepEqual(calls, [destination]);
+    const stored = await scopedPool.query(
+      `SELECT e.identity_count,e.retained_identity_count,e.pruned_identity_count,
+              e.metadata,s.subject_hash,s.local_user_id,
+              EXISTS(SELECT 1 FROM revenuecat_customer_aliases a
+                     WHERE a.alias_hash=$2) AS deleted_alias
+       FROM revenuecat_webhook_events e
+       LEFT JOIN revenuecat_event_subjects s ON s.event_id=e.event_id
+       WHERE e.event_id=$1`,
+      [event.eventId, subjectHash(source)],
+    );
+    assert.deepEqual(stored.rows[0], {
+      identity_count: 2,
+      retained_identity_count: 1,
+      pruned_identity_count: 1,
+      metadata: { schemaVersion: 1, identityCount: 2 },
+      subject_hash: subjectHash(destination),
+      local_user_id: destination,
+      deleted_alias: false,
+    });
   },
 );
 
@@ -1910,13 +2232,14 @@ integrationTest(
 );
 
 integrationTest(
-  "bounded post-GET transfer deletion races retain no deleted subject or alias",
+  "fifty preclaim and post-GET transfer deletion races retain no deleted subject or alias",
   async () => {
     const suffix = Date.now();
-    for (let index = 0; index < 10; index += 1) {
+    for (let index = 0; index < 50; index += 1) {
       const source = `delete-race-source-${index}-${suffix}`;
       const destination = `delete-race-dest-${index}-${suffix}`;
       const deleted = index % 2 === 0 ? source : destination;
+      const preclaim = index % 4 < 2;
       await scopedPool.query("INSERT INTO users (id) VALUES ($1),($2)", [
         source,
         destination,
@@ -1932,16 +2255,20 @@ integrationTest(
       delete event.originalUserId;
       delete event.aliases;
       let deletedDuringGet = false;
+      let deletedBeforeClaim = false;
+      const calls = [];
       const outcome = await processRevenueCatDelivery({
         delivery: event,
         config: processorConfig,
         client: {
           async getSubscriber(uid) {
-            if (uid === deleted && !deletedDuringGet) {
+            calls.push(uid);
+            if (!preclaim && uid === deleted && !deletedDuringGet) {
               deletedDuringGet = true;
-              await scopedPool.query("DELETE FROM users WHERE id=$1", [
+              await tombstoneAndDeleteAccountData(
                 deleted,
-              ]);
+                `post-get-delete-${index}-${suffix}`,
+              );
             }
             return {
               lookup: "existing",
@@ -1955,15 +2282,36 @@ integrationTest(
             };
           },
         },
+        beforeClaimLocks: preclaim
+          ? async () => {
+              deletedBeforeClaim = true;
+              await tombstoneAndDeleteAccountData(
+                deleted,
+                `preclaim-delete-${index}-${suffix}`,
+              );
+            }
+          : undefined,
       });
       assert.equal(outcome.status, 200);
+      assert.equal(deletedBeforeClaim, preclaim);
+      assert.equal(deletedDuringGet, !preclaim);
+      if (preclaim) assert.equal(calls.includes(deleted), false);
       const forbidden = await scopedPool.query(
         `SELECT
           EXISTS(SELECT 1 FROM revenuecat_event_subjects WHERE subject_hash=$1) AS subject,
-          EXISTS(SELECT 1 FROM revenuecat_customer_aliases WHERE alias_hash=$1) AS alias`,
-        [subjectHash(deleted)],
+          EXISTS(SELECT 1 FROM revenuecat_customer_aliases WHERE alias_hash=$1) AS alias,
+          (SELECT identity_count FROM revenuecat_webhook_events WHERE event_id=$2) AS identity_count,
+          (SELECT retained_identity_count FROM revenuecat_webhook_events WHERE event_id=$2) AS retained_count,
+          (SELECT pruned_identity_count FROM revenuecat_webhook_events WHERE event_id=$2) AS pruned_count`,
+        [subjectHash(deleted), event.eventId],
       );
-      assert.deepEqual(forbidden.rows[0], { subject: false, alias: false });
+      assert.deepEqual(forbidden.rows[0], {
+        subject: false,
+        alias: false,
+        identity_count: 2,
+        retained_count: 1,
+        pruned_count: 1,
+      });
     }
   },
 );

@@ -65,6 +65,7 @@ export type RevenueCatProcessorInput = Readonly<{
   client: RevenueCatClient;
   poll?: (milliseconds: number) => Promise<void>;
   metric?: (metric: CountMetric) => void;
+  beforeClaimLocks?: () => Promise<void>;
 }>;
 
 export type RevenueCatParseProcessorInput = Readonly<{
@@ -128,11 +129,13 @@ type ClaimOutcome =
   | { kind: "processing" }
   | { kind: "expand"; owners: string[] }
   | { kind: "conflict"; owners: string[] }
+  | { kind: "deleted" }
   | { kind: "unmapped" };
 
 type FinalizeResult = RevenueCatProcessorResult &
   Readonly<{
     expandedOwners?: readonly string[];
+    survivingSubjects?: readonly Subject[];
   }>;
 
 function byteCompare(left: string, right: string): number {
@@ -262,14 +265,13 @@ function envelopeMatches(
   delivery: RevenueCatDelivery,
   environment: string,
   incomingSubjects: readonly Subject[],
-  incomingIdentityCount = incomingSubjects.length,
 ): boolean {
-  const metadata = persistedMetadata(delivery, incomingIdentityCount);
+  const metadata = persistedMetadata(delivery, incomingSubjects.length);
   if (
     stored.event.type !== delivery.type ||
     stored.event.event_at.getTime() !== delivery.eventAt.getTime() ||
     stored.event.environment !== environment ||
-    stored.event.identity_count !== incomingIdentityCount ||
+    stored.event.identity_count !== incomingSubjects.length ||
     !metadataEqual(stored.event.metadata, metadata) ||
     stored.subjects.length !== stored.event.retained_identity_count ||
     stored.subjects.length + stored.event.pruned_identity_count !==
@@ -437,6 +439,30 @@ async function tombstonedHashes(
   );
 }
 
+function accountLockIds(
+  subjects: readonly Subject[],
+  owners: Iterable<string>,
+): string[] {
+  return sorted([...subjects.map((subject) => subject.raw), ...owners]);
+}
+
+async function pruneStoredSubjects(
+  transaction: AccountLockTransaction,
+  eventId: string,
+  hashes: ReadonlySet<string>,
+): Promise<void> {
+  const orderedHashes = sorted(hashes);
+  if (orderedHashes.length === 0) return;
+  await transaction.execute(sql`
+    DELETE FROM "revenuecat_event_subjects"
+    WHERE "event_id" = ${eventId}
+      AND "subject_hash" IN (${sql.join(
+        orderedHashes.map((hash) => sql`${hash}`),
+        sql`, `,
+      )})
+  `);
+}
+
 function resolutionConflict(
   delivery: RevenueCatDelivery,
   resolution: Resolution,
@@ -509,20 +535,22 @@ async function insertClaimedEvent(
   delivery: RevenueCatDelivery,
   config: RevenueCatConfig,
   subjects: readonly Subject[],
+  identityCount: number,
   resolution: Resolution,
   leaseId: string,
 ): Promise<boolean> {
-  const metadata = persistedMetadata(delivery, subjects.length);
+  const metadata = persistedMetadata(delivery, identityCount);
+  const prunedIdentityCount = identityCount - subjects.length;
   const inserted = await transaction.execute<{ event_id: string }>(sql`
     INSERT INTO "revenuecat_webhook_events" (
       "event_id", "type", "event_at", "environment", "disposition",
-      "metadata", "identity_count", "identity_required",
+      "metadata", "identity_count", "pruned_identity_count", "identity_required",
       "entitlement_required", "attempt_count", "processing_lease_id",
       "processing_lease_until", "next_attempt_at", "retention_until"
     ) VALUES (
       ${delivery.eventId}, ${delivery.type}, ${delivery.eventAt},
       ${config.environment}, 'pending', ${JSON.stringify(metadata)}::jsonb,
-      ${subjects.length}, true, true, 1, ${leaseId},
+      ${identityCount}, ${prunedIdentityCount}, true, true, 1, ${leaseId},
       now() + (${EVENT_LEASE_MS} * interval '1 millisecond'), now(),
       now() + (${EVENT_RETENTION_DAYS} * interval '1 day')
     )
@@ -568,12 +596,11 @@ async function stableClaim(
   input: RevenueCatProcessorInput,
   allSubjects: readonly Subject[],
   existing: { event: StoredEvent; subjects: StoredSubject[] } | null,
-  envelopeIdentityCount = allSubjects.length,
 ): Promise<ClaimOutcome> {
   const retainedHashes = existing
     ? new Set(existing.subjects.map((subject) => subject.subject_hash))
     : null;
-  const subjects = retainedHashes
+  const candidateSubjects = retainedHashes
     ? allSubjects.filter((subject) => retainedHashes.has(subject.hash))
     : [...allSubjects];
   const fallbackOwnerByHash = new Map(
@@ -584,18 +611,40 @@ async function stableClaim(
         subject.local_user_id as string,
       ]),
   );
-  let initial = await db.transaction((transaction) =>
-    resolveSubjects(transaction, subjects, fallbackOwnerByHash),
+  const initial = await db.transaction((transaction) =>
+    resolveSubjects(transaction, candidateSubjects, fallbackOwnerByHash),
   );
   if (resolutionConflict(input.delivery, initial)) {
     return { kind: "conflict", owners: sorted(initial.owners) };
   }
   let owners = effectiveOwners(input.delivery, initial);
-  if (owners.size === 0) return { kind: "unmapped" };
-  let lockSet = sorted(owners);
+  let lockSet = accountLockIds(candidateSubjects, owners);
+  await input.beforeClaimLocks?.();
 
   for (let attempt = 0; attempt < MAX_IDENTITY_EXPANSIONS; attempt += 1) {
     const outcome = await withAccountLocks(lockSet, async (transaction) => {
+      const deletedHashes = await tombstonedHashes(
+        transaction,
+        candidateSubjects,
+      );
+      await pruneStoredSubjects(
+        transaction,
+        input.delivery.eventId,
+        deletedHashes,
+      );
+      const subjects = candidateSubjects.filter(
+        (subject) => !deletedHashes.has(subject.hash),
+      );
+      if (subjects.length === 0) {
+        if (existing) {
+          await transaction.execute(sql`
+            DELETE FROM "revenuecat_webhook_events"
+            WHERE "event_id" = ${input.delivery.eventId}
+              AND "disposition" = 'pending'
+          `);
+        }
+        return { kind: "deleted" } as ClaimOutcome;
+      }
       const resolved = await resolveSubjects(
         transaction,
         subjects,
@@ -624,6 +673,7 @@ async function stableClaim(
             input.delivery,
             input.config,
             subjects,
+            allSubjects.length,
             resolved,
             leaseId,
           );
@@ -637,7 +687,6 @@ async function stableClaim(
           input.delivery,
           input.config.environment,
           allSubjects,
-          envelopeIdentityCount,
         )
       ) {
         return { kind: "collision" } as ClaimOutcome;
@@ -670,12 +719,9 @@ async function stableClaim(
     });
     if (outcome.kind !== "expand") return outcome;
     lockSet = sorted([...lockSet, ...outcome.owners]);
-    initial = await db.transaction((transaction) =>
-      resolveSubjects(transaction, subjects, fallbackOwnerByHash),
-    );
   }
   input.metric?.({ type: "identity_set_changed", count: 1 });
-  return { kind: "expand", owners: [] };
+  return { kind: "expand", owners: sorted(owners) };
 }
 
 async function waitForOwner(
@@ -739,16 +785,31 @@ async function enqueueExpandedOwners(
   eventId: string,
   leaseId: string,
   owners: readonly string[],
-): Promise<string[] | null> {
-  return withAccountLocks(owners, async (transaction) => {
-    const fenced = await transaction.execute<{ event_id: string }>(sql`
-      SELECT "event_id" FROM "revenuecat_webhook_events"
-      WHERE "event_id" = ${eventId}
-        AND "disposition" = 'pending'
-        AND "processing_lease_id" = ${leaseId}
-    `);
-    if (fenced.rows.length !== 1) return null;
-    const live = await transaction.execute<{ id: string }>(sql`
+  subjects: readonly Subject[],
+): Promise<{ owners: string[]; subjects: Subject[] } | null> {
+  return withAccountLocks(
+    accountLockIds(subjects, owners),
+    async (transaction) => {
+      const fenced = await loadEvent(transaction, eventId);
+      if (
+        !fenced ||
+        fenced.event.disposition !== "pending" ||
+        fenced.event.processing_lease_id !== leaseId
+      ) {
+        return null;
+      }
+      const deletedHashes = await tombstonedHashes(transaction, subjects);
+      await pruneStoredSubjects(transaction, eventId, deletedHashes);
+      const refreshed = await loadEvent(transaction, eventId);
+      if (!refreshed) return null;
+      const retainedHashes = new Set(
+        refreshed.subjects.map((subject) => subject.subject_hash),
+      );
+      const survivingSubjects = subjects.filter(
+        (subject) =>
+          !deletedHashes.has(subject.hash) && retainedHashes.has(subject.hash),
+      );
+      const live = await transaction.execute<{ id: string }>(sql`
       SELECT u."id" FROM "users" AS u
       WHERE u."id" IN (${sql.join(
         sorted(owners).map((owner) => sql`${owner}`),
@@ -759,12 +820,13 @@ async function enqueueExpandedOwners(
           WHERE d."user_id" = u."id"
         )
     `);
-    const liveOwners = sorted(live.rows.map((row) => row.id));
-    for (const owner of liveOwners) {
-      await enqueueTrustedUid(transaction, owner);
-    }
-    return liveOwners;
-  });
+      const liveOwners = sorted(live.rows.map((row) => row.id));
+      for (const owner of liveOwners) {
+        await enqueueTrustedUid(transaction, owner);
+      }
+      return { owners: liveOwners, subjects: survivingSubjects };
+    },
+  );
 }
 
 function aliasesForOrdinary(
@@ -861,201 +923,142 @@ async function finalizeClaim(
     { lookup: "existing" | "created"; snapshot: CanonicalRevenueCatSnapshot }
   >,
 ): Promise<FinalizeResult> {
-  return withAccountLocks(claim.owners, async (transaction) => {
-    const stored = await loadEvent(transaction, input.delivery.eventId);
-    if (
-      !stored ||
-      stored.event.disposition !== "pending" ||
-      stored.event.processing_lease_id !== claim.leaseId
-    ) {
-      return result(503, "processing", 1);
-    }
-    const surviving = new Set(
-      stored.subjects.map((subject) => subject.subject_hash),
-    );
-    const subjects = claim.subjects.filter((subject) =>
-      surviving.has(subject.hash),
-    );
-    const fallbackOwnerByHash = new Map(
-      stored.subjects
-        .filter((subject) => subject.local_user_id !== null)
-        .map((subject) => [
-          subject.subject_hash,
-          subject.local_user_id as string,
-        ]),
-    );
-    const resolution = await resolveSubjects(
-      transaction,
-      subjects,
-      fallbackOwnerByHash,
-    );
-    if (resolutionConflict(input.delivery, resolution)) {
+  return withAccountLocks(
+    accountLockIds(claim.subjects, claim.owners),
+    async (transaction) => {
+      let stored = await loadEvent(transaction, input.delivery.eventId);
       if (
-        stored.event.identity_applied_at === null &&
-        stored.event.entitlement_applied_at === null
+        !stored ||
+        stored.event.disposition !== "pending" ||
+        stored.event.processing_lease_id !== claim.leaseId
       ) {
-        await transaction.execute(sql`
+        return result(503, "processing", 1);
+      }
+      const deletedHashes = await tombstonedHashes(transaction, claim.subjects);
+      await pruneStoredSubjects(
+        transaction,
+        input.delivery.eventId,
+        deletedHashes,
+      );
+      if (deletedHashes.size > 0) {
+        stored = await loadEvent(transaction, input.delivery.eventId);
+        if (
+          !stored ||
+          stored.event.disposition !== "pending" ||
+          stored.event.processing_lease_id !== claim.leaseId
+        ) {
+          return result(503, "processing", 1);
+        }
+      }
+      const surviving = new Set(
+        stored.subjects.map((subject) => subject.subject_hash),
+      );
+      const subjects = claim.subjects.filter((subject) =>
+        surviving.has(subject.hash),
+      );
+      const fallbackOwnerByHash = new Map(
+        stored.subjects
+          .filter((subject) => subject.local_user_id !== null)
+          .map((subject) => [
+            subject.subject_hash,
+            subject.local_user_id as string,
+          ]),
+      );
+      const resolution = await resolveSubjects(
+        transaction,
+        subjects,
+        fallbackOwnerByHash,
+      );
+      if (resolutionConflict(input.delivery, resolution)) {
+        if (
+          stored.event.identity_applied_at === null &&
+          stored.event.entitlement_applied_at === null
+        ) {
+          await transaction.execute(sql`
           DELETE FROM "revenuecat_webhook_events"
           WHERE "event_id" = ${input.delivery.eventId}
             AND "processing_lease_id" = ${claim.leaseId}
         `);
-        input.metric?.({ type: "identity_conflict", count: 1 });
-        return result(200, "ignored_identity_conflict");
+          input.metric?.({ type: "identity_conflict", count: 1 });
+          return result(200, "ignored_identity_conflict");
+        }
+        return result(503, "identity_set_changed", 1);
       }
-      return result(503, "identity_set_changed", 1);
-    }
-    const finalOwners = effectiveOwners(input.delivery, resolution);
-    if (finalOwners.size === 0) {
-      await transaction.execute(sql`
+      const finalOwners = effectiveOwners(input.delivery, resolution);
+      if (finalOwners.size === 0) {
+        await transaction.execute(sql`
         DELETE FROM "revenuecat_webhook_events"
         WHERE "event_id" = ${input.delivery.eventId}
           AND "processing_lease_id" = ${claim.leaseId}
       `);
-      return result(200, "ignored_deleted");
-    }
-    const outside = [...finalOwners].filter(
-      (owner) => !claim.owners.includes(owner),
-    );
-    if (outside.length > 0) {
-      return {
-        ...result(503, "identity_set_changed", 1),
-        expandedOwners: sorted(outside),
-      };
-    }
-
-    const identityNeeded = stored.event.identity_applied_at === null;
-    const entitlementNeeded = stored.event.entitlement_applied_at === null;
-    const snapshots = new Map<string, CanonicalRevenueCatSnapshot>();
-    if (entitlementNeeded) {
-      for (const owner of finalOwners) {
-        const lookup = lookups.get(owner);
-        if (!lookup || lookup.lookup !== "existing") {
-          return result(503, "transfer_visibility_lag", 1);
-        }
-        snapshots.set(owner, lookup.snapshot);
+        return result(200, "ignored_deleted");
       }
-    }
-    if (
-      entitlementNeeded &&
-      input.delivery.kind === "transfer" &&
-      !transferSnapshotsAuthoritative(
-        input.delivery,
-        resolution,
-        snapshots,
-        input.config,
-      )
-    ) {
-      return result(503, "transfer_visibility_lag", 1);
-    }
-
-    let advanced = false;
-    if (entitlementNeeded) {
-      for (const owner of sorted(finalOwners)) {
-        const ownerSnapshot = snapshots.get(owner);
-        if (!ownerSnapshot) {
-          return result(503, "transfer_visibility_lag", 1);
-        }
-        const projected = await applyTrustedSnapshot(transaction, {
-          userId: owner,
-          snapshot: ownerSnapshot,
-          config: input.config,
-          operationId: `webhook:${input.delivery.eventId}`,
-          fence: { eventId: input.delivery.eventId, leaseId: claim.leaseId },
-        });
-        if (projected.deleted) return result(200, "ignored_deleted");
-        if (projected.fencedOut) return result(503, "processing", 1);
-        advanced = projected.advanced || advanced;
+      const outside = [...finalOwners].filter(
+        (owner) => !claim.owners.includes(owner),
+      );
+      if (outside.length > 0) {
+        return {
+          ...result(503, "identity_set_changed", 1),
+          expandedOwners: sorted(outside),
+          survivingSubjects: subjects,
+        };
       }
-    }
 
-    const relink = new Map<string, string | null>();
-    if (identityNeeded && input.delivery.kind === "ordinary") {
-      const owner = sorted(finalOwners)[0];
-      if (!owner) return result(200, "ignored_deleted");
-      for (const subject of aliasesForOrdinary(subjects, owner)) {
-        const directSelf = resolution.directSelfByHash.get(subject.hash);
-        if (directSelf) {
-          relink.set(subject.hash, directSelf);
-          continue;
+      const identityNeeded = stored.event.identity_applied_at === null;
+      const entitlementNeeded = stored.event.entitlement_applied_at === null;
+      const snapshots = new Map<string, CanonicalRevenueCatSnapshot>();
+      if (entitlementNeeded) {
+        for (const owner of finalOwners) {
+          const lookup = lookups.get(owner);
+          if (!lookup || lookup.lookup !== "existing") {
+            return result(503, "transfer_visibility_lag", 1);
+          }
+          snapshots.set(owner, lookup.snapshot);
         }
-        const assigned = await assignAlias(
-          transaction,
+      }
+      if (
+        entitlementNeeded &&
+        input.delivery.kind === "transfer" &&
+        !transferSnapshotsAuthoritative(
           input.delivery,
-          subject,
-          owner,
-          false,
-        );
-        advanced = assigned.advanced || advanced;
-        relink.set(subject.hash, assigned.owner);
+          resolution,
+          snapshots,
+          input.config,
+        )
+      ) {
+        return result(503, "transfer_visibility_lag", 1);
       }
-      for (const subject of subjects) {
-        if (!relink.has(subject.hash)) {
-          relink.set(
-            subject.hash,
-            resolution.directSelfByHash.get(subject.hash) ?? owner,
-          );
+
+      let advanced = false;
+      if (entitlementNeeded) {
+        for (const owner of sorted(finalOwners)) {
+          const ownerSnapshot = snapshots.get(owner);
+          if (!ownerSnapshot) {
+            return result(503, "transfer_visibility_lag", 1);
+          }
+          const projected = await applyTrustedSnapshot(transaction, {
+            userId: owner,
+            snapshot: ownerSnapshot,
+            config: input.config,
+            operationId: `webhook:${input.delivery.eventId}`,
+            fence: { eventId: input.delivery.eventId, leaseId: claim.leaseId },
+          });
+          if (projected.deleted) return result(200, "ignored_deleted");
+          if (projected.fencedOut) return result(503, "processing", 1);
+          advanced = projected.advanced || advanced;
         }
       }
-    } else if (identityNeeded && input.delivery.kind === "transfer") {
-      const destination = sorted(resolution.toOwners)[0] ?? null;
-      const source = sorted(resolution.fromOwners)[0] ?? null;
-      for (const subject of subjects) {
-        const directSelf = resolution.directSelfByHash.get(subject.hash);
-        if (directSelf) {
-          relink.set(subject.hash, directSelf);
-          continue;
-        }
-        const from =
-          (subject.roleMask & REVENUECAT_SUBJECT_ROLE_MASKS.transferredFrom) !==
-          0;
-        const to =
-          (subject.roleMask & REVENUECAT_SUBJECT_ROLE_MASKS.transferredTo) !==
-          0;
-        if (to) {
-          if (!destination) {
-            relink.set(subject.hash, null);
+
+      const relink = new Map<string, string | null>();
+      if (identityNeeded && input.delivery.kind === "ordinary") {
+        const owner = sorted(finalOwners)[0];
+        if (!owner) return result(200, "ignored_deleted");
+        for (const subject of aliasesForOrdinary(subjects, owner)) {
+          const directSelf = resolution.directSelfByHash.get(subject.hash);
+          if (directSelf) {
+            relink.set(subject.hash, directSelf);
             continue;
           }
-          const assigned = await assignAlias(
-            transaction,
-            input.delivery,
-            subject,
-            destination,
-            true,
-          );
-          advanced = assigned.advanced || advanced;
-          relink.set(subject.hash, assigned.owner);
-          continue;
-        }
-        if (from && destination) {
-          const assigned = await assignAlias(
-            transaction,
-            input.delivery,
-            subject,
-            destination,
-            true,
-          );
-          advanced = assigned.advanced || advanced;
-          relink.set(subject.hash, assigned.owner);
-        } else {
-          relink.set(
-            subject.hash,
-            resolution.ownerByHash.get(subject.hash) ?? source,
-          );
-        }
-      }
-    } else if (identityNeeded && input.delivery.kind === "purchase_redeemed") {
-      const owner = sorted(resolution.byOwners)[0] ?? null;
-      const mayAlias =
-        input.delivery.redemptionOutcome === "alias" ||
-        input.delivery.redemptionOutcome === "redeemer_owns";
-      for (const subject of subjects) {
-        const isRedeemer =
-          (subject.roleMask & REVENUECAT_SUBJECT_ROLE_MASKS.redeemedBy) !== 0;
-        const directSelf = resolution.directSelfByHash.get(subject.hash);
-        if (directSelf) {
-          relink.set(subject.hash, directSelf);
-        } else if (owner && mayAlias && isRedeemer) {
           const assigned = await assignAlias(
             transaction,
             input.delivery,
@@ -1065,22 +1068,104 @@ async function finalizeClaim(
           );
           advanced = assigned.advanced || advanced;
           relink.set(subject.hash, assigned.owner);
-        } else {
-          relink.set(subject.hash, isRedeemer ? owner : null);
+        }
+        for (const subject of subjects) {
+          if (!relink.has(subject.hash)) {
+            relink.set(
+              subject.hash,
+              resolution.directSelfByHash.get(subject.hash) ?? owner,
+            );
+          }
+        }
+      } else if (identityNeeded && input.delivery.kind === "transfer") {
+        const destination = sorted(resolution.toOwners)[0] ?? null;
+        const source = sorted(resolution.fromOwners)[0] ?? null;
+        for (const subject of subjects) {
+          const directSelf = resolution.directSelfByHash.get(subject.hash);
+          if (directSelf) {
+            relink.set(subject.hash, directSelf);
+            continue;
+          }
+          const from =
+            (subject.roleMask &
+              REVENUECAT_SUBJECT_ROLE_MASKS.transferredFrom) !==
+            0;
+          const to =
+            (subject.roleMask & REVENUECAT_SUBJECT_ROLE_MASKS.transferredTo) !==
+            0;
+          if (to) {
+            if (!destination) {
+              relink.set(subject.hash, null);
+              continue;
+            }
+            const assigned = await assignAlias(
+              transaction,
+              input.delivery,
+              subject,
+              destination,
+              true,
+            );
+            advanced = assigned.advanced || advanced;
+            relink.set(subject.hash, assigned.owner);
+            continue;
+          }
+          if (from && destination) {
+            const assigned = await assignAlias(
+              transaction,
+              input.delivery,
+              subject,
+              destination,
+              true,
+            );
+            advanced = assigned.advanced || advanced;
+            relink.set(subject.hash, assigned.owner);
+          } else {
+            relink.set(
+              subject.hash,
+              resolution.ownerByHash.get(subject.hash) ?? source,
+            );
+          }
+        }
+      } else if (
+        identityNeeded &&
+        input.delivery.kind === "purchase_redeemed"
+      ) {
+        const owner = sorted(resolution.byOwners)[0] ?? null;
+        const mayAlias =
+          input.delivery.redemptionOutcome === "alias" ||
+          input.delivery.redemptionOutcome === "redeemer_owns";
+        for (const subject of subjects) {
+          const isRedeemer =
+            (subject.roleMask & REVENUECAT_SUBJECT_ROLE_MASKS.redeemedBy) !== 0;
+          const directSelf = resolution.directSelfByHash.get(subject.hash);
+          if (directSelf) {
+            relink.set(subject.hash, directSelf);
+          } else if (owner && mayAlias && isRedeemer) {
+            const assigned = await assignAlias(
+              transaction,
+              input.delivery,
+              subject,
+              owner,
+              false,
+            );
+            advanced = assigned.advanced || advanced;
+            relink.set(subject.hash, assigned.owner);
+          } else {
+            relink.set(subject.hash, isRedeemer ? owner : null);
+          }
         }
       }
-    }
-    for (const [hash, owner] of relink) {
-      await transaction.execute(sql`
+      for (const [hash, owner] of relink) {
+        await transaction.execute(sql`
         UPDATE "revenuecat_event_subjects"
         SET "local_user_id" = ${owner}
         WHERE "event_id" = ${input.delivery.eventId}
           AND "subject_hash" = ${hash}
       `);
-    }
+      }
 
-    const disposition = advanced ? "applied" : "stale";
-    const completed = await transaction.execute<{ event_id: string }>(sql`
+      const disposition = advanced ? "applied" : "stale";
+      const completed = await transaction.execute<{ event_id: string }>(sql`
       UPDATE "revenuecat_webhook_events"
       SET "identity_applied_at" = CASE
             WHEN ${identityNeeded} THEN COALESCE("identity_applied_at", now())
@@ -1099,10 +1184,11 @@ async function finalizeClaim(
         AND "processing_lease_id" = ${claim.leaseId}
       RETURNING "event_id"
     `);
-    return completed.rows.length === 1
-      ? result(200, disposition)
-      : result(503, "processing", 1);
-  });
+      return completed.rows.length === 1
+        ? result(200, disposition)
+        : result(503, "processing", 1);
+    },
+  );
 }
 
 async function processOwnedClaim(
@@ -1140,16 +1226,24 @@ async function processOwnedClaim(
         activeClaim = {
           ...activeClaim,
           owners: sorted([...activeClaim.owners, ...finalized.expandedOwners]),
+          subjects: finalized.survivingSubjects
+            ? [...finalized.survivingSubjects]
+            : activeClaim.subjects,
         };
-        const liveOwners = await enqueueExpandedOwners(
+        const refreshed = await enqueueExpandedOwners(
           input.delivery.eventId,
           claim.leaseId,
           activeClaim.owners,
+          activeClaim.subjects,
         );
-        if (!liveOwners) {
+        if (!refreshed) {
           return result(503, "processing", 1);
         }
-        activeClaim = { ...activeClaim, owners: liveOwners };
+        activeClaim = {
+          ...activeClaim,
+          owners: refreshed.owners,
+          subjects: refreshed.subjects,
+        };
         continue;
       }
       if (
@@ -1204,26 +1298,13 @@ export async function processRevenueCatDelivery(
   }
   const allSubjects = subjectsFor(input.delivery, input.config.subjectHashKey);
   const existing = await loadEvent(db, input.delivery.eventId);
-  const deletedHashes = await db.transaction((transaction) =>
-    tombstonedHashes(transaction, allSubjects),
-  );
-  const nonTombstonedSubjects = allSubjects.filter(
-    (subject) => !deletedHashes.has(subject.hash),
-  );
-  const comparisonSubjects = existing?.event.pruned_identity_count
-    ? allSubjects
-    : nonTombstonedSubjects;
-  const comparisonIdentityCount = existing?.event.pruned_identity_count
-    ? allSubjects.length
-    : nonTombstonedSubjects.length;
   if (
     existing &&
     !envelopeMatches(
       existing,
       input.delivery,
       input.config.environment,
-      comparisonSubjects,
-      comparisonIdentityCount,
+      allSubjects,
     )
   ) {
     input.metric?.({ type: "event_collision", count: 1 });
@@ -1236,21 +1317,14 @@ export async function processRevenueCatDelivery(
     return terminalResult(existing.event);
   }
 
-  const claimSubjects = existing ? comparisonSubjects : nonTombstonedSubjects;
-  if (!existing && claimSubjects.length === 0) {
-    return result(200, "ignored_deleted");
-  }
-
-  const outcome = await stableClaim(
-    input,
-    claimSubjects,
-    existing,
-    comparisonIdentityCount,
-  );
+  const outcome = await stableClaim(input, allSubjects, existing);
   if (outcome.kind === "terminal") return outcome.result;
   if (outcome.kind === "collision") {
     input.metric?.({ type: "event_collision", count: 1 });
     return result(400, "event_collision");
+  }
+  if (outcome.kind === "deleted") {
+    return result(200, "ignored_deleted");
   }
   if (outcome.kind === "conflict") {
     if (
