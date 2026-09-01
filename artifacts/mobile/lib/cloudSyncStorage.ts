@@ -92,6 +92,8 @@ type SyncStorageJournal = OwnerTransitionJournal | OwnedMutationJournal;
 
 export const LOCAL_SYNC_OWNER_KEY = "@elovia_sync_owner";
 export const LOCAL_SYNC_JOURNAL_KEY = "@elovia_sync_owner_transition";
+export const LOCAL_SYNC_TRANSITION_EPOCH_KEY =
+  "@elovia_sync_owner_transition_epoch";
 export const LOCAL_SYNC_LEGACY_OWNER_KEY = "@elovia_sync_legacy_owner";
 export const LOCAL_SYNC_QUARANTINE_OWNER = "system:quarantine";
 export const LOCAL_SYNC_GUEST_OWNER = "system:guest";
@@ -214,6 +216,18 @@ function isStableBackgroundOwner(owner: string | null): boolean {
   );
 }
 
+function parseTransitionEpoch(value: string | null): number {
+  if (value === null) return 0;
+  if (!/^\d+$/.test(value)) {
+    throw new Error("Sync owner transition epoch is invalid.");
+  }
+  const epoch = Number(value);
+  if (!Number.isSafeInteger(epoch) || epoch < 0) {
+    throw new Error("Sync owner transition epoch is invalid.");
+  }
+  return epoch;
+}
+
 /**
  * Read one synchronized value from an OS background task without consulting
  * React or Firebase auth state. The owner and transition journal are sampled
@@ -230,13 +244,21 @@ export async function readStableSynchronizedValue(
   const readMetadata = async (): Promise<{
     owner: string | null;
     journal: string | null;
+    transitionEpoch: number;
   }> => {
     const values = new Map(
-      await storage.multiGet([LOCAL_SYNC_OWNER_KEY, LOCAL_SYNC_JOURNAL_KEY]),
+      await storage.multiGet([
+        LOCAL_SYNC_OWNER_KEY,
+        LOCAL_SYNC_JOURNAL_KEY,
+        LOCAL_SYNC_TRANSITION_EPOCH_KEY,
+      ]),
     );
     return {
       owner: values.get(LOCAL_SYNC_OWNER_KEY) ?? null,
       journal: values.get(LOCAL_SYNC_JOURNAL_KEY) ?? null,
+      transitionEpoch: parseTransitionEpoch(
+        values.get(LOCAL_SYNC_TRANSITION_EPOCH_KEY) ?? null,
+      ),
     };
   };
 
@@ -251,6 +273,7 @@ export async function readStableSynchronizedValue(
     if (
       after.journal !== null ||
       after.owner !== before.owner ||
+      after.transitionEpoch !== before.transitionEpoch ||
       !isStableBackgroundOwner(after.owner)
     ) {
       return null;
@@ -392,6 +415,19 @@ export class SyncStorageCoordinator {
     }
   }
 
+  private async advanceOwnerTransitionEpoch(): Promise<void> {
+    const current = parseTransitionEpoch(
+      await this.storage.getItem(LOCAL_SYNC_TRANSITION_EPOCH_KEY),
+    );
+    if (current === Number.MAX_SAFE_INTEGER) {
+      throw new Error("Sync owner transition epoch cannot be advanced safely.");
+    }
+    await this.storage.setItem(
+      LOCAL_SYNC_TRANSITION_EPOCH_KEY,
+      String(current + 1),
+    );
+  }
+
   private async recoverIfNeeded(): Promise<void> {
     const rawJournal = await this.storage.getItem(LOCAL_SYNC_JOURNAL_KEY);
     const owner = await this.storage.getItem(LOCAL_SYNC_OWNER_KEY);
@@ -526,6 +562,10 @@ export class SyncStorageCoordinator {
       ]),
     };
 
+    // This monotonic epoch prevents a headless read from accepting an A to B
+    // to A transition merely because its two owner samples are equal.
+    await this.advanceOwnerTransitionEpoch();
+
     // Journal and quarantine precede every mutation of shared/cache values.
     await this.storage.setItem(LOCAL_SYNC_JOURNAL_KEY, JSON.stringify(journal));
     await this.storage.setItem(
@@ -614,6 +654,7 @@ export class SyncStorageCoordinator {
           );
           if (claimed.status === "stale") return claimed;
         }
+        await this.advanceOwnerTransitionEpoch();
         await this.storage.setItem(
           LOCAL_SYNC_OWNER_KEY,
           storedSyncUserOwner(expectedUserId),

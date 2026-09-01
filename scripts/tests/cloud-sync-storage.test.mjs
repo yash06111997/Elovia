@@ -9,6 +9,7 @@ import {
   LOCAL_SYNC_GUEST_OWNER,
   LOCAL_SYNC_OWNER_KEY,
   LOCAL_SYNC_QUARANTINE_OWNER,
+  LOCAL_SYNC_TRANSITION_EPOCH_KEY,
   readStableSynchronizedValue,
   STALE_CURRENT_USER,
   scopedSyncCacheKey,
@@ -194,6 +195,31 @@ test("background reads fail closed when an owner transition starts between check
   );
 });
 
+test("background reads reject a complete A to B to A transition during the value read", async () => {
+  class AbaTransitionStorage extends MemoryStorage {
+    async getItem(key) {
+      if (key !== "places") return super.getItem(key);
+
+      this.values.set(LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("B"));
+      this.values.set(LOCAL_SYNC_TRANSITION_EPOCH_KEY, "42");
+      this.values.set("places", '[{"id":"B-gym"}]');
+      const capturedOtherAccountValue = await super.getItem(key);
+
+      this.values.set(LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A"));
+      this.values.set(LOCAL_SYNC_TRANSITION_EPOCH_KEY, "43");
+      this.values.set("places", '[{"id":"A-gym"}]');
+      return capturedOtherAccountValue;
+    }
+  }
+
+  const storage = new AbaTransitionStorage([
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("A")],
+    [LOCAL_SYNC_TRANSITION_EPOCH_KEY, "41"],
+    ["places", '[{"id":"A-gym"}]'],
+  ]);
+  assert.equal(await readStableSynchronizedValue(storage, "places"), null);
+});
+
 test("an A1 Firebase lookup resolving after A to B to A2 is stale before mutation", async () => {
   const lookup = deferred();
   let scope = { ready: true, uid: "A", generation: 1 };
@@ -349,6 +375,7 @@ test("guest data is claimed, isolated on A to B, and restored on B to A", async 
     changed: true,
   });
   assert.equal(await storage.getItem("state"), "guest-a");
+  assert.equal(await storage.getItem(LOCAL_SYNC_TRANSITION_EPOCH_KEY), "1");
 
   currentUser = "B";
   assert.deepEqual(await coordinator.prepareOwner("B", current), {
@@ -356,6 +383,7 @@ test("guest data is claimed, isolated on A to B, and restored on B to A", async 
     changed: true,
   });
   assert.equal(await storage.getItem("state"), null);
+  assert.equal(await storage.getItem(LOCAL_SYNC_TRANSITION_EPOCH_KEY), "2");
   assert.equal(
     await storage.getItem(
       scopedSyncCacheKey(storedSyncUserOwner("A"), "state"),
@@ -379,6 +407,7 @@ test("guest data is claimed, isolated on A to B, and restored on B to A", async 
     changed: true,
   });
   assert.equal(await storage.getItem("state"), "guest-a");
+  assert.equal(await storage.getItem(LOCAL_SYNC_TRANSITION_EPOCH_KEY), "3");
   assert.equal(
     await storage.getItem(
       scopedSyncCacheKey(storedSyncUserOwner("B"), "state"),
@@ -809,7 +838,7 @@ function transitionFixture() {
 }
 
 test("every transition write phase fails closed, rolls back, and retries cleanly", async () => {
-  const mutationPhases = 8;
+  const mutationPhases = 9;
 
   for (let failAt = 1; failAt <= mutationPhases; failAt++) {
     const storage = transitionFixture();
