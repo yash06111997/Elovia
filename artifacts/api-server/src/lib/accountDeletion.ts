@@ -20,6 +20,22 @@ export interface ProvisionedAuthUser {
   profileImageUrl: string | null;
 }
 
+export interface AuthProvisioningCallback {
+  discoverAdditionalOwners(
+    transaction: AccountLockTransaction,
+  ): Promise<readonly string[]>;
+  afterProvision(
+    transaction: AccountLockTransaction,
+    createdAt: Date,
+  ): Promise<void>;
+}
+
+class AccountLockExpansion extends Error {
+  constructor(readonly owners: readonly string[]) {
+    super("Account lock set expanded.");
+  }
+}
+
 async function lockAccount(
   transaction: AccountLockTransaction,
   userId: string,
@@ -74,36 +90,58 @@ export async function withAccountLock<T>(
  */
 export async function provisionAuthenticatedUserIfActive(
   user: ProvisionedAuthUser,
+  callback?: AuthProvisioningCallback,
 ): Promise<"active" | "deleted"> {
-  return withAccountLock(user.id, async (transaction) => {
-    const tombstone = await transaction
-      .select({ userId: accountDeletionTombstonesTable.userId })
-      .from(accountDeletionTombstonesTable)
-      .where(eq(accountDeletionTombstonesTable.userId, user.id))
-      .limit(1);
-    if (tombstone.length > 0) return "deleted";
+  let lockOwners = [user.id];
+  for (let expansion = 0; expansion < 4; expansion += 1) {
+    try {
+      return await withAccountLocks(lockOwners, async (transaction) => {
+        const tombstone = await transaction
+          .select({ userId: accountDeletionTombstonesTable.userId })
+          .from(accountDeletionTombstonesTable)
+          .where(eq(accountDeletionTombstonesTable.userId, user.id))
+          .limit(1);
+        if (tombstone.length > 0) return "deleted";
 
-    await transaction
-      .insert(usersTable)
-      .values({
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        profileImageUrl: user.profileImageUrl,
-      })
-      .onConflictDoUpdate({
-        target: usersTable.id,
-        set: {
-          email: user.email,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          profileImageUrl: user.profileImageUrl,
-          updatedAt: new Date(),
-        },
+        const discovered = callback
+          ? await callback.discoverAdditionalOwners(transaction)
+          : [];
+        const outside = discovered.filter(
+          (owner) => !lockOwners.includes(owner),
+        );
+        if (outside.length > 0) throw new AccountLockExpansion(outside);
+
+        const provisioned = await transaction
+          .insert(usersTable)
+          .values({
+            id: user.id,
+            email: user.email,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            profileImageUrl: user.profileImageUrl,
+          })
+          .onConflictDoUpdate({
+            target: usersTable.id,
+            set: {
+              email: user.email,
+              firstName: user.firstName,
+              lastName: user.lastName,
+              profileImageUrl: user.profileImageUrl,
+              updatedAt: new Date(),
+            },
+          })
+          .returning({ createdAt: usersTable.createdAt });
+        const createdAt = provisioned[0]?.createdAt;
+        if (!createdAt) throw new Error("Authenticated user was not provisioned.");
+        await callback?.afterProvision(transaction, createdAt);
+        return "active";
       });
-    return "active";
-  });
+    } catch (error) {
+      if (!(error instanceof AccountLockExpansion)) throw error;
+      lockOwners = orderedAccountIds([...lockOwners, ...error.owners]);
+    }
+  }
+  throw new Error("Authenticated account ownership did not stabilize.");
 }
 
 export async function findAccountDeletionTombstone(

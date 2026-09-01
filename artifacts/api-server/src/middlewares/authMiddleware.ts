@@ -4,6 +4,8 @@ import {
   findAccountDeletionTombstone,
   provisionAuthenticatedUserIfActive,
 } from "../lib/accountDeletion";
+import { loadRevenueCatConfig } from "../lib/revenuecatConfig";
+import { createRevenueCatAuthProvisioningCallback } from "../lib/revenuecatWorker";
 
 declare global {
   namespace Express {
@@ -82,7 +84,11 @@ export async function authMiddleware(
       return;
     }
 
-    const provisioned = await provisionAuthenticatedUserIfActive(user);
+    const revenueCatConfig = loadRevenueCatConfig(process.env);
+    const provisioned = await provisionAuthenticatedUserIfActive(
+      user,
+      createRevenueCatAuthProvisioningCallback(user, revenueCatConfig),
+    );
     if (provisioned === "deleted") {
       if (deletionRequest) {
         req.user = user;

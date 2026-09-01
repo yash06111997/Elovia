@@ -1,6 +1,10 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { requireAuth } from "../middlewares/aiGate";
 import { resolveEntitlement } from "../lib/entitlements";
+import {
+  reconcileTrustedUserOnDemand,
+  revenueCatRuntimeFromEnvironment,
+} from "../lib/revenuecatWorker";
 import { dailyLimitFor, currentDay, type AiRoute } from "../lib/aiQuota";
 import { db, aiUsageTable } from "@workspace/db";
 import { and, eq } from "drizzle-orm";
@@ -25,6 +29,8 @@ const TRACKED_ROUTES: AiRoute[] = [
 router.get("/entitlement", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    const runtime = revenueCatRuntimeFromEnvironment();
+    await reconcileTrustedUserOnDemand({ userId, ...runtime });
     const entitlement = await resolveEntitlement(userId);
 
     const rows = await db

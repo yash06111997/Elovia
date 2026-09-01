@@ -2,6 +2,7 @@ import app from "./app";
 import { startAccountDeletionFinalizer } from "./lib/accountDeletionFinalizer";
 import { logger } from "./lib/logger";
 import { loadRevenueCatConfig } from "./lib/revenuecatConfig";
+import { startRevenueCatWorkers } from "./lib/revenuecatWorker";
 
 // Validate every RevenueCat invariant before listen so an unsafe runtime never
 // advertises readiness or accepts traffic.
@@ -22,12 +23,26 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-app.listen(port, (err) => {
+let stopAccountDeletionFinalizer: (() => void) | null = null;
+let stopRevenueCatWorkers: (() => void) | null = null;
+const server = app.listen(port, (err) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
     process.exit(1);
   }
 
   logger.info({ port }, "Server listening");
-  startAccountDeletionFinalizer();
+  stopAccountDeletionFinalizer = startAccountDeletionFinalizer();
+  stopRevenueCatWorkers = startRevenueCatWorkers();
 });
+
+function shutdown(): void {
+  stopRevenueCatWorkers?.();
+  stopAccountDeletionFinalizer?.();
+  server.close((error) => {
+    if (error) logger.error({ errorType: error.name }, "Server shutdown failed");
+  });
+}
+
+process.once("SIGTERM", shutdown);
+process.once("SIGINT", shutdown);

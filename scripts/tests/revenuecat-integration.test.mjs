@@ -215,6 +215,13 @@ let revenuecatSchema;
 let processRevenueCatDelivery;
 let applyTrustedSnapshot;
 let tombstoneAndDeleteAccountData;
+let provisionAuthenticatedUserIfActive;
+let createRevenueCatAuthProvisioningCallback;
+let claimDueTrustedUsers;
+let runTrustedUserBatch;
+let runPendingEventBatch;
+let bootstrapRevenueCatCustomers;
+let cleanupRevenueCatEvents;
 let runMigrations;
 let unregisterTsx;
 let temporaryDatabaseCounter = 0;
@@ -538,10 +545,18 @@ if (testDatabaseUrl) {
     revenuecatSchema = await import("../../lib/db/src/schema/revenuecat.ts");
     ({ processRevenueCatDelivery } =
       await import("../../artifacts/api-server/src/lib/revenuecatProcessor.ts"));
-    ({ tombstoneAndDeleteAccountData } =
+    ({ tombstoneAndDeleteAccountData, provisionAuthenticatedUserIfActive } =
       await import("../../artifacts/api-server/src/lib/accountDeletion.ts"));
     ({ applyTrustedSnapshot } =
       await import("../../artifacts/api-server/src/lib/revenuecatReconciler.ts"));
+    ({
+      createRevenueCatAuthProvisioningCallback,
+      claimDueTrustedUsers,
+      runTrustedUserBatch,
+      runPendingEventBatch,
+      bootstrapRevenueCatCustomers,
+      cleanupRevenueCatEvents,
+    } = await import("../../artifacts/api-server/src/lib/revenuecatWorker.ts"));
     scopedPool = new Pool({ connectionString: databaseUrl });
   });
 
@@ -3668,6 +3683,347 @@ integrationTest(
       pruned_identity_count: 2,
       retained_subjects: 0,
     });
+  },
+);
+
+integrationTest(
+  "authenticated provenance displaces webhook ownership and recovers an identity-only event without raw subjects",
+  async () => {
+    const suffix = Date.now();
+    const priorOwner = `auth-prior-${suffix}`;
+    const authenticated = `auth-direct-${suffix}`;
+    const eventId = `auth_recovery_${suffix}`;
+    const hash = subjectHash(authenticated);
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [priorOwner]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_aliases
+       (alias_hash,local_user_id,alias_kind,ownership_source,source_event_at,source_event_id)
+       VALUES ($1,$2,'ordinary','webhook','2000-01-01T00:00:00Z','auth_seed_1234')`,
+      [hash, priorOwner],
+    );
+    await insertEvent(scopedPool, {
+      eventId,
+      eventAt: "2000-01-01T00:00:01Z",
+      receivedAt: "2000-01-01T00:00:02Z",
+      identityCount: 1,
+      identityRequired: true,
+      entitlementRequired: true,
+      nextAttemptAt: "2000-01-01T00:00:02Z",
+      retentionUntil: "2099-01-01T00:00:00Z",
+    });
+    await scopedPool.query(
+      `INSERT INTO revenuecat_event_subjects
+       (event_id,subject_hash,role_mask,local_user_id) VALUES ($1,$2,1,$3)`,
+      [eventId, hash, priorOwner],
+    );
+
+    const authUser = {
+      id: authenticated,
+      email: null,
+      firstName: null,
+      lastName: null,
+      profileImageUrl: null,
+    };
+    assert.equal(
+      await provisionAuthenticatedUserIfActive(
+        authUser,
+        createRevenueCatAuthProvisioningCallback(authUser, processorConfig),
+      ),
+      "active",
+    );
+    const ownership = await scopedPool.query(
+      `SELECT local_user_id,alias_kind,ownership_source,source_event_at,source_event_id,
+              authenticated_at IS NOT NULL AS authenticated
+       FROM revenuecat_customer_aliases WHERE alias_hash=$1`,
+      [hash],
+    );
+    assert.deepEqual(ownership.rows[0], {
+      local_user_id: authenticated,
+      alias_kind: "authenticated",
+      ownership_source: "authenticated",
+      source_event_at: null,
+      source_event_id: null,
+      authenticated: true,
+    });
+    const queued = await scopedPool.query(
+      `SELECT user_id,reconcile_reason FROM revenuecat_customer_state
+       WHERE user_id=ANY($1::text[]) ORDER BY user_id`,
+      [[priorOwner, authenticated]],
+    );
+    assert.deepEqual(
+      new Set(queued.rows.map((row) => `${row.user_id}:${row.reconcile_reason}`)),
+      new Set([
+        `${priorOwner}:authenticated`,
+        `${authenticated}:authenticated`,
+      ]),
+    );
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET entitlement_applied_at=clock_timestamp(),next_attempt_at='2000-01-01T00:00:02Z'
+       WHERE event_id=$1`,
+      [eventId],
+    );
+    await scopedPool.query(
+      `UPDATE revenuecat_webhook_events
+       SET next_attempt_at='2099-01-01T00:00:00Z'
+       WHERE disposition='pending' AND event_id<>$1`,
+      [eventId],
+    );
+    let providerCalls = 0;
+    await runPendingEventBatch({
+      config: processorConfig,
+      client: {
+        async getSubscriber() {
+          providerCalls += 1;
+          throw new Error("identity-only recovery must not fetch");
+        },
+      },
+      limit: 1,
+    });
+    assert.equal(providerCalls, 0);
+    const recovered = await scopedPool.query(
+      `SELECT disposition,identity_applied_at IS NOT NULL AS identity_done,
+              entitlement_applied_at IS NOT NULL AS entitlement_done
+       FROM revenuecat_webhook_events WHERE event_id=$1`,
+      [eventId],
+    );
+    assert.deepEqual(recovered.rows[0], {
+      disposition: "stale",
+      identity_done: true,
+      entitlement_done: true,
+    });
+    assert.equal(
+      (
+        await scopedPool.query(
+          "SELECT local_user_id FROM revenuecat_customer_aliases WHERE alias_hash=$1",
+          [hash],
+        )
+      ).rows[0].local_user_id,
+      authenticated,
+    );
+  },
+);
+
+integrationTest(
+  "trusted UID claims are fenced, 201 is non-applying, and a later 200 schedules six hours",
+  async () => {
+    const suffix = Date.now();
+    const userId = `trusted-worker-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [userId]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_state
+       (user_id,canonicalization_state,source_kind,source_environment,last_snapshot_at,
+        last_operation_id,last_reconciled_at,reconcile_reason,reconcile_after)
+       VALUES ($1,'canonical','worker_canonical','sandbox','2026-09-01T00:00:00Z',
+               'worker:seed_12345678','2026-09-01T00:00:01Z','scheduled','2000-01-01T00:00:00Z')`,
+      [userId],
+    );
+    await scopedPool.query(
+      `INSERT INTO subscription_entitlements
+       (user_id,entitlement_id,active,status,product_id,store,access_ends_at,will_renew,
+        source_environment,source_kind,source_snapshot_at,source_operation_id)
+       VALUES ($1,'elovia_pro',true,'active','pro_monthly','test_store',
+               '2026-10-01T00:00:00Z',true,'sandbox','worker_canonical',
+               '2026-09-01T00:00:00Z','worker:seed_12345678')`,
+      [userId],
+    );
+    await scopedPool.query(
+      `UPDATE revenuecat_customer_state
+       SET reconcile_after='2099-01-01T00:00:00Z'
+       WHERE user_id<>$1`,
+      [userId],
+    );
+    const empty = snapshot("2026-09-02T00:00:00Z", { pro: false, coaching: false });
+    await runTrustedUserBatch({
+      config: processorConfig,
+      client: fakeClient({ lookup: "created", snapshot: empty }, []),
+      limit: 1,
+    });
+    assert.equal(
+      (
+        await scopedPool.query(
+          `SELECT active FROM subscription_entitlements
+           WHERE user_id=$1 AND entitlement_id='elovia_pro'`,
+          [userId],
+        )
+      ).rows[0].active,
+      true,
+    );
+    await scopedPool.query(
+      `UPDATE revenuecat_customer_state SET reconcile_after='2000-01-01T00:00:00Z'
+       WHERE user_id=$1`,
+      [userId],
+    );
+    await runTrustedUserBatch({
+      config: processorConfig,
+      client: fakeClient({ lookup: "existing", snapshot: empty }, []),
+      limit: 1,
+    });
+    const state = await scopedPool.query(
+      `SELECT canonicalization_state,reconcile_attempt_count,reconcile_lease_id,
+              reconcile_last_error_code,last_operation_id,
+              reconcile_after > clock_timestamp() + interval '5 hours 50 minutes' AS six_hours
+       FROM revenuecat_customer_state WHERE user_id=$1`,
+      [userId],
+    );
+    assert.equal(state.rows[0].canonicalization_state, "canonical");
+    assert.equal(state.rows[0].reconcile_attempt_count, 0);
+    assert.equal(state.rows[0].reconcile_lease_id, null);
+    assert.equal(state.rows[0].reconcile_last_error_code, null);
+    assert.match(state.rows[0].last_operation_id, /^worker:/);
+    assert.equal(state.rows[0].six_hours, true);
+    assert.equal(
+      (
+        await scopedPool.query(
+          `SELECT active FROM subscription_entitlements
+           WHERE user_id=$1 AND entitlement_id='elovia_pro'`,
+          [userId],
+        )
+      ).rows[0].active,
+      false,
+    );
+  },
+);
+
+integrationTest(
+  "bootstrap pages customer state by trusted UID and accepts only an empty 201",
+  async () => {
+    const suffix = Date.now();
+    const userId = `000-bootstrap-${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [userId]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_state
+       (user_id,canonicalization_state,source_kind,reconcile_reason,reconcile_after)
+       VALUES ($1,'legacy_unverified','legacy_unverified','legacy_bootstrap','2000-01-01T00:00:00Z')`,
+      [userId],
+    );
+    await scopedPool.query(
+      `INSERT INTO subscription_entitlements
+       (user_id,entitlement_id,active,status,will_renew,source_kind,
+        source_snapshot_at,source_operation_id)
+       VALUES ($1,'__legacy_unverified__',false,'expired',false,'legacy_unverified',
+               '1970-01-01T00:00:00Z','legacy')`,
+      [userId],
+    );
+    const calls = [];
+    await bootstrapRevenueCatCustomers({
+      config: processorConfig,
+      client: fakeClient(
+        {
+          lookup: "created",
+          snapshot: snapshot("2026-09-02T01:00:00Z", {
+            pro: false,
+            coaching: false,
+          }),
+        },
+        calls,
+      ),
+      runId: "12345678-1234-1234-1234-123456789abc",
+      batchSize: 10,
+    });
+    assert.equal(calls.includes(userId), true);
+    const state = await scopedPool.query(
+      `SELECT canonicalization_state,source_kind,last_operation_id
+       FROM revenuecat_customer_state WHERE user_id=$1`,
+      [userId],
+    );
+    assert.deepEqual(state.rows[0], {
+      canonicalization_state: "canonical",
+      source_kind: "bootstrap_canonical",
+      last_operation_id: "bootstrap:12345678-1234-1234-1234-123456789abc",
+    });
+    assert.equal(
+      (
+        await scopedPool.query(
+          `SELECT count(*)::integer AS count FROM subscription_entitlements
+           WHERE user_id=$1 AND entitlement_id='__legacy_unverified__'`,
+          [userId],
+        )
+      ).rows[0].count,
+      0,
+    );
+  },
+);
+
+integrationTest(
+  "cleanup preserves surviving identity work and never derives transfer phases from customer state",
+  async () => {
+    const suffix = Date.now();
+    const userId = `cleanup-live-${suffix}`;
+    const ordinary = `cleanup_ordinary_${suffix}`;
+    const transfer = `cleanup_transfer_${suffix}`;
+    const pruned = `cleanup_pruned_${suffix}`;
+    await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [userId]);
+    await scopedPool.query(
+      `INSERT INTO revenuecat_customer_state
+       (user_id,canonicalization_state,source_kind,source_environment,last_snapshot_at,
+        last_operation_id,last_reconciled_at,reconcile_reason,reconcile_after)
+       VALUES ($1,'canonical','worker_canonical','sandbox','2026-09-01T00:00:00Z',
+               'worker:cleanup_1234',clock_timestamp(),'scheduled','2099-01-01T00:00:00Z')`,
+      [userId],
+    );
+    for (const [eventId, type] of [
+      [ordinary, "INITIAL_PURCHASE"],
+      [transfer, "TRANSFER"],
+      [pruned, "INITIAL_PURCHASE"],
+    ]) {
+      await insertEvent(scopedPool, {
+        eventId,
+        type,
+        eventAt: "2026-05-01T00:00:00Z",
+        receivedAt: "2026-05-01T00:00:01Z",
+        identityCount: 1,
+        identityRequired: true,
+        entitlementRequired: true,
+        nextAttemptAt: "2099-01-01T00:00:00Z",
+        retentionUntil: "2026-08-01T00:00:00Z",
+      });
+    }
+    await scopedPool.query(
+      `INSERT INTO revenuecat_event_subjects
+       (event_id,subject_hash,role_mask,local_user_id) VALUES
+       ($1,$2,1,$3),($4,$5,24,$3)`,
+      [ordinary, "a".repeat(64), userId, transfer, "b".repeat(64)],
+    );
+    await scopedPool.query(
+      `INSERT INTO revenuecat_event_subjects
+       (event_id,subject_hash,role_mask,local_user_id) VALUES ($1,$2,1,NULL)`,
+      [pruned, "c".repeat(64)],
+    );
+    await scopedPool.query(
+      `DELETE FROM revenuecat_event_subjects WHERE event_id=$1`,
+      [pruned],
+    );
+    await cleanupRevenueCatEvents();
+    const states = await scopedPool.query(
+      `SELECT event_id,identity_applied_at IS NOT NULL AS identity_done,
+              entitlement_applied_at IS NOT NULL AS entitlement_done
+       FROM revenuecat_webhook_events
+       WHERE event_id=ANY($1::text[]) ORDER BY event_id`,
+      [[ordinary, transfer]],
+    );
+    assert.deepEqual(
+      new Map(states.rows.map((row) => [row.event_id, row])),
+      new Map([
+        [
+          ordinary,
+          { event_id: ordinary, identity_done: false, entitlement_done: true },
+        ],
+        [
+          transfer,
+          { event_id: transfer, identity_done: false, entitlement_done: false },
+        ],
+      ]),
+    );
+    assert.equal(
+      (
+        await scopedPool.query(
+          "SELECT count(*)::integer AS count FROM revenuecat_webhook_events WHERE event_id=$1",
+          [pruned],
+        )
+      ).rows[0].count,
+      0,
+    );
   },
 );
 
