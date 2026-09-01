@@ -1,6 +1,12 @@
 import app from "./app";
 import { startAccountDeletionFinalizer } from "./lib/accountDeletionFinalizer";
 import { logger } from "./lib/logger";
+import { loadRevenueCatConfig } from "./lib/revenuecatConfig";
+
+// Validate every RevenueCat invariant before listen so an unsafe runtime never
+// advertises readiness or accepts traffic.
+const revenueCatConfig = loadRevenueCatConfig(process.env);
+void revenueCatConfig;
 
 const rawPort = process.env["PORT"];
 

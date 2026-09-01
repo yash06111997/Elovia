@@ -1,9 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import {
   parseRevenueCatDelivery,
   RECONCILING_REVENUECAT_EVENTS,
 } from "../../artifacts/api-server/src/lib/revenuecatContract.ts";
+import {
+  loadRevenueCatConfig,
+} from "../../artifacts/api-server/src/lib/revenuecatConfig.ts";
+import {
+  createRevenueCatClient,
+  RevenueCatClientError,
+  trustAuthenticatedLocalUid,
+} from "../../artifacts/api-server/src/lib/revenuecatClient.ts";
+import {
+  parseCanonicalRevenueCatSnapshot,
+  projectRevenueCatSnapshot,
+} from "../../artifacts/api-server/src/lib/revenuecatSnapshot.ts";
 
 const valid = {
   api_version: "1.0",
@@ -435,4 +448,456 @@ test("drops malformed Unicode from optional string fields", () => {
     environment: null,
   });
   assertDeliveryStringsAreWellFormed(parsed.value);
+});
+
+const CONFIG_ENV = Object.freeze({
+  REVENUECAT_WEBHOOK_SECRET: "webhook-secret",
+  REVENUECAT_SECRET_API_KEY: "secret-api-key",
+  REVENUECAT_SUBJECT_HASH_KEY: "h".repeat(32),
+  REVENUECAT_PRO_ENTITLEMENT_ID: "Elovia Pro",
+  REVENUECAT_COACHING_ENTITLEMENT_ID: "Elovia Coaching",
+  REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([
+    { id: "pro_auto", kind: "auto_renewing" },
+    { id: "pro_prepaid", kind: "prepaid" },
+    { id: "pro_promo", kind: "promotional" },
+    { id: "pro_lifetime", kind: "lifetime" },
+    { id: "pro_fixed", kind: "non_renewing", accessDays: 30 },
+  ]),
+  REVENUECAT_COACHING_PRODUCTS_JSON: JSON.stringify([
+    { id: "coaching_auto", kind: "auto_renewing" },
+  ]),
+  REVENUECAT_ENVIRONMENT: "production",
+  REVENUECAT_NORMALIZED_READS: "per_user",
+});
+
+const SNAPSHOT_MS = Date.parse("2026-09-01T12:00:00.000Z");
+const DAY = 86_400_000;
+
+function config(overrides = {}) {
+  return loadRevenueCatConfig({ ...CONFIG_ENV, ...overrides });
+}
+
+function rawSnapshot(overrides = {}) {
+  return {
+    request_date_ms: SNAPSHOT_MS,
+    subscriber: {
+      entitlements: {},
+      subscriptions: {},
+      non_subscriptions: {},
+      ...overrides,
+    },
+  };
+}
+
+function subscription(overrides = {}) {
+  return {
+    purchase_date: new Date(SNAPSHOT_MS - 30 * DAY).toISOString(),
+    original_purchase_date: new Date(SNAPSHOT_MS - 60 * DAY).toISOString(),
+    expires_date: new Date(SNAPSHOT_MS + 30 * DAY).toISOString(),
+    is_sandbox: false,
+    store: "app_store",
+    ownership_type: "purchased",
+    period_type: "normal",
+    ...overrides,
+  };
+}
+
+function parseSnapshot(raw, options = {}) {
+  return parseCanonicalRevenueCatSnapshot(raw, {
+    requestStartedAt: new Date(SNAPSHOT_MS - 1_000),
+    responseReceivedAt: new Date(SNAPSHOT_MS + 1_000),
+    ...options,
+  });
+}
+
+function projected(raw, configOverrides = {}, operationId = "worker:lease-12345678") {
+  const snapshot = parseSnapshot(raw);
+  return projectRevenueCatSnapshot({
+    snapshot,
+    config: config(configOverrides),
+    operationId,
+  });
+}
+
+test("RevenueCat configuration is immutable and preserves exact valid values", () => {
+  const loaded = config();
+  assert.equal(Object.isFrozen(loaded), true);
+  assert.equal(Object.isFrozen(loaded.proProducts), true);
+  assert.equal(Object.isFrozen(loaded.proProducts[0]), true);
+  assert.equal(loaded.webhookSecret, CONFIG_ENV.REVENUECAT_WEBHOOK_SECRET);
+  assert.equal(loaded.apiKey, CONFIG_ENV.REVENUECAT_SECRET_API_KEY);
+  assert.equal(loaded.environment, "production");
+  assert.equal(loaded.normalizedReads, "per_user");
+  assert.throws(() => loaded.proProducts.push({ id: "x", kind: "lifetime" }));
+});
+
+test("RevenueCat configuration rejects missing, blank, and byte-bounded secrets", () => {
+  for (const key of [
+    "REVENUECAT_WEBHOOK_SECRET",
+    "REVENUECAT_SECRET_API_KEY",
+    "REVENUECAT_SUBJECT_HASH_KEY",
+    "REVENUECAT_PRO_ENTITLEMENT_ID",
+    "REVENUECAT_COACHING_ENTITLEMENT_ID",
+    "REVENUECAT_PRO_PRODUCTS_JSON",
+    "REVENUECAT_COACHING_PRODUCTS_JSON",
+    "REVENUECAT_ENVIRONMENT",
+    "REVENUECAT_NORMALIZED_READS",
+  ]) {
+    assert.throws(() => config({ [key]: undefined }), /RevenueCat configuration/i, key);
+    assert.throws(() => config({ [key]: "   " }), /RevenueCat configuration/i, key);
+  }
+  for (const key of ["REVENUECAT_WEBHOOK_SECRET", "REVENUECAT_SECRET_API_KEY"]) {
+    assert.throws(() => config({ [key]: "😀".repeat(257) }), /RevenueCat configuration/i, key);
+  }
+  assert.throws(
+    () => config({ REVENUECAT_SUBJECT_HASH_KEY: "😀".repeat(7) }),
+    /RevenueCat configuration/i,
+  );
+  assert.throws(
+    () => config({ REVENUECAT_SUBJECT_HASH_KEY: "😀".repeat(257) }),
+    /RevenueCat configuration/i,
+  );
+});
+
+test("RevenueCat configuration rejects unsafe entitlements and product documents", () => {
+  const mutations = [
+    { REVENUECAT_PRO_ENTITLEMENT_ID: "same", REVENUECAT_COACHING_ENTITLEMENT_ID: "same" },
+    { REVENUECAT_PRO_ENTITLEMENT_ID: "__legacy_unverified__" },
+    { REVENUECAT_PRO_ENTITLEMENT_ID: "x".repeat(129) },
+    { REVENUECAT_PRO_ENTITLEMENT_ID: "bad\u0000id" },
+    { REVENUECAT_PRO_ENTITLEMENT_ID: "bad\uD800id" },
+    { REVENUECAT_PRO_PRODUCTS_JSON: "{" },
+    { REVENUECAT_PRO_PRODUCTS_JSON: "{}" },
+    { REVENUECAT_PRO_PRODUCTS_JSON: "[]" },
+    { REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify(Array.from({ length: 65 }, (_, i) => ({ id: `p${i}`, kind: "lifetime" }))) },
+    { REVENUECAT_PRO_PRODUCTS_JSON: ` ${JSON.stringify([{ id: "x", kind: "lifetime", pad: "x".repeat(17_000) }])}` },
+    { REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([{ id: "dup", kind: "lifetime" }, { id: "dup", kind: "lifetime" }]) },
+    { REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([{ id: "coaching_auto", kind: "lifetime" }]) },
+    { REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([{ id: "bad\u0001", kind: "lifetime" }]) },
+    { REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([{ id: "x".repeat(257), kind: "lifetime" }]) },
+    { REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([{ id: "bad\uD800", kind: "lifetime" }]) },
+    { REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([{ id: "x", kind: "future" }]) },
+    { REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([{ id: "x", kind: "non_renewing" }]) },
+    { REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([{ id: "x", kind: "non_renewing", accessDays: 0 }]) },
+    { REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([{ id: "x", kind: "non_renewing", accessDays: 3661 }]) },
+    { REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([{ id: "x", kind: "non_renewing", accessDays: 1.5 }]) },
+    { REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([{ id: "x", kind: "lifetime", accessDays: 30 }]) },
+    { REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([{ id: "x", kind: "lifetime", extra: true }]) },
+    { REVENUECAT_ENVIRONMENT: "staging" },
+    { REVENUECAT_NORMALIZED_READS: "legacy" },
+  ];
+  for (const mutation of mutations) {
+    assert.throws(() => config(mutation), /RevenueCat configuration/i, JSON.stringify(mutation).slice(0, 120));
+  }
+});
+
+test("RevenueCat env template and startup/readiness fail closed without exposing values", async () => {
+  const [envTemplate, indexSource, healthSource] = await Promise.all([
+    readFile(new URL("../../.env.example", import.meta.url), "utf8"),
+    readFile(new URL("../../artifacts/api-server/src/index.ts", import.meta.url), "utf8"),
+    readFile(new URL("../../artifacts/api-server/src/routes/health.ts", import.meta.url), "utf8"),
+  ]);
+  for (const line of [
+    "REVENUECAT_WEBHOOK_SECRET=replace-with-the-exact-configured-authorization-header",
+    "REVENUECAT_SECRET_API_KEY=replace-with-a-secret-server-api-key",
+    "REVENUECAT_SUBJECT_HASH_KEY=replace-with-at-least-32-random-bytes",
+    "REVENUECAT_PRO_ENTITLEMENT_ID=Elovia Pro",
+    "REVENUECAT_COACHING_ENTITLEMENT_ID=Elovia Coaching",
+    'REVENUECAT_PRO_PRODUCTS_JSON=[{"id":"elovia_pro_monthly","kind":"auto_renewing"}]',
+    'REVENUECAT_COACHING_PRODUCTS_JSON=[{"id":"elovia_coaching_monthly","kind":"auto_renewing"}]',
+    "REVENUECAT_ENVIRONMENT=production",
+    "REVENUECAT_NORMALIZED_READS=per_user",
+  ]) assert.match(envTemplate, new RegExp(line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(indexSource, /loadRevenueCatConfig\(process\.env\)/);
+  assert.match(indexSource, /before listen|revenueCatConfig/u);
+  assert.match(healthSource, /loadRevenueCatConfig\(process\.env\)/);
+  assert.doesNotMatch(healthSource, /apiKey|webhookSecret|subjectHashKey/);
+});
+
+test("RevenueCat client URL-encodes a trusted UID and distinguishes 200 from Get-or-Create 201", async () => {
+  for (const [status, lookup] of [[200, "existing"], [201, "created"]]) {
+    let call;
+    const client = createRevenueCatClient({
+      apiKey: "secret-key",
+      clock: () => new Date(SNAPSHOT_MS),
+      fetchImpl: async (url, init) => {
+        call = { url, init };
+        return new Response(JSON.stringify(rawSnapshot()), {
+          status,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+      },
+    });
+    const result = await client.getSubscriber(trustAuthenticatedLocalUid("firebase/user + one"));
+    assert.equal(result.lookup, lookup);
+    assert.equal(result.snapshot.sourceSnapshotAt.getTime(), SNAPSHOT_MS);
+    assert.equal("provisionLocalUser" in result, false);
+    assert.equal("trial" in result, false);
+    assert.equal(call.url, "https://api.revenuecat.com/v1/subscribers/firebase%2Fuser%20%2B%20one");
+    assert.equal(call.init.method, "GET");
+    assert.equal(call.init.headers.Authorization, "Bearer secret-key");
+    assert.equal(call.init.headers.Accept, "application/json");
+  }
+});
+
+test("RevenueCat client returns typed sanitized status, network, and timeout failures", async () => {
+  const cases = [
+    [400, "revenuecat_request_invalid", false],
+    [401, "revenuecat_configuration_invalid", false],
+    [404, "canonical_response_invalid", true],
+    [429, "revenuecat_unavailable", true],
+    [500, "revenuecat_unavailable", true],
+  ];
+  for (const [status, code, retryable] of cases) {
+    const client = createRevenueCatClient({
+      apiKey: "secret-key",
+      clock: () => new Date(SNAPSHOT_MS),
+      fetchImpl: async () => new Response("private-provider-body", { status }),
+    });
+    await assert.rejects(
+      client.getSubscriber(trustAuthenticatedLocalUid("private-user")),
+      (error) => {
+        assert.equal(error instanceof RevenueCatClientError, true);
+        assert.equal(error.code, code);
+        assert.equal(error.retryable, retryable);
+        assert.doesNotMatch(error.message, /private|subscriber_not_found|404 body/i);
+        return true;
+      },
+    );
+  }
+
+  const networkClient = createRevenueCatClient({
+    apiKey: "secret-key",
+    clock: () => new Date(SNAPSHOT_MS),
+    fetchImpl: async () => { throw new Error("private network detail"); },
+  });
+  await assert.rejects(
+    networkClient.getSubscriber(trustAuthenticatedLocalUid("private-user")),
+    (error) => error.code === "revenuecat_unavailable" && error.retryable && !error.message.includes("private"),
+  );
+
+  const timeoutClient = createRevenueCatClient({
+    apiKey: "secret-key",
+    timeoutMs: 10,
+    clock: () => new Date(SNAPSHOT_MS),
+    fetchImpl: (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    }),
+  });
+  await assert.rejects(
+    timeoutClient.getSubscriber(trustAuthenticatedLocalUid("private-user")),
+    (error) => error.code === "revenuecat_timeout" && error.retryable,
+  );
+
+  const bodyTimeoutClient = createRevenueCatClient({
+    apiKey: "secret-key",
+    timeoutMs: 10,
+    clock: () => new Date(SNAPSHOT_MS),
+    fetchImpl: async (_url, init) => new Response(new ReadableStream({
+      start(controller) {
+        init.signal.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError")));
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+  await assert.rejects(
+    bodyTimeoutClient.getSubscriber(trustAuthenticatedLocalUid("private-user")),
+    (error) => error.code === "revenuecat_timeout" && error.retryable,
+  );
+});
+
+test("RevenueCat client bounds declared and streamed bytes before parsing", async () => {
+  const tooLarge = 1_048_577;
+  const declared = createRevenueCatClient({
+    apiKey: "secret-key",
+    clock: () => new Date(SNAPSHOT_MS),
+    fetchImpl: async () => new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json", "content-length": String(tooLarge) },
+    }),
+  });
+  await assert.rejects(declared.getSubscriber(trustAuthenticatedLocalUid("uid")), (error) => error.code === "canonical_response_invalid");
+
+  const chunk = new Uint8Array(600_000);
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(chunk);
+      controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  const streamed = createRevenueCatClient({
+    apiKey: "secret-key",
+    clock: () => new Date(SNAPSHOT_MS),
+    fetchImpl: async () => new Response(body, { status: 200, headers: { "content-type": "application/json" } }),
+  });
+  await assert.rejects(streamed.getSubscriber(trustAuthenticatedLocalUid("uid")), (error) => error.code === "canonical_response_invalid");
+});
+
+test("RevenueCat client rejects content type, UTF-8, JSON, and schema without response.json", async () => {
+  const bodies = [
+    ["text/plain", new TextEncoder().encode("{}")],
+    ["application/json", Uint8Array.from([0xc3, 0x28])],
+    ["application/json", new TextEncoder().encode("{")],
+    ["application/json", new TextEncoder().encode(JSON.stringify({ request_date_ms: SNAPSHOT_MS }))],
+  ];
+  for (const [contentType, bytes] of bodies) {
+    const client = createRevenueCatClient({
+      apiKey: "secret-key",
+      clock: () => new Date(SNAPSHOT_MS),
+      fetchImpl: async () => new Response(bytes, { status: 200, headers: { "content-type": contentType } }),
+    });
+    await assert.rejects(client.getSubscriber(trustAuthenticatedLocalUid("uid")), (error) => error.code === "canonical_response_invalid");
+  }
+  const source = await readFile(new URL("../../artifacts/api-server/src/lib/revenuecatClient.ts", import.meta.url), "utf8").catch(() => "");
+  assert.doesNotMatch(source, /\.json\s*\(/);
+  assert.doesNotMatch(source, /attributes/);
+  assert.doesNotMatch(source, /subscriber_not_found/);
+  assert.match(source, /getSubscriber\(uid: TrustedLocalUid\)/);
+  assert.match(source, /unique symbol/);
+  assert.doesNotMatch(source, /getSubscriber\(uid: string\)/);
+});
+
+test("canonical snapshot rejects skew, count, string, enum, date, and product-class shapes", () => {
+  const invalids = [];
+  invalids.push({ ...rawSnapshot(), request_date_ms: 0 });
+  invalids.push({ ...rawSnapshot(), request_date_ms: SNAPSHOT_MS - 6 * 60_000 });
+  invalids.push({ ...rawSnapshot(), request_date_ms: SNAPSHOT_MS + 6 * 60_000 });
+  invalids.push(rawSnapshot({ entitlements: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`e${i}`, {}])) }));
+  invalids.push(rawSnapshot({ subscriptions: Object.fromEntries(Array.from({ length: 257 }, (_, i) => [`p${i}`, subscription()])) }));
+  invalids.push(rawSnapshot({ non_subscriptions: Object.fromEntries(Array.from({ length: 257 }, (_, i) => [`p${i}`, []])) }));
+  invalids.push(rawSnapshot({ non_subscriptions: { p: Array.from({ length: 257 }, () => ({ id: "purchase", purchase_date: new Date(SNAPSHOT_MS).toISOString(), is_sandbox: false, store: "app_store" })) } }));
+  invalids.push(rawSnapshot({ subscriptions: { ["x".repeat(257)]: subscription() } }));
+  invalids.push(rawSnapshot({ subscriptions: { p: subscription({ store: "future_store" }) } }));
+  invalids.push(rawSnapshot({ subscriptions: { p: subscription({ period_type: "future_period" }) } }));
+  invalids.push(rawSnapshot({ subscriptions: { p: subscription({ ownership_type: "future_owner" }) } }));
+  invalids.push(rawSnapshot({ subscriptions: { p: subscription({ expires_date: "not-a-date" }) } }));
+  invalids.push(rawSnapshot({ subscriptions: { p: subscription({ expires_date: "2026-09-02" }) } }));
+  invalids.push(rawSnapshot({ subscriptions: { p: subscription({ expires_date: "1999-12-31T00:00:00.000Z" }) } }));
+  invalids.push(rawSnapshot({ subscriptions: { p: subscription({ expires_date: new Date(SNAPSHOT_MS + 11 * 365 * DAY).toISOString() }) } }));
+  invalids.push(rawSnapshot({ subscriptions: { p: subscription({ is_sandbox: "false" }) } }));
+  invalids.push(rawSnapshot({ non_subscriptions: {
+    first: Array.from({ length: 256 }, (_, i) => ({ id: `first-${i}`, purchase_date: new Date(SNAPSHOT_MS).toISOString(), is_sandbox: false, store: "app_store" })),
+    second: Array.from({ length: 256 }, (_, i) => ({ id: `second-${i}`, purchase_date: new Date(SNAPSHOT_MS).toISOString(), is_sandbox: false, store: "app_store" })),
+    third: [{ id: "overflow", purchase_date: new Date(SNAPSHOT_MS).toISOString(), is_sandbox: false, store: "app_store" }],
+  } }));
+  for (const raw of invalids) {
+    assert.throws(() => parseSnapshot(raw), (error) => error.code === "canonical_response_invalid");
+  }
+});
+
+test("canonical snapshot ignores unlisted fields without traversing subscriber attributes", () => {
+  const attributes = {};
+  Object.defineProperty(attributes, "private", { get() { throw new Error("attributes traversed"); } });
+  const snapshot = parseSnapshot(rawSnapshot({
+    attributes,
+    extra: { private: "ignored" },
+    subscriptions: { pro_auto: { ...subscription(), extra: "ignored" } },
+  }));
+  assert.equal(snapshot.subscriptions.pro_auto.productId, "pro_auto");
+  assert.equal("extra" in snapshot.subscriptions.pro_auto, false);
+  assert.equal("attributes" in snapshot, false);
+});
+
+test("snapshot projection enforces pointers, environment, source class, and period contracts", () => {
+  const pointerMismatch = rawSnapshot({
+    entitlements: { "Elovia Pro": { product_identifier: "not_allowed" } },
+    subscriptions: { pro_auto: subscription() },
+  });
+  assert.throws(() => projected(pointerMismatch), (error) => error.code === "canonical_mapping_mismatch");
+
+  const wrongClass = rawSnapshot({ subscriptions: { pro_lifetime: subscription() } });
+  assert.throws(() => projected(wrongClass), (error) => error.code === "canonical_mapping_mismatch");
+  assert.throws(
+    () => projected(rawSnapshot({ subscriptions: { pro_prepaid: subscription({ period_type: "normal" }) } })),
+    (error) => error.code === "canonical_mapping_mismatch",
+  );
+  assert.throws(
+    () => projected(rawSnapshot({ subscriptions: { pro_promo: subscription({ period_type: "normal", store: "app_store" }) } })),
+    (error) => error.code === "canonical_mapping_mismatch",
+  );
+
+  const filtered = projected(rawSnapshot({ subscriptions: {
+    pro_auto: subscription({ is_sandbox: true, store: "test_store" }),
+  } }));
+  assert.equal(filtered[0].active, false);
+  assert.equal(filtered[0].productId, null);
+});
+
+test("snapshot projector implements subscription truth-table precedence", () => {
+  const future = new Date(SNAPSHOT_MS + 30 * DAY).toISOString();
+  const grace = new Date(SNAPSHOT_MS + 35 * DAY).toISOString();
+  const refund = new Date(SNAPSHOT_MS - DAY).toISOString();
+  const rows = [
+    [subscription({ refunded_at: refund }), false, "refunded", refund, false],
+    [subscription({ billing_issues_detected_at: new Date(SNAPSHOT_MS - DAY).toISOString(), grace_period_expires_date: grace }), true, "grace", grace, true],
+    [subscription({ auto_resume_date: new Date(SNAPSHOT_MS + DAY).toISOString() }), true, "paused", future, false],
+    [subscription({ unsubscribe_detected_at: new Date(SNAPSHOT_MS - DAY).toISOString() }), true, "cancelled", future, false],
+    [subscription({ billing_issues_detected_at: new Date(SNAPSHOT_MS - DAY).toISOString() }), true, "billing_issue", future, true],
+    [subscription({ period_type: "trial" }), true, "trial", future, true],
+    [subscription({ period_type: "intro" }), true, "intro", future, true],
+    [subscription(), true, "active", future, true],
+  ];
+  for (const [candidate, active, status, accessEnd, willRenew] of rows) {
+    const [row] = projected(rawSnapshot({ subscriptions: { pro_auto: candidate } }));
+    assert.equal(row.active, active, status);
+    assert.equal(row.status, status);
+    assert.equal(row.accessEndsAt?.toISOString(), accessEnd, status);
+    assert.equal(row.willRenew, willRenew, status);
+    assert.equal(row.graceEndsAt?.toISOString() ?? null, status === "grace" ? grace : null, status);
+  }
+});
+
+test("snapshot projector handles prepaid, promotional, lifetime, non-renewing, expired, and absence", () => {
+  const future = new Date(SNAPSHOT_MS + 30 * DAY).toISOString();
+  const prepaid = projected(rawSnapshot({ subscriptions: { pro_prepaid: subscription({ period_type: "prepaid" }) } }))[0];
+  assert.deepEqual([prepaid.active, prepaid.status, prepaid.willRenew], [true, "prepaid", false]);
+
+  const promotional = projected(rawSnapshot({ subscriptions: { pro_promo: subscription({ period_type: "promotional", store: "promotional" }) } }))[0];
+  assert.deepEqual([promotional.active, promotional.status, promotional.willRenew], [true, "promotional", false]);
+
+  const purchase = { id: "purchase-1", purchase_date: new Date(SNAPSHOT_MS - DAY).toISOString(), is_sandbox: false, store: "app_store" };
+  const lifetime = projected(rawSnapshot({ non_subscriptions: { pro_lifetime: [purchase] } }))[0];
+  assert.deepEqual([lifetime.active, lifetime.status, lifetime.accessEndsAt, lifetime.periodEndsAt], [true, "active", null, null]);
+
+  const fixed = projected(rawSnapshot({ non_subscriptions: { pro_fixed: [purchase] } }))[0];
+  assert.equal(fixed.active, true);
+  assert.equal(fixed.accessEndsAt?.toISOString(), new Date(SNAPSHOT_MS - DAY + 30 * DAY).toISOString());
+  assert.equal(fixed.periodEndsAt?.toISOString(), fixed.accessEndsAt?.toISOString());
+
+  const expired = projected(rawSnapshot({ subscriptions: { pro_auto: subscription({ expires_date: new Date(SNAPSHOT_MS - DAY).toISOString() }) } }))[0];
+  assert.deepEqual([expired.active, expired.status, expired.productId], [false, "expired", "pro_auto"]);
+
+  const absent = projected(rawSnapshot())[0];
+  assert.deepEqual([absent.active, absent.status, absent.productId, absent.store, absent.accessEndsAt], [false, "expired", null, null, null]);
+  assert.equal(future, new Date(SNAPSHOT_MS + 30 * DAY).toISOString());
+});
+
+test("snapshot projector deterministically selects candidates and emits exactly two independent rows", () => {
+  const raw = rawSnapshot({
+    subscriptions: {
+      pro_auto: subscription({ expires_date: new Date(SNAPSHOT_MS + 10 * DAY).toISOString() }),
+      coaching_auto: subscription({ expires_date: new Date(SNAPSHOT_MS + 20 * DAY).toISOString() }),
+    },
+    non_subscriptions: {
+      pro_lifetime: [{ id: "life", purchase_date: new Date(SNAPSHOT_MS - DAY).toISOString(), is_sandbox: false, store: "app_store" }],
+    },
+  });
+  const rows = projected(raw, {}, "auth:12345678-1234-1234-1234-123456789012");
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => row.entitlementId), ["Elovia Pro", "Elovia Coaching"]);
+  assert.equal(rows[0].productId, "pro_lifetime");
+  assert.equal(rows[1].productId, "coaching_auto");
+  assert.notStrictEqual(rows[0], rows[1]);
+  assert.equal(rows[0].sourceSnapshotAt.getTime(), SNAPSHOT_MS);
+  assert.equal(rows[0].sourceOperationId, "auth:12345678-1234-1234-1234-123456789012");
+  assert.equal(rows[0].sourceKind, "auth_canonical");
+});
+
+test("refund-reversed and temporary-grant triggers never override canonical outcomes", () => {
+  for (const trigger of ["REFUND_REVERSED", "TEMPORARY_ENTITLEMENT_GRANT"]) {
+    const active = projected(rawSnapshot({ subscriptions: { pro_auto: subscription() } }), {}, `webhook:${trigger.toLowerCase().replaceAll("_", "-")}-12345678`)[0];
+    const absent = projected(rawSnapshot(), {}, `webhook:${trigger.toLowerCase().replaceAll("_", "-")}-12345678`)[0];
+    assert.equal(active.active, true, trigger);
+    assert.equal(absent.active, false, trigger);
+  }
 });
