@@ -111,7 +111,14 @@ export async function sendPushToUser(
 ): Promise<{ sent: number; failed: number }> {
   const tokens = await activeTokensFor(userId);
   if (tokens.length === 0) return { sent: 0, failed: 0 };
-  return sendPushToTokens(tokens, message);
+  return sendPushToTokens(tokens, {
+    ...message,
+    data: {
+      ...(message.data ?? {}),
+      eloviaPush: 1,
+      eloviaPushOwnerUserId: userId,
+    },
+  });
 }
 
 export async function sendPushToTokens(

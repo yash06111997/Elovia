@@ -2,10 +2,19 @@ import { useEffect, useRef } from "react";
 import { useRootNavigationState, useRouter } from "expo-router";
 
 import { useAuth } from "@/lib/auth";
-import { readPendingArrival, releasePendingArrival } from "@/lib/geofence";
-import { reconcileReminderSchedule } from "@/lib/notifications";
+import {
+  readPendingArrival,
+  reconcileGeofences,
+  releasePendingArrival,
+  stopAllGeofences,
+} from "@/lib/geofence";
+import {
+  cancelAllReminders,
+  reconcileReminderSchedule,
+} from "@/lib/notifications";
 import { serializePendingArrivalRouteContext } from "@/lib/pendingArrival";
 import { reconcilePushRegistration } from "@/lib/push";
+import { onDataRestored } from "@/lib/syncEvents";
 import { reportClientError } from "@/lib/telemetry";
 
 let pendingArrivalOperation: Promise<void> = Promise.resolve();
@@ -50,31 +59,65 @@ export function NativeLifecycleCoordinator() {
     const userId = user?.id ?? null;
     const navigationReady = Boolean(rootNavigationState?.key);
 
-    if (isLoading || !isAuthenticated || !userId || !navigationReady) {
+    if (isLoading) {
       return () => {
         active = false;
       };
     }
 
-    void reconcileReminderSchedule({ expectedUserId: userId })
-      .then((ok) => {
-        if (!ok) reportLifecycleFailure("ReminderReconciliationError");
-      })
-      .catch(() => {
-        reportLifecycleFailure("ReminderReconciliationError");
+    if (!isAuthenticated || !userId) {
+      void Promise.allSettled([cancelAllReminders(), stopAllGeofences()]);
+      return () => {
+        active = false;
+        generation.current += 1;
+      };
+    }
+
+    const reconcileNativeState = async () => {
+      const reminderOk = await reconcileReminderSchedule({
+        expectedUserId: userId,
       });
-    void reconcilePushRegistration(userId)
-      .then((result) => {
-        if (
-          !result.ok &&
-          (result.reason === "network" || result.reason === "no_project_id")
-        ) {
+      if (!active || generation.current !== run) return false;
+      const geofenceOk = await reconcileGeofences(userId);
+      if (!active || generation.current !== run) return false;
+      if (!reminderOk) {
+        reportLifecycleFailure("ReminderReconciliationError");
+      }
+      return reminderOk && geofenceOk;
+    };
+
+    const unsubscribeRestore = onDataRestored(async () => {
+      if (!active || generation.current !== run) {
+        throw new Error("StaleNativeRestoreReconciliation");
+      }
+      if (!(await reconcileNativeState())) {
+        throw new Error("NativeRestoreReconciliationFailed");
+      }
+    });
+    void reconcileNativeState().catch(() => {
+      reportLifecycleFailure("NativeReconciliationError");
+    });
+
+    let pushRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    const reconcilePush = async () => {
+      if (!active || generation.current !== run) return;
+      try {
+        const result = await reconcilePushRegistration(userId);
+        if (!active || generation.current !== run) return;
+        if (!result.ok && result.reason === "network") {
+          reportLifecycleFailure("PushReconciliationError");
+          pushRetryTimer = setTimeout(() => void reconcilePush(), 15_000);
+        } else if (!result.ok && result.reason === "no_project_id") {
           reportLifecycleFailure("PushReconciliationError");
         }
-      })
-      .catch(() => {
+      } catch {
         reportLifecycleFailure("PushReconciliationError");
-      });
+        if (active && generation.current === run) {
+          pushRetryTimer = setTimeout(() => void reconcilePush(), 15_000);
+        }
+      }
+    };
+    void reconcilePush();
 
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let activeLeaseId: string | null = null;
@@ -134,14 +177,17 @@ export function NativeLifecycleCoordinator() {
         reportLifecycleFailure("PendingArrivalDeliveryError");
       });
 
-    void deliverPendingArrival();
+    if (navigationReady) void deliverPendingArrival();
 
     return () => {
       active = false;
+      unsubscribeRestore();
+      if (pushRetryTimer) clearTimeout(pushRetryTimer);
       if (retryTimer) clearTimeout(retryTimer);
       if (activeLeaseId) {
         void releasePendingArrival(userId, activeLeaseId);
       }
+      void Promise.allSettled([cancelAllReminders(), stopAllGeofences()]);
       generation.current += 1;
     };
   }, [isAuthenticated, isLoading, rootNavigationState?.key, router, user?.id]);

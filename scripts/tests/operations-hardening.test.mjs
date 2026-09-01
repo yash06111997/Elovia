@@ -3,10 +3,16 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   parseCachedPushOwnership,
+  persistPushOwnershipOrCompensate,
   planPushOwnershipTransition,
   resolvePushPermission,
   runPushOwnershipMutation,
 } from "../../artifacts/mobile/lib/pushOwnership.ts";
+import {
+  PushCleanupStore,
+  runPushCleanupForUser,
+  shouldPresentEloviaNotification,
+} from "../../artifacts/mobile/lib/pushCleanup.ts";
 import {
   buildReminderSchedule,
   ELOVIA_REMINDER_OWNER,
@@ -18,6 +24,11 @@ import {
   PendingArrivalStore,
 } from "../../artifacts/mobile/lib/pendingArrival.ts";
 import { runReminderReconciliation } from "../../artifacts/mobile/lib/reminderReconciliation.ts";
+import { runGeofenceReconciliation } from "../../artifacts/mobile/lib/geofenceReconciliation.ts";
+import {
+  emitDataRestored,
+  onDataRestored,
+} from "../../artifacts/mobile/lib/syncEvents.ts";
 
 const repositoryRoot = new URL("../../", import.meta.url);
 
@@ -37,6 +48,19 @@ function deferred() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+class MemoryKeyValueStorage {
+  values = new Map();
+  async getItem(key) {
+    return this.values.get(key) ?? null;
+  }
+  async setItem(key, value) {
+    this.values.set(key, value);
+  }
+  async removeItem(key) {
+    this.values.delete(key);
+  }
 }
 
 test("telemetry is allowlisted, privacy-safe, rate-limited, and connected to crash reporting", async () => {
@@ -230,6 +254,126 @@ test("stale push registration compensates with the captured account credential b
   );
 });
 
+test("push registration compensates immediately when ownership persistence fails", async () => {
+  let serverOwner = "user-a";
+  const session = { userId: "user-a", authToken: "captured-a" };
+  const outcome = await persistPushOwnershipOrCompensate({
+    session,
+    ownership: {
+      userId: "user-a",
+      token: "ExponentPushToken[persistence]",
+    },
+    async persist() {
+      throw new Error("injected storage failure");
+    },
+    async compensate(captured, token) {
+      assert.equal(captured.authToken, "captured-a");
+      assert.equal(token, "ExponentPushToken[persistence]");
+      serverOwner = null;
+      return true;
+    },
+  });
+  assert.deepEqual(outcome, {
+    status: "persistence-failed",
+    compensated: true,
+  });
+  assert.equal(serverOwner, null);
+});
+
+test("offline logout cleanup is durable and resolves on same-user reconnect or token transfer", async () => {
+  const storage = new MemoryKeyValueStorage();
+  const cleanup = new PushCleanupStore(storage);
+  const ownership = {
+    userId: "user-a",
+    token: "ExponentPushToken[logout]",
+  };
+  assert.equal(await cleanup.record(ownership, 100), true);
+  const restartedCleanup = new PushCleanupStore(storage);
+
+  let unregisterCalls = 0;
+  assert.equal(
+    await runPushCleanupForUser({
+      userId: "user-a",
+      intents: await restartedCleanup.read(),
+      isCurrent: async () => true,
+      unregister: async () => {
+        unregisterCalls += 1;
+        return false;
+      },
+      remove: (intent) => restartedCleanup.remove(intent),
+    }),
+    false,
+  );
+  assert.equal((await restartedCleanup.read()).length, 1);
+
+  assert.equal(
+    await runPushCleanupForUser({
+      userId: "user-a",
+      intents: await restartedCleanup.read(),
+      isCurrent: async () => true,
+      unregister: async () => {
+        unregisterCalls += 1;
+        return true;
+      },
+      remove: (intent) => restartedCleanup.remove(intent),
+    }),
+    true,
+  );
+  assert.equal((await restartedCleanup.read()).length, 0);
+  assert.equal(unregisterCalls, 2);
+
+  await restartedCleanup.record(ownership, 200);
+  let serverOwner = "user-a";
+  const transfer = await runPushOwnershipMutation({
+    session: { userId: "user-b", authToken: "captured-b" },
+    token: ownership.token,
+    transition: { action: "transfer-owner" },
+    isSessionCurrent: async () => true,
+    async register(session) {
+      serverOwner = session.userId;
+      return true;
+    },
+    async unregister() {
+      throw new Error("a new user must not authorize old-user cleanup");
+    },
+  });
+  assert.deepEqual(transfer, { status: "registered" });
+  assert.equal(serverOwner, "user-b");
+  await restartedCleanup.removeToken(ownership.token);
+  assert.equal((await restartedCleanup.read()).length, 0);
+  assert.doesNotMatch(
+    [...storage.values.values()].join(""),
+    /captured-a|captured-b/,
+  );
+});
+
+test("notification presentation fails closed across logout and account transfer", () => {
+  const pending = [
+    {
+      userId: "user-a",
+      token: "ExponentPushToken[logout]",
+      createdAt: 1,
+    },
+  ];
+  const payload = {
+    eloviaPush: 1,
+    eloviaPushOwnerUserId: "user-a",
+  };
+  assert.equal(shouldPresentEloviaNotification(payload, null, pending), false);
+  assert.equal(
+    shouldPresentEloviaNotification(payload, "user-b", pending),
+    false,
+  );
+  assert.equal(
+    shouldPresentEloviaNotification(payload, "user-a", pending),
+    false,
+  );
+  assert.equal(
+    shouldPresentEloviaNotification(payload, "user-a", [], false),
+    true,
+  );
+});
+
 test("lifecycle push permission observation cannot invoke the optional prompt", async () => {
   let prompts = 0;
   const granted = await resolvePushPermission(false, false, async () => {
@@ -312,7 +456,9 @@ test("reminder reconciliation stops stale account work and compensates an in-fli
 
   const cancelling = runReminderReconciliation({
     isCurrent: async () => currentUserId === "user-a",
-    listOwnedIdentifiers: async () => ["old-owned-reminder"],
+    listOwned: async () => ["old-owned-reminder"],
+    identifier: (identifier) => identifier,
+    canRestore: () => true,
     async cancel(identifier) {
       cancelled.push(identifier);
       if (identifier === "old-owned-reminder") await cancelGate.promise;
@@ -323,6 +469,7 @@ test("reminder reconciliation stops stale account work and compensates an in-fli
       scheduledCount += 1;
       return "new-owned-reminder";
     },
+    restore: async (identifier) => identifier,
   });
   await new Promise((resolve) => setImmediate(resolve));
   currentUserId = "user-b";
@@ -335,7 +482,9 @@ test("reminder reconciliation stops stale account work and compensates an in-fli
   const scheduleGate = deferred();
   const scheduling = runReminderReconciliation({
     isCurrent: async () => currentUserId === "user-a",
-    listOwnedIdentifiers: async () => [],
+    listOwned: async () => [],
+    identifier: (identifier) => identifier,
+    canRestore: () => true,
     async cancel(identifier) {
       cancelled.push(identifier);
     },
@@ -345,12 +494,130 @@ test("reminder reconciliation stops stale account work and compensates an in-fli
       await scheduleGate.promise;
       return "stale-new-reminder";
     },
+    restore: async (identifier) => identifier,
   });
   await new Promise((resolve) => setImmediate(resolve));
   currentUserId = "user-b";
   scheduleGate.resolve();
   assert.equal(await scheduling, "stale");
   assert.ok(cancelled.includes("stale-new-reminder"));
+});
+
+test("reminder cancellation failure retains the validated previous schedule", async () => {
+  const scheduled = new Set(["prior-workout", "prior-streak"]);
+  const outcome = await runReminderReconciliation({
+    isCurrent: async () => true,
+    listOwned: async () => [...scheduled],
+    identifier: (identifier) => identifier,
+    canRestore: () => true,
+    async cancel(identifier) {
+      if (identifier === "prior-workout") {
+        throw new Error("injected cancellation failure");
+      }
+      scheduled.delete(identifier);
+    },
+    permissionGranted: async () => true,
+    scheduleCount: 1,
+    async schedule() {
+      scheduled.add("desired");
+      return "desired";
+    },
+    async restore(identifier) {
+      scheduled.add(identifier);
+      return identifier;
+    },
+  });
+  assert.equal(outcome, "failed");
+  assert.deepEqual([...scheduled].sort(), ["prior-streak", "prior-workout"]);
+});
+
+test("mid-scheduling failure retries then rolls back the complete previous schedule", async () => {
+  const scheduled = new Set(["prior-workout", "prior-streak"]);
+  let desiredSequence = 0;
+  const outcome = await runReminderReconciliation({
+    isCurrent: async () => true,
+    listOwned: async () => [...scheduled],
+    identifier: (identifier) => identifier,
+    canRestore: () => true,
+    async cancel(identifier) {
+      scheduled.delete(identifier);
+    },
+    permissionGranted: async () => true,
+    scheduleCount: 2,
+    async schedule(index) {
+      if (index === 1) throw new Error("injected schedule failure");
+      const identifier = `desired-${++desiredSequence}`;
+      scheduled.add(identifier);
+      return identifier;
+    },
+    async restore(identifier) {
+      scheduled.add(identifier);
+      return identifier;
+    },
+  });
+  assert.equal(outcome, "failed");
+  assert.deepEqual([...scheduled].sort(), ["prior-streak", "prior-workout"]);
+  assert.equal(
+    desiredSequence,
+    2,
+    "the desired set received one bounded retry",
+  );
+});
+
+test("reminder reconciliation never cancels an un-restorable previous request", async () => {
+  let cancellationCalls = 0;
+  const outcome = await runReminderReconciliation({
+    isCurrent: async () => true,
+    listOwned: async () => ["legacy-unrestorable"],
+    identifier: (identifier) => identifier,
+    canRestore: () => false,
+    async cancel() {
+      cancellationCalls += 1;
+    },
+    permissionGranted: async () => true,
+    scheduleCount: 1,
+    schedule: async () => "desired",
+    restore: async (identifier) => identifier,
+  });
+  assert.equal(outcome, "failed");
+  assert.equal(cancellationCalls, 0);
+});
+
+test("cloud restore listeners rerun native reconciliation and stale geofence starts compensate", async () => {
+  const phases = [];
+  const reconcileNativeState = async () => {
+    phases.push("reminders");
+    phases.push("geofences");
+  };
+  await reconcileNativeState();
+  const unsubscribe = onDataRestored(reconcileNativeState);
+  try {
+    assert.deepEqual(await emitDataRestored(), { status: "reloaded" });
+    assert.deepEqual(phases, [
+      "reminders",
+      "geofences",
+      "reminders",
+      "geofences",
+    ]);
+  } finally {
+    unsubscribe();
+  }
+
+  let currentUserId = "user-a";
+  let stops = 0;
+  const outcome = await runGeofenceReconciliation({
+    isCurrent: async () => currentUserId === "user-a",
+    async stop() {
+      stops += 1;
+    },
+    permissionGranted: async () => true,
+    hasEnabledPlaces: true,
+    async start() {
+      currentUserId = "user-b";
+    },
+  });
+  assert.equal(outcome, "stale");
+  assert.equal(stops, 2, "the stale native regions are removed after start");
 });
 
 test("pending arrival leases survive remount, retry dropped navigation, and acknowledge once", async () => {
@@ -426,6 +693,8 @@ test("authentication recovery and native lifecycle are connected without launch 
     push,
     notifications,
     workouts,
+    auth,
+    geofence,
     pushRoute,
     pushLib,
   ] = await Promise.all([
@@ -435,6 +704,8 @@ test("authentication recovery and native lifecycle are connected without launch 
     source("artifacts/mobile/lib/push.ts"),
     source("artifacts/mobile/lib/notifications.ts"),
     source("artifacts/mobile/app/(tabs)/workouts.tsx"),
+    source("artifacts/mobile/lib/auth.tsx"),
+    source("artifacts/mobile/lib/geofence.ts"),
     source("artifacts/api-server/src/routes/push.ts"),
     source("artifacts/api-server/src/lib/push.ts"),
   ]);
@@ -447,6 +718,10 @@ test("authentication recovery and native lifecycle are connected without launch 
   assert.doesNotMatch(authScreen, /^\s*(?:void\s+)?login\(\)/m);
 
   assert.match(coordinator, /reconcileReminderSchedule/);
+  assert.match(coordinator, /onDataRestored/);
+  assert.match(coordinator, /reconcileGeofences/);
+  assert.match(coordinator, /cancelAllReminders/);
+  assert.match(coordinator, /stopAllGeofences/);
   assert.match(coordinator, /reconcilePushRegistration/);
   assert.match(coordinator, /readPendingArrival/);
   assert.match(coordinator, /arrivalLeaseId/);
@@ -463,6 +738,16 @@ test("authentication recovery and native lifecycle are connected without launch 
   assert.doesNotMatch(reconcileBody, /requestPermissionsAsync/);
   assert.match(notifications, /cancelScheduledNotificationAsync/);
   assert.doesNotMatch(notifications, /cancelAllScheduledNotificationsAsync/);
+  assert.match(
+    auth,
+    /pushCleanupComplete = await settleWithin\([\s\S]{0,200}unregisterFromPush/,
+  );
+  assert.match(push, /preparePushLogout/);
+  assert.match(
+    auth,
+    /Promise\.allSettled\(\[cancelAllReminders\(\), stopAllGeofences\(\)\]\)/,
+  );
+  assert.match(geofence, /runGeofenceReconciliation/);
 
   assert.match(pushRoute, /unregisterPushToken\(req\.user!\.id, token\)/);
   assert.doesNotMatch(pushRoute, /req\.log\.error\(\{\s*err\s*\}/);
@@ -471,4 +756,5 @@ test("authentication recovery and native lifecycle are connected without launch 
     pushLib,
     /and\([\s\S]*eq\(pushTokensTable\.userId, userId\)[\s\S]*eq\(pushTokensTable\.token, token\)/,
   );
+  assert.match(pushLib, /eloviaPushOwnerUserId: userId/);
 });

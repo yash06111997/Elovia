@@ -10,6 +10,7 @@ import {
   type PendingArrival,
   type PendingArrivalReadResult,
 } from "./pendingArrival";
+import { runGeofenceReconciliation } from "./geofenceReconciliation";
 
 export type { PendingArrival } from "./pendingArrival";
 
@@ -49,6 +50,23 @@ export interface SavedPlace {
 
 const PLACES_KEY = "@elovia_places";
 const pendingArrivals = new PendingArrivalStore(AsyncStorage);
+let geofenceOperation: Promise<void> = Promise.resolve();
+
+async function serializeGeofenceOperation<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = geofenceOperation;
+  let release!: () => void;
+  geofenceOperation = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
 
 /** Below this, GPS drift alone will trip the fence repeatedly. */
 export const MIN_RADIUS_M = 100;
@@ -81,7 +99,48 @@ function parsePlaces(raw: string | null): SavedPlace[] {
   if (!raw) return [];
   try {
     const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((value): value is Record<string, unknown> => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          return false;
+        }
+        const candidate = value as Record<string, unknown>;
+        return (
+          typeof candidate.id === "string" &&
+          candidate.id.length > 0 &&
+          candidate.id.length <= 256 &&
+          typeof candidate.name === "string" &&
+          candidate.name.length > 0 &&
+          candidate.name.length <= 200 &&
+          typeof candidate.kind === "string" &&
+          Number.isFinite(candidate.latitude) &&
+          Number(candidate.latitude) >= -90 &&
+          Number(candidate.latitude) <= 90 &&
+          Number.isFinite(candidate.longitude) &&
+          Number(candidate.longitude) >= -180 &&
+          Number(candidate.longitude) <= 180 &&
+          Number.isFinite(candidate.radius) &&
+          typeof candidate.notifyOnArrive === "boolean" &&
+          typeof candidate.autoStartWorkout === "boolean" &&
+          typeof candidate.enabled === "boolean"
+        );
+      })
+      .slice(0, MAX_PLACES)
+      .map((candidate) => ({
+        id: candidate.id as string,
+        name: candidate.name as string,
+        kind: candidate.kind as string,
+        latitude: Number(candidate.latitude),
+        longitude: Number(candidate.longitude),
+        radius: Math.max(
+          MIN_RADIUS_M,
+          Math.min(10_000, Number(candidate.radius)),
+        ),
+        notifyOnArrive: candidate.notifyOnArrive as boolean,
+        autoStartWorkout: candidate.autoStartWorkout as boolean,
+        enabled: candidate.enabled as boolean,
+      }));
   } catch {
     return [];
   }
@@ -196,35 +255,60 @@ export async function hasBackgroundPermission(): Promise<boolean> {
  * Region monitoring is all-or-nothing per task, so the whole set is replaced
  * rather than diffed. Cheap, and it cannot drift out of sync with storage.
  */
-export async function syncGeofences(): Promise<boolean> {
+export async function reconcileGeofences(
+  expectedUserId?: string | null,
+): Promise<boolean> {
   const Location = loadLocation();
   const TaskManager = loadTaskManager();
   if (!Location || !TaskManager || Platform.OS === "web") return false;
 
-  try {
-    const isRegistered = await TaskManager.isTaskRegisteredAsync(GEOFENCE_TASK);
-    if (isRegistered) {
-      await Location.stopGeofencingAsync(GEOFENCE_TASK).catch(() => undefined);
+  return serializeGeofenceOperation(async () => {
+    try {
+      const accountStorage = captureAccountStorageSession();
+      if (
+        expectedUserId !== undefined &&
+        accountStorage.ownerToken.uid !== expectedUserId
+      ) {
+        return false;
+      }
+      const places = parsePlaces(await accountStorage.getItem(PLACES_KEY))
+        .filter((place) => place.enabled)
+        .slice(0, MAX_PLACES);
+
+      const outcome = await runGeofenceReconciliation({
+        isCurrent: () => accountStorage.isCurrent(),
+        async stop() {
+          if (await TaskManager.isTaskRegisteredAsync(GEOFENCE_TASK)) {
+            await Location.stopGeofencingAsync(GEOFENCE_TASK);
+          }
+        },
+        hasEnabledPlaces: places.length > 0,
+        permissionGranted: hasBackgroundPermission,
+        async start() {
+          await Location.startGeofencingAsync(
+            GEOFENCE_TASK,
+            places.map((place) => ({
+              identifier: place.id,
+              latitude: place.latitude,
+              longitude: place.longitude,
+              radius: Math.max(MIN_RADIUS_M, place.radius),
+              notifyOnEnter: true,
+              notifyOnExit: true,
+            })),
+          );
+        },
+      });
+      return outcome !== "stale";
+    } catch {
+      return false;
     }
+  });
+}
 
-    const places = (await loadPlaces()).filter((p) => p.enabled);
-    if (places.length === 0) return true;
-
-    if (!(await hasBackgroundPermission())) return false;
-
-    await Location.startGeofencingAsync(
-      GEOFENCE_TASK,
-      places.slice(0, MAX_PLACES).map((place) => ({
-        identifier: place.id,
-        latitude: place.latitude,
-        longitude: place.longitude,
-        radius: Math.max(MIN_RADIUS_M, place.radius),
-        notifyOnEnter: true,
-        notifyOnExit: true,
-      })),
-    );
-
-    return true;
+export async function syncGeofences(): Promise<boolean> {
+  try {
+    const accountStorage = captureAccountStorageSession();
+    return reconcileGeofences(accountStorage.ownerToken.uid);
   } catch {
     return false;
   }
@@ -236,9 +320,17 @@ export async function stopAllGeofences(): Promise<void> {
   if (!Location || !TaskManager) return;
 
   try {
-    if (await TaskManager.isTaskRegisteredAsync(GEOFENCE_TASK)) {
-      await Location.stopGeofencingAsync(GEOFENCE_TASK);
-    }
+    await serializeGeofenceOperation(async () => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (!(await TaskManager.isTaskRegisteredAsync(GEOFENCE_TASK))) return;
+        try {
+          await Location.stopGeofencingAsync(GEOFENCE_TASK);
+          return;
+        } catch {
+          // A bounded retry handles transient native task-manager failures.
+        }
+      }
+    });
   } catch {
     // Already stopped.
   }

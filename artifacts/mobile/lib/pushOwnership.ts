@@ -23,6 +23,33 @@ export interface PushOwnershipMutationOperation<Session> {
   unregister(session: Session, token: string): Promise<boolean>;
 }
 
+export type PushOwnershipPersistenceOutcome =
+  | { status: "persisted" }
+  | { status: "persistence-failed"; compensated: boolean };
+
+export async function persistPushOwnershipOrCompensate<Session>(options: {
+  session: Session;
+  ownership: PushOwnership;
+  persist(ownership: PushOwnership): Promise<void>;
+  compensate(session: Session, token: string): Promise<boolean>;
+}): Promise<PushOwnershipPersistenceOutcome> {
+  try {
+    await options.persist(options.ownership);
+    return { status: "persisted" };
+  } catch {
+    let compensated = false;
+    try {
+      compensated = await options.compensate(
+        options.session,
+        options.ownership.token,
+      );
+    } catch {
+      compensated = false;
+    }
+    return { status: "persistence-failed", compensated };
+  }
+}
+
 export async function resolvePushPermission(
   alreadyGranted: boolean,
   requestPermission: boolean,

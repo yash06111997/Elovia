@@ -23,9 +23,29 @@ import {
   setAccountStorageAuthScope,
 } from "./accountSyncStorage";
 import { unregisterFromPush } from "./push";
+import { cancelAllReminders } from "./notifications";
+import { stopAllGeofences } from "./geofence";
 
 function generateUUID(): string {
   return Crypto.randomUUID();
+}
+
+async function settleWithin<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  fallback: T,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((resolve) => {
+        timeout = setTimeout(() => resolve(fallback), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 interface User {
@@ -248,13 +268,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     try {
       const firebaseAuth = await getFirebaseAuth();
+      let pushCleanupComplete = true;
       if (firebaseAuth.currentUser?.uid) {
-        await unregisterFromPush(firebaseAuth.currentUser.uid);
+        pushCleanupComplete = await settleWithin(
+          unregisterFromPush(firebaseAuth.currentUser.uid),
+          10_000,
+          false,
+        );
       }
+      await settleWithin<unknown>(
+        Promise.allSettled([cancelAllReminders(), stopAllGeofences()]),
+        2_500,
+        null,
+      );
       await signOut(firebaseAuth);
       setAccountStorageAuthScope(null, false);
       setUser(null);
-      setAuthError(null);
+      const cleanupMessage = pushCleanupComplete
+        ? null
+        : "Signed out. Notification cleanup will retry when this account reconnects.";
+      setAuthError(cleanupMessage);
+      if (cleanupMessage && Platform.OS !== "web") {
+        Alert.alert("Signed out safely", cleanupMessage);
+      }
     } catch (err) {
       console.error("Logout error:", err);
       const msg = getErrorMessage(err);

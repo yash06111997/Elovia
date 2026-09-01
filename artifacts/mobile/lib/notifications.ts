@@ -1,5 +1,7 @@
 import { Platform } from "react-native";
 import { captureAccountStorageSession } from "./accountSyncStorage";
+import { shouldPresentNotification } from "./notificationPresentation";
+import { ELOVIA_REMINDER_ACCOUNT_KEY } from "./pushCleanup";
 import { runReminderReconciliation } from "./reminderReconciliation";
 import {
   buildReminderSchedule,
@@ -93,12 +95,17 @@ export function configureNotificationHandler(): void {
   if (!N) return;
   try {
     N.setNotificationHandler({
-      handleNotification: async () => ({
-        shouldShowBanner: true,
-        shouldShowList: true,
-        shouldPlaySound: false,
-        shouldSetBadge: false,
-      }),
+      handleNotification: async (notification) => {
+        const present = await shouldPresentNotification(
+          notification.request.content.data,
+        );
+        return {
+          shouldShowBanner: present,
+          shouldShowList: present,
+          shouldPlaySound: false,
+          shouldSetBadge: false,
+        };
+      },
     });
   } catch {
     // Older/newer signature mismatch should never crash startup.
@@ -164,11 +171,76 @@ function toNativeTrigger(
   };
 }
 
+type ScheduledNotification = Awaited<
+  ReturnType<NotificationsModule["getAllScheduledNotificationsAsync"]>
+>[number];
+
+function toRestorableTrigger(
+  N: NotificationsModule,
+  trigger: ScheduledNotification["trigger"],
+): import("expo-notifications").NotificationTriggerInput | null {
+  if (!trigger || typeof trigger !== "object") return null;
+  const value = trigger as unknown as Record<string, unknown>;
+  const channelId =
+    typeof value.channelId === "string" ? value.channelId : "reminders";
+  const boundedInteger = (
+    candidate: unknown,
+    minimum: number,
+    maximum: number,
+  ) =>
+    typeof candidate === "number" &&
+    Number.isInteger(candidate) &&
+    candidate >= minimum &&
+    candidate <= maximum
+      ? candidate
+      : null;
+  if (value.type === "date") {
+    const date = value.date ?? value.timestamp;
+    return (typeof date === "number" && Number.isFinite(date)) ||
+      (date instanceof Date && Number.isFinite(date.getTime()))
+      ? { type: N.SchedulableTriggerInputTypes.DATE, date, channelId }
+      : null;
+  }
+  if (value.type === "daily") {
+    const hour = boundedInteger(value.hour, 0, 23);
+    const minute = boundedInteger(value.minute, 0, 59);
+    if (hour === null || minute === null) return null;
+    return {
+      type: N.SchedulableTriggerInputTypes.DAILY,
+      hour,
+      minute,
+      channelId,
+    };
+  }
+  if (value.type === "weekly") {
+    const weekday = boundedInteger(value.weekday, 1, 7);
+    const hour = boundedInteger(value.hour, 0, 23);
+    const minute = boundedInteger(value.minute, 0, 59);
+    if (weekday === null || hour === null || minute === null) return null;
+    return {
+      type: N.SchedulableTriggerInputTypes.WEEKLY,
+      weekday,
+      hour,
+      minute,
+      channelId,
+    };
+  }
+  return null;
+}
+
 async function cancelOwnedReminders(N: NotificationsModule): Promise<void> {
   const scheduled = await N.getAllScheduledNotificationsAsync();
   for (const notification of scheduled) {
     if (isEloviaReminderNotification(notification)) {
-      await N.cancelScheduledNotificationAsync(notification.identifier);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await N.cancelScheduledNotificationAsync(notification.identifier);
+          break;
+        } catch {
+          // Retry once, then continue so one bad identifier never prevents the
+          // rest of the previous account's reminders from being removed.
+        }
+      }
     }
   }
 }
@@ -238,12 +310,13 @@ export async function reconcileReminderSchedule(
 
       const outcome = await runReminderReconciliation({
         isCurrent: () => accountStorage.isCurrent(),
-        async listOwnedIdentifiers() {
+        async listOwned() {
           const scheduled = await N.getAllScheduledNotificationsAsync();
-          return scheduled
-            .filter(isEloviaReminderNotification)
-            .map((notification) => notification.identifier);
+          return scheduled.filter(isEloviaReminderNotification);
         },
+        identifier: (notification) => notification.identifier,
+        canRestore: (notification) =>
+          toRestorableTrigger(N, notification.trigger) !== null,
         cancel: (identifier) => N.cancelScheduledNotificationAsync(identifier),
         async permissionGranted() {
           return (await N.getPermissionsAsync()).granted;
@@ -258,14 +331,30 @@ export async function reconcileReminderSchedule(
               body: item.body,
               data: {
                 eloviaOwner: ELOVIA_REMINDER_OWNER,
+                [ELOVIA_REMINDER_ACCOUNT_KEY]:
+                  accountStorage.ownerToken.uid ?? "system:guest",
                 kind: item.kind,
               },
             },
             trigger: toNativeTrigger(N, item.trigger),
           });
         },
+        async restore(notification) {
+          const trigger = toRestorableTrigger(N, notification.trigger);
+          if (!trigger) throw new Error("Reminder trigger cannot be restored.");
+          return N.scheduleNotificationAsync({
+            identifier: notification.identifier,
+            content: {
+              title: notification.content.title,
+              body: notification.content.body,
+              data: notification.content.data,
+              sound: notification.content.sound ?? false,
+            },
+            trigger,
+          });
+        },
       });
-      return outcome !== "stale";
+      return outcome === "reconciled" || outcome === "permission-denied";
     } catch {
       return false;
     }

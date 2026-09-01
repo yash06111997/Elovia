@@ -1,49 +1,120 @@
 export type ReminderReconciliationOutcome =
   | "reconciled"
   | "permission-denied"
-  | "stale";
+  | "stale"
+  | "failed";
 
-export interface ReminderReconciliationOperation {
+export interface ReminderReconciliationOperation<Snapshot> {
   isCurrent(): Promise<boolean>;
-  listOwnedIdentifiers(): Promise<readonly string[]>;
+  listOwned(): Promise<readonly Snapshot[]>;
+  identifier(snapshot: Snapshot): string;
+  canRestore(snapshot: Snapshot): boolean;
   cancel(identifier: string): Promise<void>;
   permissionGranted(): Promise<boolean>;
   schedule(index: number): Promise<string>;
+  restore(snapshot: Snapshot): Promise<string>;
   scheduleCount: number;
 }
 
-/**
- * Run one account's native reminder changes as a guarded transaction.
- *
- * Expo notification calls cannot be aborted once they enter native code. The
- * current account is therefore checked around every await, and any reminder
- * created by a run that becomes stale is removed with its returned identifier.
- * Callers serialize runs so a newer account cannot be cancelled by an older
- * run's compensation.
- */
-export async function runReminderReconciliation(
-  operation: ReminderReconciliationOperation,
-): Promise<ReminderReconciliationOutcome> {
-  const created: string[] = [];
+const MAX_NATIVE_ATTEMPTS = 2;
 
-  const cancelCreated = async () => {
-    for (const identifier of created) {
+/**
+ * Transactionally rebuild one account's reminder set.
+ *
+ * Native calls cannot be aborted. Every phase is generation-guarded, transient
+ * failures receive one bounded retry, and a failed rebuild restores the exact
+ * validated native requests captured before cancellation. Other apps'
+ * notifications never enter listOwned and are therefore never touched.
+ */
+export async function runReminderReconciliation<Snapshot>(
+  operation: ReminderReconciliationOperation<Snapshot>,
+): Promise<ReminderReconciliationOutcome> {
+  if (!(await operation.isCurrent())) return "stale";
+  const previous = [...(await operation.listOwned())];
+  if (!(await operation.isCurrent())) return "stale";
+  // Never tear down a native request that cannot be recreated exactly enough
+  // to recover from a later cancellation/scheduling failure.
+  if (!previous.every(operation.canRestore)) return "failed";
+  const previousIds = new Set(previous.map(operation.identifier));
+
+  const cancelWithRetry = async (
+    identifier: string,
+  ): Promise<"cancelled" | "failed" | "stale"> => {
+    for (let attempt = 0; attempt < MAX_NATIVE_ATTEMPTS; attempt += 1) {
+      if (!(await operation.isCurrent())) return "stale";
       try {
         await operation.cancel(identifier);
+        return (await operation.isCurrent()) ? "cancelled" : "stale";
       } catch {
-        // Best effort compensation; a later current run also removes owned IDs.
+        if (attempt + 1 === MAX_NATIVE_ATTEMPTS) return "failed";
+      }
+    }
+    return "failed";
+  };
+
+  const cancelKnownCreated = async (identifiers: readonly string[]) => {
+    for (const identifier of identifiers) {
+      for (let attempt = 0; attempt < MAX_NATIVE_ATTEMPTS; attempt += 1) {
+        try {
+          await operation.cancel(identifier);
+          break;
+        } catch {
+          // A later current reconciliation also removes every owned reminder.
+        }
       }
     }
   };
 
-  if (!(await operation.isCurrent())) return "stale";
-  const ownedIdentifiers = await operation.listOwnedIdentifiers();
-  if (!(await operation.isCurrent())) return "stale";
+  const restorePrevious = async (): Promise<boolean> => {
+    if (!(await operation.isCurrent())) return false;
+    let current: readonly Snapshot[];
+    try {
+      current = await operation.listOwned();
+    } catch {
+      return false;
+    }
+    if (!(await operation.isCurrent())) return false;
 
-  for (const identifier of ownedIdentifiers) {
-    if (!(await operation.isCurrent())) return "stale";
-    await operation.cancel(identifier);
-    if (!(await operation.isCurrent())) return "stale";
+    // Remove anything created by a failed desired-set attempt.
+    for (const snapshot of current) {
+      const identifier = operation.identifier(snapshot);
+      if (!previousIds.has(identifier)) {
+        if ((await cancelWithRetry(identifier)) !== "cancelled") return false;
+      }
+    }
+
+    let remainingSnapshots: readonly Snapshot[];
+    try {
+      remainingSnapshots = await operation.listOwned();
+    } catch {
+      return false;
+    }
+    const remaining = new Set(remainingSnapshots.map(operation.identifier));
+    for (const snapshot of previous) {
+      if (remaining.has(operation.identifier(snapshot))) continue;
+      let restored = false;
+      for (let attempt = 0; attempt < MAX_NATIVE_ATTEMPTS; attempt += 1) {
+        if (!(await operation.isCurrent())) return false;
+        try {
+          await operation.restore(snapshot);
+          restored = true;
+          break;
+        } catch {
+          restored = false;
+        }
+      }
+      if (!restored || !(await operation.isCurrent())) return false;
+    }
+    return true;
+  };
+
+  for (const snapshot of previous) {
+    const cancelled = await cancelWithRetry(operation.identifier(snapshot));
+    if (cancelled === "stale") return "stale";
+    if (cancelled === "failed") {
+      await restorePrevious();
+      return "failed";
+    }
   }
 
   if (operation.scheduleCount === 0) return "reconciled";
@@ -51,23 +122,34 @@ export async function runReminderReconciliation(
   if (!(await operation.permissionGranted())) return "permission-denied";
   if (!(await operation.isCurrent())) return "stale";
 
-  try {
+  for (let attempt = 0; attempt < MAX_NATIVE_ATTEMPTS; attempt += 1) {
+    const created: string[] = [];
+    let failed = false;
     for (let index = 0; index < operation.scheduleCount; index += 1) {
       if (!(await operation.isCurrent())) {
-        await cancelCreated();
+        await cancelKnownCreated(created);
         return "stale";
       }
-      const identifier = await operation.schedule(index);
-      created.push(identifier);
+      try {
+        created.push(await operation.schedule(index));
+      } catch {
+        failed = true;
+        break;
+      }
       if (!(await operation.isCurrent())) {
-        await cancelCreated();
+        await cancelKnownCreated(created);
         return "stale";
       }
     }
-  } catch (error) {
-    await cancelCreated();
-    throw error;
+    if (!failed) return "reconciled";
+
+    await cancelKnownCreated(created);
+    if (attempt + 1 === MAX_NATIVE_ATTEMPTS) {
+      await restorePrevious();
+      return "failed";
+    }
   }
 
-  return "reconciled";
+  await restorePrevious();
+  return "failed";
 }
