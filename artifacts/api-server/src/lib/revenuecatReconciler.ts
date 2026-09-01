@@ -49,7 +49,7 @@ async function liveAndFenced(
       WHERE "event_id" = ${input.fence.eventId}
         AND "disposition" = 'pending'
         AND "processing_lease_id" = ${input.fence.leaseId}
-        AND "processing_lease_until" > now()
+        AND "processing_lease_until" > clock_timestamp()
       FOR UPDATE
     ) AS "owned"
   `);

@@ -66,6 +66,8 @@ export type RevenueCatProcessorInput = Readonly<{
   poll?: (milliseconds: number) => Promise<void>;
   metric?: (metric: CountMetric) => void;
   beforeClaimLocks?: () => Promise<void>;
+  afterEventEnvelopeParentRead?: () => Promise<void>;
+  leaseDurationMs?: number;
 }>;
 
 export type RevenueCatParseProcessorInput = Readonly<{
@@ -96,6 +98,7 @@ type StoredEvent = {
   entitlement_applied_at: Date | null;
   processing_lease_id: string | null;
   processing_lease_until: Date | null;
+  lease_current: boolean;
   next_attempt_at: Date;
 };
 
@@ -107,6 +110,7 @@ type StoredSubject = {
 
 type Resolution = {
   owners: Set<string>;
+  observedOwners: Set<string>;
   fromOwners: Set<string>;
   toOwners: Set<string>;
   byOwners: Set<string>;
@@ -117,6 +121,7 @@ type Resolution = {
 type Claim = {
   leaseId: string;
   owners: string[];
+  lockOwners: string[];
   subjects: Subject[];
   identityAppliedAt: Date | null;
   entitlementAppliedAt: Date | null;
@@ -135,6 +140,8 @@ type ClaimOutcome =
 type FinalizeResult = RevenueCatProcessorResult &
   Readonly<{
     expandedOwners?: readonly string[];
+    expandedLockOwners?: readonly string[];
+    conflictOwners?: readonly string[];
     survivingSubjects?: readonly Subject[];
   }>;
 
@@ -235,24 +242,37 @@ async function loadEvent(
   executor: Pick<AccountLockTransaction, "execute"> | typeof db,
   eventId: string,
 ): Promise<{ event: StoredEvent; subjects: StoredSubject[] } | null> {
-  const events = await executor.execute<StoredEvent>(sql`
-    SELECT "event_id", "type", "event_at", "environment", "disposition",
-           "metadata", "identity_count", "retained_identity_count",
-           "pruned_identity_count", "identity_applied_at",
-           "entitlement_applied_at", "processing_lease_id",
-           "processing_lease_until", "next_attempt_at"
-    FROM "revenuecat_webhook_events"
-    WHERE "event_id" = ${eventId}
+  const envelopes = await executor.execute<
+    StoredEvent & { subjects: StoredSubject[] }
+  >(sql`
+    SELECT e."event_id", e."type", e."event_at", e."environment",
+           e."disposition", e."metadata", e."identity_count",
+           e."retained_identity_count", e."pruned_identity_count",
+           e."identity_applied_at", e."entitlement_applied_at",
+           e."processing_lease_id", e."processing_lease_until",
+           e."next_attempt_at",
+           (
+             e."processing_lease_id" IS NOT NULL
+             AND e."processing_lease_until" > clock_timestamp()
+           ) AS lease_current,
+           COALESCE((
+             SELECT jsonb_agg(
+               jsonb_build_object(
+                 'subject_hash', s."subject_hash",
+                 'role_mask', s."role_mask",
+                 'local_user_id', s."local_user_id"
+               ) ORDER BY s."subject_hash" COLLATE "C"
+             )
+             FROM "revenuecat_event_subjects" s
+             WHERE s."event_id" = e."event_id"
+           ), '[]'::jsonb) AS subjects
+    FROM "revenuecat_webhook_events" e
+    WHERE e."event_id" = ${eventId}
   `);
-  const event = events.rows[0];
-  if (!event) return null;
-  const storedSubjects = await executor.execute<StoredSubject>(sql`
-    SELECT "subject_hash", "role_mask", "local_user_id"
-    FROM "revenuecat_event_subjects"
-    WHERE "event_id" = ${eventId}
-    ORDER BY "subject_hash" COLLATE "C"
-  `);
-  return { event, subjects: storedSubjects.rows };
+  const envelope = envelopes.rows[0];
+  if (!envelope) return null;
+  const { subjects, ...event } = envelope;
+  return { event, subjects };
 }
 
 function terminalResult(event: StoredEvent): RevenueCatProcessorResult {
@@ -410,6 +430,11 @@ async function resolveSubjects(
     );
   return {
     owners: new Set(ownerByHash.values()),
+    observedOwners: new Set([
+      ...direct,
+      ...aliasOwner.values(),
+      ...liveFallbacks,
+    ]),
     fromOwners: ownersForMask(REVENUECAT_SUBJECT_ROLE_MASKS.transferredFrom),
     toOwners: ownersForMask(REVENUECAT_SUBJECT_ROLE_MASKS.transferredTo),
     byOwners: ownersForMask(REVENUECAT_SUBJECT_ROLE_MASKS.redeemedBy),
@@ -538,6 +563,7 @@ async function insertClaimedEvent(
   identityCount: number,
   resolution: Resolution,
   leaseId: string,
+  leaseDurationMs: number,
 ): Promise<boolean> {
   const metadata = persistedMetadata(delivery, identityCount);
   const prunedIdentityCount = identityCount - subjects.length;
@@ -551,8 +577,9 @@ async function insertClaimedEvent(
       ${delivery.eventId}, ${delivery.type}, ${delivery.eventAt},
       ${config.environment}, 'pending', ${JSON.stringify(metadata)}::jsonb,
       ${identityCount}, ${prunedIdentityCount}, true, true, 1, ${leaseId},
-      now() + (${EVENT_LEASE_MS} * interval '1 millisecond'), now(),
-      now() + (${EVENT_RETENTION_DAYS} * interval '1 day')
+      clock_timestamp() + (${leaseDurationMs} * interval '1 millisecond'),
+      clock_timestamp(),
+      clock_timestamp() + (${EVENT_RETENTION_DAYS} * interval '1 day')
     )
     ON CONFLICT ("event_id") DO NOTHING
     RETURNING "event_id"
@@ -575,17 +602,19 @@ async function claimExistingEvent(
   transaction: AccountLockTransaction,
   eventId: string,
   leaseId: string,
+  leaseDurationMs: number,
 ): Promise<boolean> {
   const claimed = await transaction.execute<{ event_id: string }>(sql`
     UPDATE "revenuecat_webhook_events"
     SET "processing_lease_id" = ${leaseId},
-        "processing_lease_until" = now() + (${EVENT_LEASE_MS} * interval '1 millisecond'),
+        "processing_lease_until" = clock_timestamp() + (${leaseDurationMs} * interval '1 millisecond'),
         "attempt_count" = "attempt_count" + 1
     WHERE "event_id" = ${eventId}
       AND "disposition" = 'pending'
-      AND "next_attempt_at" <= now()
+      AND "next_attempt_at" <= clock_timestamp()
       AND (
-        "processing_lease_id" IS NULL OR "processing_lease_until" <= now()
+        "processing_lease_id" IS NULL
+        OR "processing_lease_until" <= clock_timestamp()
       )
     RETURNING "event_id"
   `);
@@ -611,6 +640,7 @@ async function stableClaim(
         subject.local_user_id as string,
       ]),
   );
+  const leaseDurationMs = input.leaseDurationMs ?? EVENT_LEASE_MS;
   const initial = await db.transaction((transaction) =>
     resolveSubjects(transaction, candidateSubjects, fallbackOwnerByHash),
   );
@@ -618,7 +648,7 @@ async function stableClaim(
     return { kind: "conflict", owners: sorted(initial.owners) };
   }
   let owners = effectiveOwners(input.delivery, initial);
-  let lockSet = accountLockIds(candidateSubjects, owners);
+  let lockSet = accountLockIds(candidateSubjects, initial.observedOwners);
   await input.beforeClaimLocks?.();
 
   for (let attempt = 0; attempt < MAX_IDENTITY_EXPANSIONS; attempt += 1) {
@@ -659,7 +689,9 @@ async function stableClaim(
       owners = effectiveOwners(input.delivery, resolved);
       if (owners.size === 0) return { kind: "unmapped" } as ClaimOutcome;
       const outside = sorted(
-        [...owners].filter((owner) => !lockSet.includes(owner)),
+        [...resolved.observedOwners].filter(
+          (owner) => !lockSet.includes(owner),
+        ),
       );
       if (outside.length > 0) {
         return { kind: "expand", owners: outside } as ClaimOutcome;
@@ -676,6 +708,7 @@ async function stableClaim(
             allSubjects.length,
             resolved,
             leaseId,
+            leaseDurationMs,
           );
       const stored = inserted
         ? await loadEvent(transaction, input.delivery.eventId)
@@ -703,6 +736,7 @@ async function stableClaim(
           transaction,
           input.delivery.eventId,
           leaseId,
+          leaseDurationMs,
         ));
       if (!ownsLease) return { kind: "processing" } as ClaimOutcome;
       for (const owner of owners) await enqueueTrustedUid(transaction, owner);
@@ -711,6 +745,7 @@ async function stableClaim(
         claim: {
           leaseId,
           owners: sorted(owners),
+          lockOwners: sorted(resolved.observedOwners),
           subjects,
           identityAppliedAt: stored.event.identity_applied_at,
           entitlementAppliedAt: stored.event.entitlement_applied_at,
@@ -758,7 +793,7 @@ async function releaseClaim(
     UPDATE "revenuecat_webhook_events"
     SET "processing_lease_id" = NULL,
         "processing_lease_until" = NULL,
-        "next_attempt_at" = now() + (
+        "next_attempt_at" = clock_timestamp() + (
           LEAST(
             3600::numeric,
             5 * power(
@@ -770,6 +805,7 @@ async function releaseClaim(
     WHERE "event_id" = ${eventId}
       AND "disposition" = 'pending'
       AND "processing_lease_id" = ${leaseId}
+      AND "processing_lease_until" > clock_timestamp()
     RETURNING "attempt_count"
   `);
   return released.rows.length === 1
@@ -785,16 +821,18 @@ async function enqueueExpandedOwners(
   eventId: string,
   leaseId: string,
   owners: readonly string[],
+  lockOwners: readonly string[],
   subjects: readonly Subject[],
 ): Promise<{ owners: string[]; subjects: Subject[] } | null> {
   return withAccountLocks(
-    accountLockIds(subjects, owners),
+    accountLockIds(subjects, lockOwners),
     async (transaction) => {
       const fenced = await loadEvent(transaction, eventId);
       if (
         !fenced ||
         fenced.event.disposition !== "pending" ||
-        fenced.event.processing_lease_id !== leaseId
+        fenced.event.processing_lease_id !== leaseId ||
+        !fenced.event.lease_current
       ) {
         return null;
       }
@@ -843,6 +881,47 @@ function aliasKind(subject: Subject, transfer: boolean): string {
     return "original";
   }
   return "ordinary";
+}
+
+async function bindExistingAliasToDirectSelf(
+  transaction: AccountLockTransaction,
+  subject: Subject,
+  directUserId: string,
+): Promise<boolean> {
+  const rebound = await transaction.execute<{ alias_hash: string }>(sql`
+    UPDATE "revenuecat_customer_aliases"
+    SET "local_user_id" = ${directUserId},
+        "alias_kind" = 'authenticated',
+        "ownership_source" = 'authenticated',
+        "source_event_at" = NULL,
+        "source_event_id" = NULL,
+        "authenticated_at" = clock_timestamp(),
+        "updated_at" = clock_timestamp()
+    WHERE "alias_hash" = ${subject.hash}
+      AND (
+        "local_user_id" IS DISTINCT FROM ${directUserId}
+        OR "alias_kind" <> 'authenticated'
+        OR "ownership_source" <> 'authenticated'
+        OR "source_event_at" IS NOT NULL
+        OR "source_event_id" IS NOT NULL
+        OR "authenticated_at" IS NULL
+      )
+    RETURNING "alias_hash"
+  `);
+  const relinked = await transaction.execute<{ event_id: string }>(sql`
+    UPDATE "revenuecat_event_subjects" AS s
+    SET "local_user_id" = ${directUserId}
+    WHERE s."subject_hash" = ${subject.hash}
+      AND s."local_user_id" IS DISTINCT FROM ${directUserId}
+      AND EXISTS (
+        SELECT 1 FROM "revenuecat_customer_aliases" AS a
+        WHERE a."alias_hash" = s."subject_hash"
+          AND a."local_user_id" = ${directUserId}
+          AND a."ownership_source" = 'authenticated'
+      )
+    RETURNING s."event_id"
+  `);
+  return rebound.rows.length === 1 || relinked.rows.length > 0;
 }
 
 async function assignAlias(
@@ -924,13 +1003,14 @@ async function finalizeClaim(
   >,
 ): Promise<FinalizeResult> {
   return withAccountLocks(
-    accountLockIds(claim.subjects, claim.owners),
+    accountLockIds(claim.subjects, claim.lockOwners),
     async (transaction) => {
       let stored = await loadEvent(transaction, input.delivery.eventId);
       if (
         !stored ||
         stored.event.disposition !== "pending" ||
-        stored.event.processing_lease_id !== claim.leaseId
+        stored.event.processing_lease_id !== claim.leaseId ||
+        !stored.event.lease_current
       ) {
         return result(503, "processing", 1);
       }
@@ -945,7 +1025,8 @@ async function finalizeClaim(
         if (
           !stored ||
           stored.event.disposition !== "pending" ||
-          stored.event.processing_lease_id !== claim.leaseId
+          stored.event.processing_lease_id !== claim.leaseId ||
+          !stored.event.lease_current
         ) {
           return result(503, "processing", 1);
         }
@@ -969,6 +1050,22 @@ async function finalizeClaim(
         subjects,
         fallbackOwnerByHash,
       );
+      const finalOwners = effectiveOwners(input.delivery, resolution);
+      const outsideLocks = sorted(
+        [...resolution.observedOwners].filter(
+          (owner) => !claim.lockOwners.includes(owner),
+        ),
+      );
+      if (outsideLocks.length > 0) {
+        return {
+          ...result(503, "identity_set_changed", 1),
+          expandedOwners: sorted(
+            [...finalOwners].filter((owner) => !claim.owners.includes(owner)),
+          ),
+          expandedLockOwners: outsideLocks,
+          survivingSubjects: subjects,
+        };
+      }
       if (resolutionConflict(input.delivery, resolution)) {
         if (
           stored.event.identity_applied_at === null &&
@@ -978,18 +1075,22 @@ async function finalizeClaim(
           DELETE FROM "revenuecat_webhook_events"
           WHERE "event_id" = ${input.delivery.eventId}
             AND "processing_lease_id" = ${claim.leaseId}
+            AND "processing_lease_until" > clock_timestamp()
         `);
           input.metric?.({ type: "identity_conflict", count: 1 });
           return result(200, "ignored_identity_conflict");
         }
-        return result(503, "identity_set_changed", 1);
+        return {
+          ...result(503, "identity_set_changed", 1),
+          conflictOwners: sorted(resolution.owners),
+        };
       }
-      const finalOwners = effectiveOwners(input.delivery, resolution);
       if (finalOwners.size === 0) {
         await transaction.execute(sql`
         DELETE FROM "revenuecat_webhook_events"
         WHERE "event_id" = ${input.delivery.eventId}
           AND "processing_lease_id" = ${claim.leaseId}
+          AND "processing_lease_until" > clock_timestamp()
       `);
         return result(200, "ignored_deleted");
       }
@@ -1050,10 +1151,24 @@ async function finalizeClaim(
       }
 
       const relink = new Map<string, string | null>();
+      if (identityNeeded) {
+        for (const subject of subjects) {
+          const directSelf = resolution.directSelfByHash.get(subject.hash);
+          if (!directSelf) continue;
+          advanced =
+            (await bindExistingAliasToDirectSelf(
+              transaction,
+              subject,
+              directSelf,
+            )) || advanced;
+          relink.set(subject.hash, directSelf);
+        }
+      }
       if (identityNeeded && input.delivery.kind === "ordinary") {
         const owner = sorted(finalOwners)[0];
         if (!owner) return result(200, "ignored_deleted");
         for (const subject of aliasesForOrdinary(subjects, owner)) {
+          if (relink.has(subject.hash)) continue;
           const directSelf = resolution.directSelfByHash.get(subject.hash);
           if (directSelf) {
             relink.set(subject.hash, directSelf);
@@ -1081,6 +1196,7 @@ async function finalizeClaim(
         const destination = sorted(resolution.toOwners)[0] ?? null;
         const source = sorted(resolution.fromOwners)[0] ?? null;
         for (const subject of subjects) {
+          if (relink.has(subject.hash)) continue;
           const directSelf = resolution.directSelfByHash.get(subject.hash);
           if (directSelf) {
             relink.set(subject.hash, directSelf);
@@ -1135,6 +1251,7 @@ async function finalizeClaim(
           input.delivery.redemptionOutcome === "alias" ||
           input.delivery.redemptionOutcome === "redeemer_owns";
         for (const subject of subjects) {
+          if (relink.has(subject.hash)) continue;
           const isRedeemer =
             (subject.roleMask & REVENUECAT_SUBJECT_ROLE_MASKS.redeemedBy) !== 0;
           const directSelf = resolution.directSelfByHash.get(subject.hash);
@@ -1182,6 +1299,7 @@ async function finalizeClaim(
       WHERE "event_id" = ${input.delivery.eventId}
         AND "disposition" = 'pending'
         AND "processing_lease_id" = ${claim.leaseId}
+        AND "processing_lease_until" > clock_timestamp()
       RETURNING "event_id"
     `);
       return completed.rows.length === 1
@@ -1222,10 +1340,22 @@ async function processOwnedClaim(
     }
     try {
       const finalized = await finalizeClaim(input, activeClaim, lookups);
-      if (finalized.expandedOwners && finalized.expandedOwners.length > 0) {
+      if (
+        (finalized.expandedOwners && finalized.expandedOwners.length > 0) ||
+        (finalized.expandedLockOwners &&
+          finalized.expandedLockOwners.length > 0)
+      ) {
         activeClaim = {
           ...activeClaim,
-          owners: sorted([...activeClaim.owners, ...finalized.expandedOwners]),
+          owners: sorted([
+            ...activeClaim.owners,
+            ...(finalized.expandedOwners ?? []),
+          ]),
+          lockOwners: sorted([
+            ...activeClaim.lockOwners,
+            ...(finalized.expandedLockOwners ?? []),
+            ...(finalized.expandedOwners ?? []),
+          ]),
           subjects: finalized.survivingSubjects
             ? [...finalized.survivingSubjects]
             : activeClaim.subjects,
@@ -1234,6 +1364,7 @@ async function processOwnedClaim(
           input.delivery.eventId,
           claim.leaseId,
           activeClaim.owners,
+          activeClaim.lockOwners,
           activeClaim.subjects,
         );
         if (!refreshed) {
@@ -1261,6 +1392,20 @@ async function processOwnedClaim(
         finalized.disposition === "identity_set_changed"
       ) {
         input.metric?.({ type: "identity_set_changed", count: 1 });
+        if (finalized.conflictOwners?.length) {
+          const conflictOwners = sorted([
+            ...activeClaim.owners,
+            ...finalized.conflictOwners,
+          ]);
+          const enqueued = await enqueueExpandedOwners(
+            input.delivery.eventId,
+            claim.leaseId,
+            conflictOwners,
+            sorted([...activeClaim.lockOwners, ...finalized.conflictOwners]),
+            activeClaim.subjects,
+          );
+          if (!enqueued) return result(503, "processing", 1);
+        }
         return releaseClaim(
           input.delivery.eventId,
           claim.leaseId,
@@ -1298,6 +1443,7 @@ export async function processRevenueCatDelivery(
   }
   const allSubjects = subjectsFor(input.delivery, input.config.subjectHashKey);
   const existing = await loadEvent(db, input.delivery.eventId);
+  await input.afterEventEnvelopeParentRead?.();
   if (
     existing &&
     !envelopeMatches(
@@ -1340,11 +1486,12 @@ export async function processRevenueCatDelivery(
       });
       await db.execute(sql`
         UPDATE "revenuecat_webhook_events"
-        SET "next_attempt_at" = now() + interval '5 seconds'
+        SET "next_attempt_at" = clock_timestamp() + interval '5 seconds'
         WHERE "event_id" = ${input.delivery.eventId}
           AND "disposition" = 'pending'
           AND (
-            "processing_lease_id" IS NULL OR "processing_lease_until" <= now()
+            "processing_lease_id" IS NULL
+            OR "processing_lease_until" <= clock_timestamp()
           )
       `);
       return result(503, "identity_set_changed", 1);
