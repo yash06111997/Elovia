@@ -46,3 +46,19 @@ test("every recognized access event reconciles canonical state", () => {
     assert.equal(parsed.value.requiresReconciliation, true, type);
   }
 });
+
+test("bounds entitlement metadata strings and filters non-strings", () => {
+  const body = structuredClone(valid);
+  body.event.entitlement_ids = ["x".repeat(129), 42, "Elovia Pro"];
+  const parsed = parseRevenueCatDelivery(body);
+  assert.equal(parsed.ok, true);
+  assert.deepEqual(parsed.value.metadata.entitlementIds, ["x".repeat(128), "Elovia Pro"]);
+});
+
+test("rejects source timestamps outside the JavaScript Date range", () => {
+  const body = structuredClone(valid);
+  body.event.event_timestamp_ms = Number.MAX_SAFE_INTEGER;
+  const parsed = parseRevenueCatDelivery(body);
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.code, "malformed_event");
+});

@@ -48,13 +48,16 @@ export function parseRevenueCatDelivery(body: unknown): RevenueCatParseResult {
     timestamp <= 0
   )
     return { ok: false, code: "malformed_event", message: "Invalid event subject or time" };
+  const eventAt = new Date(timestamp);
+  if (!Number.isFinite(eventAt.getTime()))
+    return { ok: false, code: "malformed_event", message: "Invalid event subject or time" };
   const requiresReconciliation = RECONCILING_REVENUECAT_EVENTS.has(type);
   return {
     ok: true,
     value: {
       eventId: id,
       type,
-      eventAt: new Date(timestamp),
+      eventAt,
       userId,
       originalUserId:
         typeof event.original_app_user_id === "string"
@@ -67,6 +70,7 @@ export function parseRevenueCatDelivery(body: unknown): RevenueCatParseResult {
         entitlementIds: Array.isArray(event.entitlement_ids)
           ? event.entitlement_ids
               .filter((value): value is string => typeof value === "string")
+              .map((value) => value.slice(0, 128))
               .slice(0, 16)
           : [],
         store: typeof event.store === "string" ? event.store.slice(0, 32) : null,
