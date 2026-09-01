@@ -3,6 +3,7 @@ import { getFirebaseAuth } from "./firebase";
 import {
   createGenerationGuardedCurrentUserResolver,
   readStableSynchronizedValue,
+  readStableSynchronizedValueWithOwner,
   SyncStorageCoordinator,
   type CurrentUserId,
 } from "./cloudSyncStorage";
@@ -209,6 +210,13 @@ export async function readStableBackgroundAccountValue(
 ): Promise<string | null> {
   assertSyncKeys([key]);
   return readStableSynchronizedValue(AsyncStorage, key);
+}
+
+export async function readStableBackgroundAccountValueWithOwner(
+  key: SyncKey,
+): Promise<{ value: string | null; ownerUserId: string | null } | null> {
+  assertSyncKeys([key]);
+  return readStableSynchronizedValueWithOwner(AsyncStorage, key);
 }
 
 /** Reset only the currently mounted account/guest namespace. */

@@ -1,4 +1,10 @@
-import { Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold, useFonts } from "@expo-google-fonts/inter";
+import {
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+  useFonts,
+} from "@expo-google-fonts/inter";
 import * as Font from "expo-font";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
@@ -12,6 +18,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AutoSync } from "@/components/AutoSync";
+import { NativeLifecycleCoordinator } from "@/components/NativeLifecycleCoordinator";
 import { AuthProvider } from "@/lib/auth";
 import { initializeRevenueCat, RevenueCatProvider } from "@/lib/revenuecat";
 import { AppProvider } from "@/context/AppContext";
@@ -44,7 +51,10 @@ function RootLayoutNav() {
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="onboarding/index" options={{ headerShown: false, presentation: "fullScreenModal" }} />
+      <Stack.Screen
+        name="onboarding/index"
+        options={{ headerShown: false, presentation: "fullScreenModal" }}
+      />
       <Stack.Screen
         name="plan-preview"
         options={{
@@ -53,19 +63,58 @@ function RootLayoutNav() {
           gestureEnabled: false,
         }}
       />
-      <Stack.Screen name="paywall" options={{ headerShown: false, presentation: "fullScreenModal" }} />
-      <Stack.Screen name="privacy-data" options={{ headerShown: true, title: "Privacy & Data" }} />
-      <Stack.Screen name="log-workout" options={{ headerShown: false, presentation: "fullScreenModal" }} />
-      <Stack.Screen name="plans" options={{ headerShown: true, title: "Training Programmes" }} />
-      <Stack.Screen name="hydration" options={{ headerShown: true, title: "Hydration" }} />
-      <Stack.Screen name="supplements" options={{ headerShown: true, title: "Supplements" }} />
-      <Stack.Screen name="coach" options={{ headerShown: true, title: "Coach" }} />
-      <Stack.Screen name="run" options={{ headerShown: true, title: "Record Activity" }} />
-      <Stack.Screen name="places" options={{ headerShown: true, title: "My Places" }} />
-      <Stack.Screen name="achievements" options={{ headerShown: true, title: "Achievements" }} />
-      <Stack.Screen name="scan" options={{ headerShown: true, title: "Scan barcode" }} />
-      <Stack.Screen name="social" options={{ headerShown: true, title: "Community" }} />
-      <Stack.Screen name="coaching" options={{ headerShown: true, title: "Coaching" }} />
+      <Stack.Screen
+        name="paywall"
+        options={{ headerShown: false, presentation: "fullScreenModal" }}
+      />
+      <Stack.Screen
+        name="privacy-data"
+        options={{ headerShown: true, title: "Privacy & Data" }}
+      />
+      <Stack.Screen
+        name="log-workout"
+        options={{ headerShown: false, presentation: "fullScreenModal" }}
+      />
+      <Stack.Screen
+        name="plans"
+        options={{ headerShown: true, title: "Training Programmes" }}
+      />
+      <Stack.Screen
+        name="hydration"
+        options={{ headerShown: true, title: "Hydration" }}
+      />
+      <Stack.Screen
+        name="supplements"
+        options={{ headerShown: true, title: "Supplements" }}
+      />
+      <Stack.Screen
+        name="coach"
+        options={{ headerShown: true, title: "Coach" }}
+      />
+      <Stack.Screen
+        name="run"
+        options={{ headerShown: true, title: "Record Activity" }}
+      />
+      <Stack.Screen
+        name="places"
+        options={{ headerShown: true, title: "My Places" }}
+      />
+      <Stack.Screen
+        name="achievements"
+        options={{ headerShown: true, title: "Achievements" }}
+      />
+      <Stack.Screen
+        name="scan"
+        options={{ headerShown: true, title: "Scan barcode" }}
+      />
+      <Stack.Screen
+        name="social"
+        options={{ headerShown: true, title: "Community" }}
+      />
+      <Stack.Screen
+        name="coaching"
+        options={{ headerShown: true, title: "Coaching" }}
+      />
     </Stack>
   );
 }
@@ -83,7 +132,9 @@ export default function RootLayout() {
 
   useEffect(() => {
     migrateStorageNamespace(AsyncStorage)
-      .catch((error) => console.warn("Storage namespace migration failed", error))
+      .catch((error) =>
+        console.warn("Storage namespace migration failed", error),
+      )
       .finally(() => setStorageReady(true));
   }, []);
 
@@ -111,7 +162,8 @@ export default function RootLayout() {
     }
   }, [fontsLoaded, fontError, iconFontsLoaded, storageReady]);
 
-  if ((!fontsLoaded && !fontError) || !iconFontsLoaded || !storageReady) return null;
+  if ((!fontsLoaded && !fontError) || !iconFontsLoaded || !storageReady)
+    return null;
 
   return (
     <SafeAreaProvider>
@@ -126,6 +178,7 @@ export default function RootLayout() {
                       <HealthProvider>
                         <WellnessProvider>
                           <AutoSync />
+                          <NativeLifecycleCoordinator />
                           <GestureHandlerRootView>
                             <KeyboardProvider>
                               <RootLayoutNav />

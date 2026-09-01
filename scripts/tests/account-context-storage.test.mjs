@@ -75,11 +75,13 @@ test("mobile and server expose one exact eighteen-field sync contract", async ()
 });
 
 test("reminders and foreground places use account-aware writes while arrivals stay device-local", async () => {
-  const [notifications, geofence, placesScreen] = await Promise.all([
-    source("lib/notifications.ts"),
-    source("lib/geofence.ts"),
-    source("app/places.tsx"),
-  ]);
+  const [notifications, geofence, pendingArrival, placesScreen] =
+    await Promise.all([
+      source("lib/notifications.ts"),
+      source("lib/geofence.ts"),
+      source("lib/pendingArrival.ts"),
+      source("app/places.tsx"),
+    ]);
 
   assert.match(notifications, /captureAccountStorageSession/);
   assert.doesNotMatch(
@@ -95,8 +97,10 @@ test("reminders and foreground places use account-aware writes while arrivals st
   assert.match(geofence, /captureAccountStorageSession/);
   assert.match(geofence, /accountStorage\.setItem\(\s*PLACES_KEY/);
   assert.match(geofence, /readStableBackgroundAccountValue\(PLACES_KEY\)/);
-  assert.match(geofence, /AsyncStorage\.getItem\(PENDING_KEY\)/);
-  assert.match(geofence, /AsyncStorage\.setItem\(PENDING_KEY/);
+  assert.match(geofence, /new PendingArrivalStore\(AsyncStorage\)/);
+  assert.match(pendingArrival, /@elovia_geofence_pending/);
+  assert.match(pendingArrival, /this\.storage\.getItem\(PENDING_ARRIVAL_KEY\)/);
+  assert.match(pendingArrival, /this\.storage\.setItem\(PENDING_ARRIVAL_KEY/);
   assert.match(placesScreen, /onDataRestored/);
   assert.match(placesScreen, /Could not save places/);
   assert.match(placesScreen, /private account backup/);

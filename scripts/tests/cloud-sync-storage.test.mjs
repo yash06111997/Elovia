@@ -11,6 +11,7 @@ import {
   LOCAL_SYNC_QUARANTINE_OWNER,
   LOCAL_SYNC_TRANSITION_EPOCH_KEY,
   readStableSynchronizedValue,
+  readStableSynchronizedValueWithOwner,
   STALE_CURRENT_USER,
   scopedSyncCacheKey,
   storedSyncUserOwner,
@@ -154,6 +155,20 @@ test("background reads accept only unchanged stable owners", async () => {
       null,
     );
   }
+});
+
+test("background reads return the verified decoded user owner with the value", async () => {
+  const storage = new MemoryStorage([
+    [LOCAL_SYNC_OWNER_KEY, storedSyncUserOwner("account/a")],
+    ["places", '[{"id":"A-gym"}]'],
+  ]);
+  assert.deepEqual(
+    await readStableSynchronizedValueWithOwner(storage, "places"),
+    {
+      ownerUserId: "account/a",
+      value: '[{"id":"A-gym"}]',
+    },
+  );
 });
 
 test("background reads fail closed when an owner transition starts between checks", async () => {

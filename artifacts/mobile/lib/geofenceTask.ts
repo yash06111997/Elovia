@@ -1,6 +1,6 @@
 import {
   GEOFENCE_TASK,
-  loadPlacesForBackgroundTask,
+  loadPlacesForBackgroundTaskContext,
   recordPendingArrival,
 } from "./geofence";
 
@@ -99,20 +99,26 @@ if (TaskManager && Location) {
         if (eventType !== Location.LocationGeofencingEventType.Enter) return;
 
         try {
-          const places = await loadPlacesForBackgroundTask();
-          const place = places.find((p) => p.id === region.identifier);
+          const context = await loadPlacesForBackgroundTaskContext();
+          if (!context) return;
+          const place = context.places.find(
+            (candidate) => candidate.id === region.identifier,
+          );
           if (!place || !place.enabled) return;
 
           if (place.notifyOnArrive) {
             await notifyArrival(place.name, place.kind);
           }
 
-          if (place.autoStartWorkout) {
+          if (place.autoStartWorkout && context.ownerUserId) {
+            const at = new Date();
             await recordPendingArrival({
+              eventId: `${place.id}:${at.getTime()}:${Math.random().toString(36).slice(2, 10)}`,
+              ownerUserId: context.ownerUserId,
               placeId: place.id,
               placeName: place.name,
               autoStartWorkout: true,
-              at: new Date().toISOString(),
+              at: at.toISOString(),
             });
           }
         } catch {

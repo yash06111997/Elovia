@@ -241,6 +241,18 @@ function isStoredUserOwner(owner: string): boolean {
   }
 }
 
+function backgroundOwnerUserId(
+  owner: string | null,
+): string | null | undefined {
+  if (owner === null || owner === LOCAL_SYNC_GUEST_OWNER) return null;
+  if (!isStoredUserOwner(owner)) return undefined;
+  try {
+    return decodeURIComponent(owner.slice("user:".length));
+  } catch {
+    return undefined;
+  }
+}
+
 function isStableBackgroundOwner(owner: string | null): boolean {
   return (
     owner === null ||
@@ -270,10 +282,15 @@ function parseTransitionEpoch(value: string | null): number {
  * This helper is deliberately read-only: it never recovers journals, changes
  * ownership, touches caches, or advances sync generations.
  */
-export async function readStableSynchronizedValue(
+export interface StableSynchronizedValue {
+  value: string | null;
+  ownerUserId: string | null;
+}
+
+export async function readStableSynchronizedValueWithOwner(
   storage: SyncStorageAdapter,
   key: string,
-): Promise<string | null> {
+): Promise<StableSynchronizedValue | null> {
   const readMetadata = async (): Promise<{
     owner: string | null;
     journal: string | null;
@@ -311,10 +328,21 @@ export async function readStableSynchronizedValue(
     ) {
       return null;
     }
-    return value;
+    const ownerUserId = backgroundOwnerUserId(after.owner);
+    if (ownerUserId === undefined) return null;
+    return { value, ownerUserId };
   } catch {
     return null;
   }
+}
+
+export async function readStableSynchronizedValue(
+  storage: SyncStorageAdapter,
+  key: string,
+): Promise<string | null> {
+  return (
+    (await readStableSynchronizedValueWithOwner(storage, key))?.value ?? null
+  );
 }
 
 function storedOwnerMatches(

@@ -1,5 +1,18 @@
 import { Platform } from "react-native";
 import { captureAccountStorageSession } from "./accountSyncStorage";
+import {
+  buildReminderSchedule,
+  DEFAULT_REMINDERS,
+  ELOVIA_REMINDER_OWNER,
+  isEloviaReminderNotification,
+  localDateKey,
+  normalizeReminderPreferences,
+  type ReminderPreferences,
+  type ReminderTrigger,
+} from "./reminderSchedule";
+
+export type { ReminderPreferences } from "./reminderSchedule";
+export { DEFAULT_REMINDERS } from "./reminderSchedule";
 
 /**
  * Local notification scheduling.
@@ -31,53 +44,32 @@ function loadNotifications(): NotificationsModule | null {
   return cached;
 }
 
-export interface ReminderPreferences {
-  enabled: boolean;
-  /** Daily workout nudge, "HH:mm" 24h local. */
-  workoutTime: string;
-  workoutEnabled: boolean;
-  /** Water reminders every N hours between wakingStart and wakingEnd. */
-  hydrationEnabled: boolean;
-  hydrationIntervalHours: number;
-  wakingStartHour: number;
-  wakingEndHour: number;
-  /** Evening nudge, only fires if nothing was logged that day. */
-  streakGuardEnabled: boolean;
-  streakGuardHour: number;
-  /** Weekly summary. 0 = Sunday. */
-  weeklyDigestEnabled: boolean;
-  weeklyDigestDay: number;
-  weeklyDigestHour: number;
-}
-
-export const DEFAULT_REMINDERS: ReminderPreferences = {
-  enabled: false,
-  workoutTime: "18:00",
-  workoutEnabled: true,
-  hydrationEnabled: true,
-  hydrationIntervalHours: 3,
-  wakingStartHour: 8,
-  wakingEndHour: 21,
-  streakGuardEnabled: true,
-  streakGuardHour: 20,
-  weeklyDigestEnabled: true,
-  weeklyDigestDay: 0,
-  weeklyDigestHour: 9,
-};
-
 const PREFS_KEY = "@elovia_reminder_prefs";
+let reminderOperation: Promise<void> = Promise.resolve();
+
+async function serializeReminderOperation<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = reminderOperation;
+  let release!: () => void;
+  reminderOperation = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
 
 export async function loadReminderPreferences(): Promise<ReminderPreferences> {
   try {
     const raw = await captureAccountStorageSession().getItem(PREFS_KEY);
-    if (!raw) return DEFAULT_REMINDERS;
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return DEFAULT_REMINDERS;
-    }
-    return { ...DEFAULT_REMINDERS, ...parsed };
+    if (!raw) return normalizeReminderPreferences(DEFAULT_REMINDERS);
+    return normalizeReminderPreferences(JSON.parse(raw));
   } catch {
-    return DEFAULT_REMINDERS;
+    return normalizeReminderPreferences(DEFAULT_REMINDERS);
   }
 }
 
@@ -86,7 +78,7 @@ export async function saveReminderPreferences(
 ): Promise<void> {
   await captureAccountStorageSession().setItem(
     PREFS_KEY,
-    JSON.stringify(prefs),
+    JSON.stringify(normalizeReminderPreferences(prefs)),
   );
 }
 
@@ -143,49 +135,68 @@ async function ensureAndroidChannel(N: NotificationsModule): Promise<void> {
   }
 }
 
-function parseTime(value: string): { hour: number; minute: number } {
-  const [h, m] = value.split(":");
-  const hour = Number(h);
-  const minute = Number(m);
+function toNativeTrigger(
+  N: NotificationsModule,
+  trigger: ReminderTrigger,
+): import("expo-notifications").SchedulableNotificationTriggerInput {
+  if (trigger.kind === "date") {
+    return {
+      type: N.SchedulableTriggerInputTypes.DATE,
+      date: trigger.at,
+      channelId: "reminders",
+    };
+  }
+  if (trigger.kind === "weekly") {
+    return {
+      type: N.SchedulableTriggerInputTypes.WEEKLY,
+      weekday: trigger.weekday,
+      hour: trigger.hour,
+      minute: trigger.minute,
+      channelId: "reminders",
+    };
+  }
   return {
-    hour: Number.isFinite(hour) ? Math.min(23, Math.max(0, hour)) : 18,
-    minute: Number.isFinite(minute) ? Math.min(59, Math.max(0, minute)) : 0,
+    type: N.SchedulableTriggerInputTypes.DAILY,
+    hour: trigger.hour,
+    minute: trigger.minute,
+    channelId: "reminders",
   };
 }
 
-const WORKOUT_COPY = [
-  {
-    title: "Time to train",
-    body: "Your session is waiting. Even a short one counts.",
-  },
-  {
-    title: "Session time",
-    body: "Twenty minutes now beats a perfect workout you skip.",
-  },
-  {
-    title: "Ready when you are",
-    body: "Open Elovia and knock today's session out.",
-  },
-];
+async function cancelOwnedReminders(N: NotificationsModule): Promise<void> {
+  const scheduled = await N.getAllScheduledNotificationsAsync();
+  for (const notification of scheduled) {
+    if (isEloviaReminderNotification(notification)) {
+      await N.cancelScheduledNotificationAsync(notification.identifier);
+    }
+  }
+}
 
-const HYDRATION_COPY = [
-  {
-    title: "Water break",
-    body: "A glass now keeps you on track for today's goal.",
-  },
-  { title: "Hydrate", body: "Quick one - drink some water and log it." },
-];
-
-function pick<T>(list: T[]): T {
-  return list[Math.floor(Math.random() * list.length)];
+async function scheduleOwnedReminders(
+  N: NotificationsModule,
+  prefs: ReminderPreferences,
+): Promise<void> {
+  await ensureAndroidChannel(N);
+  for (const item of buildReminderSchedule(prefs)) {
+    await N.scheduleNotificationAsync({
+      content: {
+        title: item.title,
+        body: item.body,
+        data: {
+          eloviaOwner: ELOVIA_REMINDER_OWNER,
+          kind: item.kind,
+        },
+      },
+      trigger: toNativeTrigger(N, item.trigger),
+    });
+  }
 }
 
 /**
  * Rebuild the full notification schedule from preferences.
  *
- * Cancels everything first and re-creates. Reconciling individual triggers
- * would be more efficient but far easier to get wrong, and the resulting
- * duplicate-reminder bug is exactly the kind that makes people uninstall.
+ * Cancels only notifications tagged as Elovia reminders, then re-creates the
+ * desired owned set. Other scheduled notifications are never touched.
  */
 export async function rescheduleAllReminders(
   prefs: ReminderPreferences,
@@ -194,90 +205,46 @@ export async function rescheduleAllReminders(
   if (!N || Platform.OS === "web") return false;
 
   try {
-    await N.cancelAllScheduledNotificationsAsync();
-
-    if (!prefs.enabled) return true;
-
-    const granted = await requestNotificationPermission();
-    if (!granted) return false;
-
-    await ensureAndroidChannel(N);
-
-    const daily = N.SchedulableTriggerInputTypes.DAILY;
-    const weekly = N.SchedulableTriggerInputTypes.WEEKLY;
-
-    if (prefs.workoutEnabled) {
-      const { hour, minute } = parseTime(prefs.workoutTime);
-      const copy = pick(WORKOUT_COPY);
-      await N.scheduleNotificationAsync({
-        content: { ...copy, data: { kind: "workout" } },
-        trigger: { type: daily, hour, minute, channelId: "reminders" },
-      });
+    const normalized = normalizeReminderPreferences(prefs);
+    await saveReminderPreferences(normalized);
+    if (normalized.enabled && !(await requestNotificationPermission())) {
+      return false;
     }
-
-    if (prefs.hydrationEnabled) {
-      // Discrete daily triggers across waking hours. A repeating interval
-      // trigger would fire overnight, which is the fastest way to get
-      // notifications disabled entirely.
-      const step = Math.max(1, Math.min(6, prefs.hydrationIntervalHours));
-      for (
-        let hour = prefs.wakingStartHour;
-        hour <= prefs.wakingEndHour;
-        hour += step
-      ) {
-        const copy = pick(HYDRATION_COPY);
-        await N.scheduleNotificationAsync({
-          content: { ...copy, data: { kind: "hydration" } },
-          trigger: { type: daily, hour, minute: 0, channelId: "reminders" },
-        });
-      }
-    }
-
-    if (prefs.streakGuardEnabled) {
-      await N.scheduleNotificationAsync({
-        content: {
-          title: "Keep your streak",
-          body: "You have not logged anything today. A quick entry keeps it alive.",
-          data: { kind: "streak" },
-        },
-        trigger: {
-          type: daily,
-          hour: Math.min(23, Math.max(0, prefs.streakGuardHour)),
-          minute: 0,
-          channelId: "reminders",
-        },
-      });
-    }
-
-    if (prefs.weeklyDigestEnabled) {
-      await N.scheduleNotificationAsync({
-        content: {
-          title: "Your week in review",
-          body: "See how your training and nutrition went this week.",
-          data: { kind: "digest" },
-        },
-        trigger: {
-          type: weekly,
-          // expo-notifications weekday is 1-7 with 1 = Sunday.
-          weekday: Math.min(7, Math.max(1, prefs.weeklyDigestDay + 1)),
-          hour: prefs.weeklyDigestHour,
-          minute: 0,
-          channelId: "reminders",
-        },
-      });
-    }
-
-    return true;
+    return reconcileReminderSchedule(normalized);
   } catch {
     return false;
   }
+}
+
+/** Rebuild enabled reminders without ever prompting for optional permission. */
+export async function reconcileReminderSchedule(
+  providedPreferences?: ReminderPreferences,
+): Promise<boolean> {
+  const N = loadNotifications();
+  if (!N || Platform.OS === "web") return false;
+
+  return serializeReminderOperation(async () => {
+    try {
+      const prefs = normalizeReminderPreferences(
+        providedPreferences ?? (await loadReminderPreferences()),
+      );
+      await cancelOwnedReminders(N);
+      if (!prefs.enabled) return true;
+      const permission = await N.getPermissionsAsync();
+      if (!permission.granted) return false;
+      await scheduleOwnedReminders(N, prefs);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 export async function cancelAllReminders(): Promise<void> {
   const N = loadNotifications();
   if (!N) return;
   try {
-    await N.cancelAllScheduledNotificationsAsync();
+    await serializeReminderOperation(() => cancelOwnedReminders(N));
   } catch {
     // Nothing scheduled, or the module is unavailable.
   }
@@ -289,7 +256,7 @@ export async function countScheduledReminders(): Promise<number> {
   if (!N) return 0;
   try {
     const scheduled = await N.getAllScheduledNotificationsAsync();
-    return scheduled.length;
+    return scheduled.filter(isEloviaReminderNotification).length;
   } catch {
     return 0;
   }
@@ -302,17 +269,14 @@ export async function countScheduledReminders(): Promise<number> {
  * have not logged anything - the single most irritating possible reminder.
  */
 export async function suppressTodayStreakReminder(): Promise<void> {
-  const N = loadNotifications();
-  if (!N) return;
   try {
-    const scheduled = await N.getAllScheduledNotificationsAsync();
-    const streakOnes = scheduled.filter(
-      (s) =>
-        (s.content?.data as { kind?: string } | undefined)?.kind === "streak",
-    );
-    for (const item of streakOnes) {
-      await N.cancelScheduledNotificationAsync(item.identifier);
-    }
+    const prefs = await loadReminderPreferences();
+    const suppressed = normalizeReminderPreferences({
+      ...prefs,
+      streakSuppressedOn: localDateKey(new Date()),
+    });
+    await saveReminderPreferences(suppressed);
+    await reconcileReminderSchedule(suppressed);
   } catch {
     // Best effort.
   }

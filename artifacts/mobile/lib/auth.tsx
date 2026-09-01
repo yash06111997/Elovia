@@ -1,6 +1,19 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  type ReactNode,
+} from "react";
 import { Platform, Alert } from "react-native";
-import { GoogleAuthProvider, signInWithCredential, onAuthStateChanged, signOut, type User as FirebaseUser } from "firebase/auth";
+import {
+  GoogleAuthProvider,
+  signInWithCredential,
+  onAuthStateChanged,
+  signOut,
+  type User as FirebaseUser,
+} from "firebase/auth";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
 import * as Crypto from "expo-crypto";
@@ -9,6 +22,7 @@ import {
   getAccountStorageScopeKey,
   setAccountStorageAuthScope,
 } from "./accountSyncStorage";
+import { unregisterFromPush } from "./push";
 
 function generateUUID(): string {
   return Crypto.randomUUID();
@@ -54,7 +68,9 @@ function firebaseUserToUser(fbUser: FirebaseUser): User {
   };
 }
 
-const API_BASE = process.env.EXPO_PUBLIC_DOMAIN ? `https://${process.env.EXPO_PUBLIC_DOMAIN}` : "";
+const API_BASE = process.env.EXPO_PUBLIC_DOMAIN
+  ? `https://${process.env.EXPO_PUBLIC_DOMAIN}`
+  : "";
 
 function getErrorMessage(err: unknown): string {
   if (err && typeof err === "object" && "code" in err) {
@@ -80,7 +96,9 @@ function getErrorMessage(err: unknown): string {
   return "Sign-in failed. Please try again.";
 }
 
-async function handleIdTokenFirebase(idToken: string): Promise<FirebaseUser | null> {
+async function handleIdTokenFirebase(
+  idToken: string,
+): Promise<FirebaseUser | null> {
   const firebaseAuth = await getFirebaseAuth();
   if (!firebaseAuth) return null;
   const credential = GoogleAuthProvider.credential(idToken);
@@ -90,16 +108,28 @@ async function handleIdTokenFirebase(idToken: string): Promise<FirebaseUser | nu
 
 function loginWithPopupWindow(authUrl: string, state: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const expectedOrigin = API_BASE ? new URL(API_BASE).origin : window.location.origin;
-    const popup = window.open(authUrl, "elovia-auth", "width=500,height=600,menubar=no,toolbar=no");
+    const expectedOrigin = API_BASE
+      ? new URL(API_BASE).origin
+      : window.location.origin;
+    const popup = window.open(
+      authUrl,
+      "elovia-auth",
+      "width=500,height=600,menubar=no,toolbar=no",
+    );
     if (!popup) {
-      reject(new Error("Popup was blocked. Please allow popups and try again."));
+      reject(
+        new Error("Popup was blocked. Please allow popups and try again."),
+      );
       return;
     }
 
     const handler = (event: MessageEvent) => {
       if (event.origin !== expectedOrigin) return;
-      if ((event.data?.type === "elovia-auth" || event.data?.type === "fitai-auth") && event.data?.state === state) {
+      if (
+        (event.data?.type === "elovia-auth" ||
+          event.data?.type === "fitai-auth") &&
+        event.data?.state === state
+      ) {
         window.removeEventListener("message", handler);
         clearInterval(checkClosed);
         if (event.data.idToken) {
@@ -171,7 +201,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const returnUrl = Linking.createURL("auth");
         const authUrl = `${API_BASE}/api/auth/google-mobile?returnUrl=${encodeURIComponent(returnUrl)}&state=${encodeURIComponent(state)}`;
 
-        const result = await WebBrowser.openAuthSessionAsync(authUrl, returnUrl);
+        const result = await WebBrowser.openAuthSessionAsync(
+          authUrl,
+          returnUrl,
+        );
 
         if (result.type === "cancel" || result.type === "dismiss") {
           setAuthError("Sign-in was cancelled.");
@@ -180,7 +213,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         if (result.type === "success" && result.url) {
           const returnedStateRaw = result.url.match(/[?&#]state=([^&]+)/)?.[1];
-          const returnedState = returnedStateRaw ? decodeURIComponent(returnedStateRaw) : null;
+          const returnedState = returnedStateRaw
+            ? decodeURIComponent(returnedStateRaw)
+            : null;
           if (!returnedState || returnedState !== state) {
             const msg = "Security check failed. Please try signing in again.";
             setAuthError(msg);
@@ -213,6 +248,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     try {
       const firebaseAuth = await getFirebaseAuth();
+      if (firebaseAuth.currentUser?.uid) {
+        await unregisterFromPush(firebaseAuth.currentUser.uid);
+      }
       await signOut(firebaseAuth);
       setAccountStorageAuthScope(null, false);
       setUser(null);

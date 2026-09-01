@@ -70,11 +70,16 @@ export async function registerPushToken(params: {
     });
 }
 
-export async function unregisterPushToken(token: string): Promise<void> {
+export async function unregisterPushToken(
+  userId: string,
+  token: string,
+): Promise<void> {
   await db
     .update(pushTokensTable)
     .set({ enabled: false, updatedAt: new Date() })
-    .where(eq(pushTokensTable.token, token));
+    .where(
+      and(eq(pushTokensTable.userId, userId), eq(pushTokensTable.token, token)),
+    );
 }
 
 /** Live tokens for a user: enabled and not marked dead by Expo. */
@@ -167,7 +172,11 @@ export async function sendPushToTokens(
         if (reason === "DeviceNotRegistered") {
           await db
             .update(pushTokensTable)
-            .set({ invalidatedAt: new Date(), lastError: reason, enabled: false })
+            .set({
+              invalidatedAt: new Date(),
+              lastError: reason,
+              enabled: false,
+            })
             .where(eq(pushTokensTable.token, token))
             .catch(() => undefined);
         } else {
@@ -196,7 +205,8 @@ export async function sendPushToTokens(
 export function isValidExpoPushToken(token: unknown): token is string {
   return (
     typeof token === "string" &&
-    (token.startsWith("ExponentPushToken[") || token.startsWith("ExpoPushToken[")) &&
+    (token.startsWith("ExponentPushToken[") ||
+      token.startsWith("ExpoPushToken[")) &&
     token.endsWith("]") &&
     token.length < 200
   );

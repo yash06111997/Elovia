@@ -1,20 +1,25 @@
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { getFirebaseAuth } from "./firebase";
+import {
+  parseCachedPushOwnership,
+  planPushOwnershipTransition,
+  type PushOwnership,
+} from "./pushOwnership";
 
 /**
- * Expo push token registration.
+ * Expo push registration.
  *
- * Push covers what the SERVER knows and the device cannot: a weekly digest
- * computed from synced data, a subscription event, a coach follow-up. Purely
- * time-based reminders stay in the local scheduler, where they need no network
- * and no token.
+ * The explicit registration entry point may request permission after a user
+ * taps a control. Lifecycle reconciliation only observes an already-granted
+ * permission, so opening Elovia never causes an optional system prompt.
  */
 
 type NotificationsModule = typeof import("expo-notifications");
 
 let cachedNotifications: NotificationsModule | null = null;
 let notificationsLoadAttempted = false;
+let pushOperation: Promise<void> = Promise.resolve();
 
 function loadNotifications(): NotificationsModule | null {
   if (notificationsLoadAttempted) return cachedNotifications;
@@ -35,23 +40,38 @@ function getBaseUrl(): string {
   return "http://localhost:8080";
 }
 
-async function getAuthToken(): Promise<string | null> {
+interface AuthSession {
+  userId: string;
+  authToken: string;
+}
+
+async function getAuthSession(
+  expectedUserId?: string,
+): Promise<AuthSession | null> {
   try {
     const auth = await getFirebaseAuth();
-    return (await auth?.currentUser?.getIdToken()) ?? null;
+    const current = auth?.currentUser;
+    if (!current || (expectedUserId && current.uid !== expectedUserId)) {
+      return null;
+    }
+    const authToken = await current.getIdToken();
+    if (!authToken || auth.currentUser?.uid !== current.uid) return null;
+    return { userId: current.uid, authToken };
   } catch {
     return null;
   }
 }
 
+async function sessionStillOwns(userId: string): Promise<boolean> {
+  try {
+    return (await getFirebaseAuth())?.currentUser?.uid === userId;
+  } catch {
+    return false;
+  }
+}
+
 const TOKEN_CACHE_KEY = "@elovia_push_token";
 
-/**
- * Resolve the Expo project id.
- *
- * getExpoPushTokenAsync requires this in SDK 49+, and omitting it is the most
- * common reason push "silently does nothing" in a production build.
- */
 function getProjectId(): string | undefined {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -69,71 +89,27 @@ function getProjectId(): string | undefined {
 export interface PushRegistrationResult {
   ok: boolean;
   token?: string;
-  reason?: "unsupported" | "denied" | "no_project_id" | "unauthenticated" | "network";
+  reason?:
+    | "unsupported"
+    | "denied"
+    | "no_project_id"
+    | "unauthenticated"
+    | "network";
 }
 
-/**
- * Ask for permission, obtain a token, and register it with the server.
- *
- * Safe to call repeatedly: the server upserts on the token, and an unchanged
- * token short-circuits before the network call.
- */
-export async function registerForPush(): Promise<PushRegistrationResult> {
-  const N = loadNotifications();
-  if (!N || Platform.OS === "web") return { ok: false, reason: "unsupported" };
-
+async function serializePushOperation<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = pushOperation;
+  let release!: () => void;
+  pushOperation = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
   try {
-    // A simulator cannot receive push. Reporting this honestly beats leaving
-    // the user staring at a toggle that appears to work.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const Device = require("expo-device");
-    if (Device?.isDevice === false) return { ok: false, reason: "unsupported" };
-  } catch {
-    // expo-device missing is not fatal; continue and let the token call decide.
-  }
-
-  try {
-    const existing = await N.getPermissionsAsync();
-    let granted = existing.granted;
-
-    if (!granted) {
-      const requested = await N.requestPermissionsAsync();
-      granted = requested.granted;
-    }
-
-    if (!granted) return { ok: false, reason: "denied" };
-
-    const projectId = getProjectId();
-    if (!projectId) return { ok: false, reason: "no_project_id" };
-
-    const { data: token } = await N.getExpoPushTokenAsync({ projectId });
-    if (!token) return { ok: false, reason: "unsupported" };
-
-    const authToken = await getAuthToken();
-    if (!authToken) return { ok: false, reason: "unauthenticated" };
-
-    const cached = await AsyncStorage.getItem(TOKEN_CACHE_KEY);
-    if (cached === token) return { ok: true, token };
-
-    const response = await fetch(`${getBaseUrl()}/api/push/register`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${authToken}`,
-      },
-      body: JSON.stringify({
-        token,
-        platform: Platform.OS,
-        deviceName: await getDeviceName(),
-      }),
-    });
-
-    if (!response.ok) return { ok: false, reason: "network" };
-
-    await AsyncStorage.setItem(TOKEN_CACHE_KEY, token);
-    return { ok: true, token };
-  } catch {
-    return { ok: false, reason: "network" };
+    return await operation();
+  } finally {
+    release();
   }
 }
 
@@ -147,48 +123,184 @@ async function getDeviceName(): Promise<string | undefined> {
   }
 }
 
-/** Stop server-sent notifications for this device. */
-export async function unregisterFromPush(): Promise<boolean> {
+async function postPushOwnership(
+  path: "register" | "unregister",
+  session: AuthSession,
+  token: string,
+): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
   try {
-    const token = await AsyncStorage.getItem(TOKEN_CACHE_KEY);
-    if (!token) return true;
-
-    const authToken = await getAuthToken();
-    if (!authToken) return false;
-
-    const response = await fetch(`${getBaseUrl()}/api/push/unregister`, {
+    const response = await fetch(`${getBaseUrl()}/api/push/${path}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${authToken}`,
+        Authorization: `Bearer ${session.authToken}`,
       },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify(
+        path === "register"
+          ? {
+              token,
+              platform: Platform.OS,
+              deviceName: await getDeviceName(),
+            }
+          : { token },
+      ),
+      signal: controller.signal,
     });
-
-    if (response.ok) await AsyncStorage.removeItem(TOKEN_CACHE_KEY);
     return response.ok;
-  } catch {
-    return false;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
-/** Ask the server to push to this account, to verify the pipeline end to end. */
-export async function sendTestPush(): Promise<{ ok: boolean; message: string }> {
+async function disableCachedOwnershipForCurrentUser(
+  expectedUserId?: string,
+): Promise<void> {
+  const cached = parseCachedPushOwnership(
+    await AsyncStorage.getItem(TOKEN_CACHE_KEY),
+  );
+  if (!cached || (expectedUserId && cached.userId !== expectedUserId)) return;
+  const session = await getAuthSession(cached.userId);
+  if (!session) return;
+  if (await postPushOwnership("unregister", session, cached.token)) {
+    await AsyncStorage.removeItem(TOKEN_CACHE_KEY);
+  }
+}
+
+async function registerPushOwnership(
+  requestPermission: boolean,
+  expectedUserId?: string,
+): Promise<PushRegistrationResult> {
+  const N = loadNotifications();
+  if (!N || Platform.OS === "web") {
+    return { ok: false, reason: "unsupported" };
+  }
+
   try {
-    const authToken = await getAuthToken();
-    if (!authToken) return { ok: false, message: "Please sign in first." };
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Device = require("expo-device");
+    if (Device?.isDevice === false) {
+      return { ok: false, reason: "unsupported" };
+    }
+  } catch {
+    // A missing optional device module is handled by the token request below.
+  }
+
+  try {
+    const existing = await N.getPermissionsAsync();
+    const granted =
+      existing.granted ||
+      (requestPermission && (await N.requestPermissionsAsync()).granted);
+    if (!granted) {
+      await disableCachedOwnershipForCurrentUser(expectedUserId);
+      return { ok: false, reason: "denied" };
+    }
+
+    const projectId = getProjectId();
+    if (!projectId) return { ok: false, reason: "no_project_id" };
+
+    const { data: token } = await N.getExpoPushTokenAsync({ projectId });
+    if (!token) return { ok: false, reason: "unsupported" };
+
+    const session = await getAuthSession(expectedUserId);
+    if (!session) return { ok: false, reason: "unauthenticated" };
+
+    const cached = parseCachedPushOwnership(
+      await AsyncStorage.getItem(TOKEN_CACHE_KEY),
+    );
+    const transition = planPushOwnershipTransition(
+      cached,
+      session.userId,
+      token,
+    );
+    if (transition.action === "noop") return { ok: true, token };
+
+    // Only the same account's rotated token can be unregistered here. An
+    // ownership change is transferred by the register upsert and never tries
+    // to authorize a previous user's unregister with a new session.
+    if (transition.action === "replace-current-token") {
+      await postPushOwnership(
+        "unregister",
+        session,
+        transition.unregisterToken,
+      );
+    }
+
+    if (!(await postPushOwnership("register", session, token))) {
+      return { ok: false, reason: "network" };
+    }
+    if (!(await sessionStillOwns(session.userId))) {
+      return { ok: false, reason: "unauthenticated" };
+    }
+
+    const ownership: PushOwnership = { userId: session.userId, token };
+    await AsyncStorage.setItem(TOKEN_CACHE_KEY, JSON.stringify(ownership));
+    return { ok: true, token };
+  } catch {
+    return { ok: false, reason: "network" };
+  }
+}
+
+/** Explicit user-invoked flow. This is the only path allowed to prompt. */
+export async function registerForPushNotifications(): Promise<PushRegistrationResult> {
+  return serializePushOperation(() => registerPushOwnership(true));
+}
+
+/** Backward-compatible name for existing settings call sites. */
+export async function registerForPush(): Promise<PushRegistrationResult> {
+  return registerForPushNotifications();
+}
+
+/** Launch/account reconciliation. It only uses permission already granted. */
+export async function reconcilePushRegistration(
+  userId: string,
+): Promise<PushRegistrationResult> {
+  return serializePushOperation(() => registerPushOwnership(false, userId));
+}
+
+/** Stop server-sent notifications while the owning user is still signed in. */
+export async function unregisterFromPush(
+  expectedUserId?: string,
+): Promise<boolean> {
+  return serializePushOperation(async () => {
+    try {
+      const cached = parseCachedPushOwnership(
+        await AsyncStorage.getItem(TOKEN_CACHE_KEY),
+      );
+      if (!cached) return true;
+      if (expectedUserId && cached.userId !== expectedUserId) return false;
+      const session = await getAuthSession(cached.userId);
+      if (!session) return false;
+      const ok = await postPushOwnership("unregister", session, cached.token);
+      if (ok) await AsyncStorage.removeItem(TOKEN_CACHE_KEY);
+      return ok;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Ask the server to push to this account, to verify the pipeline end to end. */
+export async function sendTestPush(): Promise<{
+  ok: boolean;
+  message: string;
+}> {
+  try {
+    const session = await getAuthSession();
+    if (!session) return { ok: false, message: "Please sign in first." };
 
     const response = await fetch(`${getBaseUrl()}/api/push/test`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${authToken}` },
+      headers: { Authorization: `Bearer ${session.authToken}` },
     });
-
     const body = await response.json().catch(() => ({}));
-
     if (response.ok) {
-      return { ok: true, message: "Test notification sent. It should arrive shortly." };
+      return {
+        ok: true,
+        message: "Test notification sent. It should arrive shortly.",
+      };
     }
-
     return {
       ok: false,
       message: body?.error ?? "Could not send a test notification.",

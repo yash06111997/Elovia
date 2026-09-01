@@ -3,7 +3,11 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   captureAccountStorageSession,
   readStableBackgroundAccountValue,
+  readStableBackgroundAccountValueWithOwner,
 } from "./accountSyncStorage";
+import { PendingArrivalStore, type PendingArrival } from "./pendingArrival";
+
+export type { PendingArrival } from "./pendingArrival";
 
 /**
  * Place-based triggers ("you arrived at the gym").
@@ -40,7 +44,7 @@ export interface SavedPlace {
 }
 
 const PLACES_KEY = "@elovia_places";
-const PENDING_KEY = "@elovia_geofence_pending";
+const pendingArrivals = new PendingArrivalStore(AsyncStorage);
 
 /** Below this, GPS drift alone will trip the fence repeatedly. */
 export const MIN_RADIUS_M = 100;
@@ -94,6 +98,18 @@ export async function loadPlacesForBackgroundTask(): Promise<SavedPlace[]> {
   return parsePlaces(await readStableBackgroundAccountValue(PLACES_KEY));
 }
 
+export async function loadPlacesForBackgroundTaskContext(): Promise<{
+  ownerUserId: string | null;
+  places: SavedPlace[];
+} | null> {
+  const stable = await readStableBackgroundAccountValueWithOwner(PLACES_KEY);
+  if (!stable) return null;
+  return {
+    ownerUserId: stable.ownerUserId,
+    places: parsePlaces(stable.value),
+  };
+}
+
 export async function savePlaces(places: SavedPlace[]): Promise<void> {
   const accountStorage = captureAccountStorageSession();
   await accountStorage.setItem(
@@ -106,43 +122,28 @@ export async function savePlaces(places: SavedPlace[]): Promise<void> {
  * A crossing recorded by the background task, for the app to act on when it
  * next opens. The background task cannot navigate the UI, so it leaves a note.
  */
-export interface PendingArrival {
-  placeId: string;
-  placeName: string;
-  autoStartWorkout: boolean;
-  at: string;
+export async function readPendingArrival(
+  userId: string,
+): Promise<PendingArrival | null> {
+  return pendingArrivals.readForUser(userId);
 }
 
-export async function readPendingArrival(): Promise<PendingArrival | null> {
-  try {
-    const raw = await AsyncStorage.getItem(PENDING_KEY);
-    if (!raw) return null;
-
-    const parsed = JSON.parse(raw) as PendingArrival;
-
-    // Stale arrivals are worse than none: being asked to start a gym session
-    // three hours after leaving is pure noise.
-    if (Date.now() - new Date(parsed.at).getTime() > 30 * 60 * 1000) {
-      await AsyncStorage.removeItem(PENDING_KEY);
-      return null;
-    }
-
-    return parsed;
-  } catch {
-    return null;
-  }
+export async function clearPendingArrival(
+  arrival: PendingArrival,
+): Promise<boolean> {
+  return pendingArrivals.complete(arrival);
 }
 
-export async function clearPendingArrival(): Promise<void> {
-  await AsyncStorage.removeItem(PENDING_KEY).catch(() => undefined);
+export async function releasePendingArrival(
+  arrival: PendingArrival,
+): Promise<void> {
+  await pendingArrivals.release(arrival);
 }
 
 export async function recordPendingArrival(
   arrival: PendingArrival,
-): Promise<void> {
-  await AsyncStorage.setItem(PENDING_KEY, JSON.stringify(arrival)).catch(
-    () => undefined,
-  );
+): Promise<boolean> {
+  return pendingArrivals.record(arrival);
 }
 
 export type PermissionOutcome =

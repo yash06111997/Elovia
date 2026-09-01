@@ -9,45 +9,71 @@ import {
 
 const router: IRouter = Router();
 
+function errorType(error: unknown): string {
+  return error instanceof Error ? error.name.slice(0, 80) : "UnknownError";
+}
+
 /** Register (or re-register) this device for push. */
-router.post("/push/register", requireAuth, async (req: Request, res: Response) => {
-  const { token, platform, deviceName } = req.body ?? {};
+router.post(
+  "/push/register",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const { token, platform, deviceName } = req.body ?? {};
 
-  if (!isValidExpoPushToken(token)) {
-    res.status(400).json({ error: "A valid Expo push token is required", code: "bad_request" });
-    return;
-  }
+    if (!isValidExpoPushToken(token)) {
+      res.status(400).json({
+        error: "A valid Expo push token is required",
+        code: "bad_request",
+      });
+      return;
+    }
 
-  try {
-    await registerPushToken({
-      userId: req.user!.id,
-      token,
-      platform: typeof platform === "string" ? platform.slice(0, 20) : undefined,
-      deviceName: typeof deviceName === "string" ? deviceName.slice(0, 100) : undefined,
-    });
-    res.json({ registered: true });
-  } catch (err) {
-    req.log.error({ err }, "Failed to register push token");
-    res.status(500).json({ error: "Could not register for notifications" });
-  }
-});
+    try {
+      await registerPushToken({
+        userId: req.user!.id,
+        token,
+        platform:
+          typeof platform === "string" ? platform.slice(0, 20) : undefined,
+        deviceName:
+          typeof deviceName === "string" ? deviceName.slice(0, 100) : undefined,
+      });
+      res.json({ registered: true });
+    } catch (err) {
+      req.log.error(
+        { errorType: errorType(err) },
+        "Failed to register push token",
+      );
+      res.status(500).json({ error: "Could not register for notifications" });
+    }
+  },
+);
 
-router.post("/push/unregister", requireAuth, async (req: Request, res: Response) => {
-  const { token } = req.body ?? {};
+router.post(
+  "/push/unregister",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const { token } = req.body ?? {};
 
-  if (!isValidExpoPushToken(token)) {
-    res.status(400).json({ error: "A valid Expo push token is required", code: "bad_request" });
-    return;
-  }
+    if (!isValidExpoPushToken(token)) {
+      res.status(400).json({
+        error: "A valid Expo push token is required",
+        code: "bad_request",
+      });
+      return;
+    }
 
-  try {
-    await unregisterPushToken(token);
-    res.json({ unregistered: true });
-  } catch (err) {
-    req.log.error({ err }, "Failed to unregister push token");
-    res.status(500).json({ error: "Could not disable notifications" });
-  }
-});
+    try {
+      await unregisterPushToken(req.user!.id, token);
+      res.json({ unregistered: true });
+    } catch (err) {
+      req.log.error(
+        { errorType: errorType(err) },
+        "Failed to unregister push token",
+      );
+      res.status(500).json({ error: "Could not disable notifications" });
+    }
+  },
+);
 
 /**
  * Send a test notification to the caller's own devices.
@@ -76,7 +102,7 @@ router.post("/push/test", requireAuth, async (req: Request, res: Response) => {
 
     res.json({ ok: true, ...result });
   } catch (err) {
-    req.log.error({ err }, "Failed to send test push");
+    req.log.error({ errorType: errorType(err) }, "Failed to send test push");
     res.status(500).json({ error: "Could not send test notification" });
   }
 });
