@@ -500,7 +500,7 @@ integrationTest(
           `);
           assert.deepEqual(state.rows[0], {
             partial_table: null,
-            migration_count: 5,
+            migration_count: migrationNames.length,
           });
         } finally {
           await pool.end();
