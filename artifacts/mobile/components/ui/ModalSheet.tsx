@@ -1,6 +1,7 @@
 import React from "react";
 import { View, Text, StyleSheet, Modal, ScrollView, TouchableOpacity } from "react-native";
-import { Space, Radius } from "@/constants/design";
+import { Ionicons } from "@expo/vector-icons";
+import { Space, Radius, MIN_TOUCH } from "@/constants/design";
 import { useTheme } from "@/hooks/useTheme";
 
 export interface ModalSheetProps {
@@ -36,9 +37,20 @@ export function ModalSheet({ visible, onClose, title, children }: ModalSheetProp
           accessibilityRole="button"
         />
         <ScrollView style={{ maxHeight: "85%" }} bounces={false} keyboardShouldPersistTaps="handled">
-          <View style={[styles.sheet, { backgroundColor: theme.surface }]}>
+          <View style={[styles.sheet, { backgroundColor: theme.surface }]} accessibilityViewIsModal>
             <View style={styles.handle} />
-            <Text style={[styles.title, { color: theme.text }]}>{title}</Text>
+            <View style={styles.header}>
+              <View style={styles.headerSpacer} />
+              <Text style={[styles.title, { color: theme.text }]} accessibilityRole="header">{title}</Text>
+              <TouchableOpacity
+                style={styles.closeButton}
+                onPress={onClose}
+                accessibilityRole="button"
+                accessibilityLabel={`Close ${title}`}
+              >
+                <Ionicons name="close" size={22} color={theme.textSecondary} />
+              </TouchableOpacity>
+            </View>
             {children}
           </View>
         </ScrollView>
@@ -63,5 +75,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#444",
     alignSelf: "center",
   },
-  title: { fontSize: 18, fontFamily: "Inter_700Bold", textAlign: "center" },
+  header: { flexDirection: "row", alignItems: "center" },
+  headerSpacer: { width: MIN_TOUCH },
+  title: { flex: 1, fontSize: 18, fontFamily: "Inter_700Bold", textAlign: "center" },
+  closeButton: { width: MIN_TOUCH, height: MIN_TOUCH, alignItems: "center", justifyContent: "center" },
 });

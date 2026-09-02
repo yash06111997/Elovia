@@ -81,7 +81,7 @@ test("authenticated users can export and permanently delete their account data",
 test("the mobile app exposes privacy, terms, export, and deletion controls", async () => {
   const privacyScreen = await source("artifacts/mobile/app/privacy-data.tsx");
   const rootLayout = await source("artifacts/mobile/app/_layout.tsx");
-  const profile = await source("artifacts/mobile/app/(tabs)/profile.tsx");
+  const profile = await source("artifacts/mobile/app/profile-details.tsx");
 
   assert.match(rootLayout, /name="privacy-data"/);
   assert.match(profile, /Privacy & Data/);

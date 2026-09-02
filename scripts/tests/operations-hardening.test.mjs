@@ -2188,7 +2188,7 @@ test("authentication recovery and native lifecycle are connected without launch 
     source("artifacts/api-server/src/routes/push.ts"),
     source("artifacts/api-server/src/lib/push.ts"),
     source("artifacts/mobile/app/privacy-data.tsx"),
-    source("artifacts/mobile/app/(tabs)/profile.tsx"),
+    source("artifacts/mobile/app/profile-details.tsx"),
     source("artifacts/mobile/components/AutoSync.tsx"),
     source("artifacts/mobile/lib/accountDeletionRecovery.ts"),
     source("artifacts/api-server/src/middlewares/authMiddleware.ts"),

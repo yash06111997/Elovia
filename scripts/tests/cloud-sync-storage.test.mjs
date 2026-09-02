@@ -983,7 +983,7 @@ test("automatic and manual sync bind work to an expected authenticated owner", a
       ),
       readFile(
         new URL(
-          "../../artifacts/mobile/app/(tabs)/profile.tsx",
+          "../../artifacts/mobile/app/profile-details.tsx",
           import.meta.url,
         ),
         "utf8",

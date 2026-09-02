@@ -60,7 +60,7 @@ export function OptionPicker<T extends string>({
               }}
               activeOpacity={0.8}
               accessibilityRole="radio"
-              accessibilityState={{ selected: active }}
+              accessibilityState={{ checked: active }}
               accessibilityLabel={opt.label}
             >
               <Text style={[styles.chipText, { color: active ? Colors.primary : theme.text }]}>
@@ -90,7 +90,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    minHeight: MIN_TOUCH - 8,
+    minHeight: MIN_TOUCH,
   },
   chipText: { fontSize: 13, fontFamily: "Inter_500Medium" },
 });

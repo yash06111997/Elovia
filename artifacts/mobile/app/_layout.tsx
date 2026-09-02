@@ -9,6 +9,7 @@ import * as Font from "expo-font";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
+import { StatusBar } from "expo-status-bar";
 import React, { useEffect, useState } from "react";
 import { Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -30,6 +31,7 @@ import { WellnessProvider } from "@/context/WellnessContext";
 import { configureNotificationHandler } from "@/lib/notifications";
 import { migrateStorageNamespace } from "@/lib/storageMigration";
 import { reportClientError } from "@/lib/telemetry";
+import { Colors } from "@/constants/colors";
 // Side-effect import: registers the background geofence task.
 import "@/lib/geofenceTask";
 
@@ -49,7 +51,16 @@ const queryClient = new QueryClient();
 
 function RootLayoutNav() {
   return (
-    <Stack screenOptions={{ headerShown: false }}>
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        headerStyle: { backgroundColor: Colors.dark.background },
+        headerTintColor: Colors.dark.text,
+        headerTitleStyle: { fontFamily: "Inter_600SemiBold" },
+        headerShadowVisible: false,
+        contentStyle: { backgroundColor: Colors.dark.background },
+      }}
+    >
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen
         name="onboarding/index"
@@ -66,6 +77,10 @@ function RootLayoutNav() {
       <Stack.Screen
         name="paywall"
         options={{ headerShown: false, presentation: "fullScreenModal" }}
+      />
+      <Stack.Screen
+        name="profile-details"
+        options={{ headerShown: true, title: "Profile & Settings" }}
       />
       <Stack.Screen
         name="privacy-data"
@@ -181,6 +196,7 @@ export default function RootLayout() {
                           <NativeLifecycleCoordinator />
                           <GestureHandlerRootView>
                             <KeyboardProvider>
+                              <StatusBar style="light" backgroundColor={Colors.dark.background} />
                               <RootLayoutNav />
                             </KeyboardProvider>
                           </GestureHandlerRootView>

@@ -32,7 +32,14 @@ export interface NavRowProps {
 export function NavRow({ icon, label, hint, onPress }: NavRowProps) {
   const { theme } = useTheme();
   return (
-    <TouchableOpacity style={styles.navRow} onPress={onPress} activeOpacity={0.7}>
+    <TouchableOpacity
+      style={styles.navRow}
+      onPress={onPress}
+      activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityHint={hint}
+    >
       <View style={[styles.navIcon, { backgroundColor: Colors.primary + "15" }]}>
         <Ionicons name={icon} size={17} color={Colors.primary} />
       </View>
@@ -82,6 +89,8 @@ export function TappableRow({ label, value, onPress, badge, badgeColor }: Tappab
       style={[styles.infoRow, { borderBottomColor: theme.border }]}
       onPress={onPress}
       activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityLabel={`${label}, ${value}${badge ? `, ${badge}` : ""}`}
     >
       <Text style={[styles.infoLabel, { color: theme.textSecondary }]}>{label}</Text>
       <View style={styles.tappableRight}>
@@ -107,7 +116,7 @@ export interface StatItemProps {
 export function StatItem({ label, value, style }: StatItemProps) {
   const { theme } = useTheme();
   return (
-    <View style={[styles.statItem, style]}>
+    <View style={[styles.statItem, style]} accessible accessibilityLabel={`${label}: ${value}`}>
       <Text style={[styles.statValue, { color: theme.text }]}>{value}</Text>
       <Text style={[styles.statLabel, { color: theme.textMuted }]}>{label}</Text>
     </View>

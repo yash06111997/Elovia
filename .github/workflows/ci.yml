@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feat/comprehensive-fitness-platform]
+    branches: [main, "feat/**"]
   pull_request:
 
 permissions:
@@ -38,10 +38,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
       - run: corepack enable
+      - run: corepack prepare pnpm@10.33.0 --activate
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+      - run: pnpm --filter @workspace/mobile test -- --runInBand
       - run: pnpm typecheck
       - run: pnpm --filter @workspace/mobile typecheck
       - run: pnpm --filter @workspace/api-server typecheck

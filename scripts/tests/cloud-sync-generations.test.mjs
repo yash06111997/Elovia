@@ -733,7 +733,7 @@ test("production sync exposes local_changes honestly and routes AutoSync to back
       ),
       readFile(
         new URL(
-          "../../artifacts/mobile/app/(tabs)/profile.tsx",
+          "../../artifacts/mobile/app/profile-details.tsx",
           import.meta.url,
         ),
         "utf8",

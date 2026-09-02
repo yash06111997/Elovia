@@ -443,7 +443,7 @@ test("automatic sync gates migration and pauses after conflicts", async () => {
 
 test("manual sync presents conflict and restore failures honestly", async () => {
   const source = await readFile(
-    new URL("../../artifacts/mobile/app/(tabs)/profile.tsx", import.meta.url),
+    new URL("../../artifacts/mobile/app/profile-details.tsx", import.meta.url),
     "utf8",
   );
   assert.match(source, /Use cloud copy/);

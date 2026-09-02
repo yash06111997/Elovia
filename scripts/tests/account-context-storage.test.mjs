@@ -319,7 +319,7 @@ test("provider reload helper resets defaults and still propagates storage or par
 test("automatic and manual restores await provider reloads before success", async () => {
   const [auto, profile] = await Promise.all([
     source("components/AutoSync.tsx"),
-    source("app/(tabs)/profile.tsx"),
+    source("app/profile-details.tsx"),
   ]);
   assert.match(auto, /await emitDataRestored\(\)/);
   assert.match(auto, /reload\.status === "failed"/);
@@ -350,7 +350,7 @@ test("provider startup catches safely while restore listeners return rejecting r
 test("reset surface supports guests without deleting authenticated caches", async () => {
   const [facade, profile] = await Promise.all([
     source("lib/accountSyncStorage.ts"),
-    source("app/(tabs)/profile.tsx"),
+    source("app/profile-details.tsx"),
   ]);
   assert.match(facade, /resetCurrentAccountStorage/);
   assert.match(profile, /resetCurrentAccountStorage/);
