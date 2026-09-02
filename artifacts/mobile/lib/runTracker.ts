@@ -47,7 +47,7 @@ export interface RunStats {
  * including them adds phantom distance before the user has moved a step - the
  * single most common complaint about amateur run trackers.
  */
-const MAX_ACCEPTABLE_ACCURACY_M = 25;
+export const MAX_ACCEPTABLE_ACCURACY_M = 50;
 
 /** Ignore jumps implying faster than ~45 km/h; that is a GPS glitch, not a run. */
 const MAX_PLAUSIBLE_SPEED_MPS = 12.5;
@@ -55,6 +55,11 @@ const MAX_PLAUSIBLE_SPEED_MPS = 12.5;
 /** Below this speed for AUTO_PAUSE_AFTER_MS, assume the user stopped. */
 const AUTO_PAUSE_SPEED_MPS = 0.5;
 const AUTO_PAUSE_AFTER_MS = 12_000;
+
+export function isAcceptableGpsPoint(point: TrackPoint): boolean {
+  if (!Number.isFinite(point.latitude) || !Number.isFinite(point.longitude)) return false;
+  return point.accuracy == null || point.accuracy <= MAX_ACCEPTABLE_ACCURACY_M;
+}
 
 export function haversineMeters(a: TrackPoint, b: TrackPoint): number {
   const R = 6_371_000;
@@ -180,7 +185,7 @@ export function useRunTracker({ weightKg, autoPause }: UseRunTrackerOptions) {
       setGpsAccuracy(point.accuracy);
 
       // Reject low-confidence fixes outright rather than smoothing them in.
-      if (point.accuracy != null && point.accuracy > MAX_ACCEPTABLE_ACCURACY_M) return;
+      if (!isAcceptableGpsPoint(point)) return;
       if (statusRef.current !== "recording") return;
 
       const previous = lastPointRef.current;
