@@ -3099,11 +3099,11 @@ integrationTest(
 
     const indexes = await scopedPool.query(
       `SELECT index_record.relname AS index_name,
-       to_json(ARRAY(SELECT attribute.attname
+       ARRAY(SELECT attribute.attname
          FROM unnest(index_meta.indkey) WITH ORDINALITY AS key(attnum, position)
          JOIN pg_attribute attribute ON attribute.attrelid = index_meta.indrelid
            AND attribute.attnum = key.attnum
-         ORDER BY key.position)) AS columns,
+         ORDER BY key.position) AS columns,
        pg_get_indexdef(index_meta.indexrelid) AS definition
      FROM pg_index index_meta
      JOIN pg_class index_record ON index_record.oid = index_meta.indexrelid
@@ -3115,7 +3115,12 @@ integrationTest(
     );
     assert.deepEqual(
       Object.fromEntries(
-        indexes.rows.map((row) => [row.index_name, row.columns]),
+        indexes.rows.map((row) => [
+          row.index_name,
+          Array.isArray(row.columns)
+            ? row.columns
+            : row.columns.slice(1, -1).split(",").filter(Boolean),
+        ]),
       ),
       expectedIndexColumns,
     );
@@ -3706,7 +3711,7 @@ integrationTest(
     );
     assert.deepEqual(
       events.rows.map((row) => row.event_id),
-      ["sort-0000", "sort-A000", "sort_0000", "sort-a000"],
+      ["sort-0000", "sort-A000", "sort-a000", "sort_0000"],
     );
 
     for (let index = 0; index < identifiers.length; index += 1) {
@@ -6193,18 +6198,18 @@ integrationTest(
        ($1,$2,1,$3),($4,$5,1,$3),($6,$7,24,$3)`,
       [
         identityOnly,
-        "0".repeat(64),
+        subjectHash(`${identityOnly}-subject`),
         userId,
         ordinary,
-        "a".repeat(64),
+        subjectHash(`${ordinary}-subject`),
         transfer,
-        "b".repeat(64),
+        subjectHash(`${transfer}-subject`),
       ],
     );
     await scopedPool.query(
       `INSERT INTO revenuecat_event_subjects
        (event_id,subject_hash,role_mask,local_user_id) VALUES ($1,$2,1,NULL)`,
-      [pruned, "c".repeat(64)],
+      [pruned, subjectHash(`${pruned}-subject`)],
     );
     const alerts = [];
     await cleanupRevenueCatEvents({ alert: (alert) => alerts.push(alert) });
