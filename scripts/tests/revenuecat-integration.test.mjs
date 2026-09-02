@@ -3229,10 +3229,11 @@ integrationTest(
 
     const collations = await scopedPool.query(
       `SELECT table_record.relname AS table_name, attribute.attname AS column_name,
-            collation.collname AS collation_name
+            collation_record.collname AS collation_name
      FROM pg_attribute attribute
      JOIN pg_class table_record ON table_record.oid = attribute.attrelid
-     JOIN pg_collation collation ON collation.oid = attribute.attcollation
+     JOIN pg_collation collation_record
+       ON collation_record.oid = attribute.attcollation
      WHERE table_record.relnamespace = current_schema()::regnamespace
        AND (table_record.relname, attribute.attname) IN (
          ('revenuecat_webhook_events','event_id'),
