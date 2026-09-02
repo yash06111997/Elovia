@@ -121,6 +121,17 @@ function databaseUrlFor(databaseUrl, databaseName) {
   return url.toString();
 }
 
+async function waitForDatabaseClientsToClose(databaseName) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const active = await adminPool.query(
+      "SELECT count(*)::integer AS count FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+      [databaseName],
+    );
+    if (active.rows[0].count === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 async function withTemporaryDatabase(callback) {
   temporaryDatabaseCounter += 1;
   const databaseName = `elovia_migration_test_${process.pid}_${temporaryDatabaseCounter}`;
@@ -130,6 +141,10 @@ async function withTemporaryDatabase(callback) {
   try {
     return await callback(databaseUrlFor(testDatabaseUrl, databaseName));
   } finally {
+    // Pool shutdown can be visible to the server a few milliseconds after the
+    // client's end promise settles on PostgreSQL 14. Give it time to drain so
+    // forced cleanup cannot surface as an uncaught test error.
+    await waitForDatabaseClientsToClose(databaseName);
     await adminPool.query(
       "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
       [databaseName],
