@@ -178,7 +178,7 @@ const expectedColumns = {
 };
 
 const integrationTest = testDatabaseUrl ? test : test.skip;
-const schemaName = `elovia_revenuecat_test_${process.pid}_${Date.now()}`;
+const suiteDatabaseName = `elovia_revenuecat_suite_${process.pid}_${Date.now()}`;
 const baselineMigrationUrl = new URL(
   "../../lib/db/migrations/0000_baseline.sql",
   import.meta.url,
@@ -245,12 +245,6 @@ let temporaryDatabaseCounter = 0;
 
 function quotedIdentifier(identifier) {
   return `"${identifier.replaceAll('"', '""')}"`;
-}
-
-function scopedDatabaseUrl(databaseUrl, targetSchema = schemaName) {
-  const url = new URL(databaseUrl);
-  url.searchParams.set("options", `-c search_path=${targetSchema}`);
-  return url.toString();
 }
 
 function databaseUrlFor(databaseUrl, databaseName) {
@@ -613,8 +607,8 @@ if (testDatabaseUrl) {
     );
     ({ Pool } = requireFromDatabasePackage("pg"));
     adminPool = new Pool({ connectionString: testDatabaseUrl });
-    await adminPool.query(`CREATE SCHEMA ${quotedIdentifier(schemaName)}`);
-    const databaseUrl = scopedDatabaseUrl(testDatabaseUrl);
+    await adminPool.query(`CREATE DATABASE ${quotedIdentifier(suiteDatabaseName)}`);
+    const databaseUrl = databaseUrlFor(testDatabaseUrl, suiteDatabaseName);
     ({ runMigrations } = await import("../../lib/db/scripts/migrate.mjs"));
     await runMigrations(databaseUrl);
     process.env.DATABASE_URL = databaseUrl;
@@ -691,8 +685,10 @@ if (testDatabaseUrl) {
     await unregisterTsx?.();
     await scopedPool?.end();
     await adminPool?.query(
-      `DROP SCHEMA ${quotedIdentifier(schemaName)} CASCADE`,
+      "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
+      [suiteDatabaseName],
     );
+    await adminPool?.query(`DROP DATABASE ${quotedIdentifier(suiteDatabaseName)}`);
     await adminPool?.end();
   });
 }

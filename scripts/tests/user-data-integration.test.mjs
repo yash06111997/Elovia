@@ -985,6 +985,9 @@ integrationTest(
 integrationTest(
   "account identity outbox leases once, rejects stale ownership, and finalizes durably",
   async () => {
+    // Earlier deletion scenarios intentionally leave durable tombstones behind.
+    // This claim test owns its queue state, so isolate it from those fixtures.
+    await scopedPool.query("DELETE FROM account_deletions");
     const userId = "deletion-outbox-user";
     await scopedPool.query("INSERT INTO users (id) VALUES ($1)", [userId]);
     await tombstoneAndDeleteAccountData(userId, "deletion-outbox-request");
