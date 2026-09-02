@@ -328,6 +328,7 @@ integrationTest(
         "0003_account_deletion_identity_outbox.sql",
         "0004_revenuecat_entitlement_integrity.sql",
         "0005_revenuecat_worker_authority.sql",
+        "0006_revenuecat_alias_provenance.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -364,6 +365,10 @@ integrationTest(
             name: "0005_revenuecat_worker_authority.sql",
             application_count: 1,
           },
+          {
+            name: "0006_revenuecat_alias_provenance.sql",
+            application_count: 1,
+          },
         ]);
         await pool.query(`
           INSERT INTO users (id) VALUES ('bootstrap-ready-user');
@@ -395,6 +400,7 @@ integrationTest(
         "0003_account_deletion_identity_outbox.sql",
         "0004_revenuecat_entitlement_integrity.sql",
         "0005_revenuecat_worker_authority.sql",
+        "0006_revenuecat_alias_provenance.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -427,6 +433,10 @@ integrationTest(
             name: "0005_revenuecat_worker_authority.sql",
             application_count: 1,
           },
+          {
+            name: "0006_revenuecat_alias_provenance.sql",
+            application_count: 1,
+          },
         ]);
       } finally {
         await pool.end();
@@ -448,6 +458,7 @@ integrationTest(
       "0003_account_deletion_identity_outbox.sql",
       "0004_revenuecat_entitlement_integrity.sql",
       "0005_revenuecat_worker_authority.sql",
+      "0006_revenuecat_alias_provenance.sql",
     ];
 
     try {
@@ -800,6 +811,7 @@ integrationTest(
         "0003_account_deletion_identity_outbox.sql",
         "0004_revenuecat_entitlement_integrity.sql",
         "0005_revenuecat_worker_authority.sql",
+        "0006_revenuecat_alias_provenance.sql",
       ],
     );
 

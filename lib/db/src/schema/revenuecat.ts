@@ -201,7 +201,7 @@ export const revenuecatCustomerAliasesTable = pgTable(
     ),
     check(
       "revenuecat_alias_provenance_valid",
-      sql`(${table.ownershipSource} = 'webhook' AND ${table.sourceEventAt} > '1970-01-01T00:00:00Z'::timestamptz AND ${table.sourceEventId} ~ '^[A-Za-z0-9_-]{8,128}$' AND ${table.authenticatedAt} IS NULL) OR (${table.ownershipSource} = 'authenticated' AND ${table.aliasKind} = 'authenticated' AND ${table.sourceEventAt} IS NULL AND ${table.sourceEventId} IS NULL AND ${table.authenticatedAt} > '1970-01-01T00:00:00Z'::timestamptz)`,
+      sql`(${table.ownershipSource} = 'webhook' AND ${table.aliasKind} <> 'authenticated' AND ${table.sourceEventAt} > '1970-01-01T00:00:00Z'::timestamptz AND ${table.sourceEventId} ~ '^[A-Za-z0-9_-]{8,128}$' AND ${table.authenticatedAt} IS NULL) OR (${table.ownershipSource} = 'authenticated' AND ${table.aliasKind} = 'authenticated' AND ${table.sourceEventAt} IS NULL AND ${table.sourceEventId} IS NULL AND ${table.authenticatedAt} > '1970-01-01T00:00:00Z'::timestamptz)`,
     ),
     index("IDX_revenuecat_aliases_local").on(table.localUserId),
     index("IDX_revenuecat_aliases_source").on(

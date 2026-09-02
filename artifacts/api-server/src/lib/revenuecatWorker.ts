@@ -34,6 +34,13 @@ const EVENT_BATCH_SIZE = 20;
 const WORKER_INTERVAL_MS = 30_000;
 const MAX_EVENT_LOCK_EXPANSIONS = 4;
 
+function timestampMilliseconds(
+  value: Date | string | null | undefined,
+): number {
+  if (value == null) return Number.NaN;
+  return value instanceof Date ? value.getTime() : Date.parse(value);
+}
+
 export type RevenueCatWorkerMetric = Readonly<{
   type:
     | "customer_reconcile_success"
@@ -398,7 +405,7 @@ export function createRevenueCatAuthProvisioningCallback(
         ownership_source: string;
         source_event_at: Date | null;
         source_event_id: string | null;
-        authenticated_at: Date | null;
+        authenticated_at: Date | string | null;
       }>(sql`
         SELECT "local_user_id", "alias_kind", "ownership_source",
                "source_event_at", "source_event_id", "authenticated_at"
@@ -415,7 +422,8 @@ export function createRevenueCatAuthProvisioningCallback(
         previous.ownership_source !== "authenticated" ||
         previous.source_event_at !== null ||
         previous.source_event_id !== null ||
-        previous.authenticated_at?.getTime() !== createdAt.getTime();
+        timestampMilliseconds(previous.authenticated_at) !==
+          createdAt.getTime();
       if (aliasNeedsWrite) {
         await transaction.execute(sql`
           INSERT INTO "revenuecat_customer_aliases" (
@@ -1316,7 +1324,9 @@ async function satisfyThirtyDayEntitlementPhase(
   if (lockOwners.length === 0) return;
   try {
     await withAccountLocks(lockOwners, async (transaction) => {
-      const eventRows = await transaction.execute<{ received_at: Date }>(sql`
+      const eventRows = await transaction.execute<{
+        received_at: Date | string;
+      }>(sql`
         SELECT "received_at"
         FROM "revenuecat_webhook_events"
         WHERE "event_id" = ${eventId}
@@ -1353,7 +1363,7 @@ async function satisfyThirtyDayEntitlementPhase(
       const canonical = await transaction.execute<{
         user_id: string;
         canonicalization_state: string;
-        last_reconciled_at: Date | null;
+        last_reconciled_at: Date | string | null;
       }>(sql`
         SELECT "user_id", "canonicalization_state", "last_reconciled_at"
         FROM "revenuecat_customer_state"
@@ -1366,7 +1376,8 @@ async function satisfyThirtyDayEntitlementPhase(
         canonical.rows.flatMap((state) =>
           state.canonicalization_state === "canonical" &&
           state.last_reconciled_at !== null &&
-          state.last_reconciled_at.getTime() >= event.received_at.getTime()
+          timestampMilliseconds(state.last_reconciled_at) >=
+            timestampMilliseconds(event.received_at)
             ? [state.user_id]
             : [],
         ),

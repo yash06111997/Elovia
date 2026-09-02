@@ -21,6 +21,7 @@ const migrationNames = [
   "0003_account_deletion_identity_outbox.sql",
   "0004_revenuecat_entitlement_integrity.sql",
   "0005_revenuecat_worker_authority.sql",
+  "0006_revenuecat_alias_provenance.sql",
 ];
 const revenuecatTableNames = [
   "revenuecat_customer_aliases",
@@ -607,7 +608,9 @@ if (testDatabaseUrl) {
     );
     ({ Pool } = requireFromDatabasePackage("pg"));
     adminPool = new Pool({ connectionString: testDatabaseUrl });
-    await adminPool.query(`CREATE DATABASE ${quotedIdentifier(suiteDatabaseName)}`);
+    await adminPool.query(
+      `CREATE DATABASE ${quotedIdentifier(suiteDatabaseName)}`,
+    );
     const databaseUrl = databaseUrlFor(testDatabaseUrl, suiteDatabaseName);
     ({ runMigrations } = await import("../../lib/db/scripts/migrate.mjs"));
     await runMigrations(databaseUrl);
@@ -688,7 +691,9 @@ if (testDatabaseUrl) {
       "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()",
       [suiteDatabaseName],
     );
-    await adminPool?.query(`DROP DATABASE ${quotedIdentifier(suiteDatabaseName)}`);
+    await adminPool?.query(
+      `DROP DATABASE ${quotedIdentifier(suiteDatabaseName)}`,
+    );
     await adminPool?.end();
   });
 }
@@ -722,10 +727,7 @@ integrationTest(
       results.every((result) => result.status === 200),
       true,
     );
-    assert.equal(
-      results.filter((result) => result.applied === true).length,
-      1,
-    );
+    assert.equal(results.filter((result) => result.applied === true).length, 1);
     assert.equal(
       results.filter((result) => result.applied === false).length,
       19,
@@ -3097,11 +3099,11 @@ integrationTest(
 
     const indexes = await scopedPool.query(
       `SELECT index_record.relname AS index_name,
-       ARRAY(SELECT attribute.attname
+       to_json(ARRAY(SELECT attribute.attname
          FROM unnest(index_meta.indkey) WITH ORDINALITY AS key(attnum, position)
          JOIN pg_attribute attribute ON attribute.attrelid = index_meta.indrelid
            AND attribute.attnum = key.attnum
-         ORDER BY key.position) AS columns,
+         ORDER BY key.position)) AS columns,
        pg_get_indexdef(index_meta.indexrelid) AS definition
      FROM pg_index index_meta
      JOIN pg_class index_record ON index_record.oid = index_meta.indexrelid
@@ -6633,9 +6635,8 @@ integrationTest(
           },
         });
       }
-      const baseline = (
-        await getJson("/api/diagnostics", `probe-${suffix}`)
-      ).body.revenueCat;
+      const baseline = (await getJson("/api/diagnostics", `probe-${suffix}`))
+        .body.revenueCat;
       await scopedPool.query(
         `INSERT INTO users (id,created_at) VALUES
          ($1,clock_timestamp()),($2,clock_timestamp()),($3,clock_timestamp())`,
@@ -6672,15 +6673,7 @@ integrationTest(
         `INSERT INTO revenuecat_event_subjects
          (event_id,subject_hash,role_mask,local_user_id) VALUES
          ($1,$2,$3,$4),($1,$5,$6,$7)`,
-        [
-          eventId,
-          ownerHash,
-          1 | 16,
-          owner,
-          sharedHash,
-          8,
-          sharedOwner,
-        ],
+        [eventId, ownerHash, 1 | 16, owner, sharedHash, 8, sharedOwner],
       );
       await scopedPool.query(
         `INSERT INTO subscription_entitlements
@@ -6729,10 +6722,10 @@ integrationTest(
         survivingExport.body.revenueCatBilling.events[0].prunedIdentityCount,
         1,
       );
-      assert.deepEqual(
-        survivingExport.body.revenueCatBilling.events[0].roles,
-        ["primary", "transferred_to"],
-      );
+      assert.deepEqual(survivingExport.body.revenueCatBilling.events[0].roles, [
+        "primary",
+        "transferred_to",
+      ]);
       assert.deepEqual(
         (
           await scopedPool.query(
@@ -6746,9 +6739,8 @@ integrationTest(
         { retained_identity_count: 1, pruned_identity_count: 1, subjects: 1 },
       );
 
-      const diagnostics = (
-        await getJson("/api/diagnostics", owner)
-      ).body.revenueCat;
+      const diagnostics = (await getJson("/api/diagnostics", owner)).body
+        .revenueCat;
       assert.equal(diagnostics.configuration.webhookSecretPresent, true);
       assert.equal(diagnostics.configuration.apiKeyPresent, true);
       assert.equal(diagnostics.configuration.subjectHashKeyPresent, true);
@@ -6776,10 +6768,9 @@ integrationTest(
       );
       assert.equal(diagnostics.customers.hasNoncanonical, true);
     } finally {
-      await scopedPool.query(
-        `DELETE FROM users WHERE id=ANY($1::text[])`,
-        [[owner, sharedOwner, missingStateOwner]],
-      );
+      await scopedPool.query(`DELETE FROM users WHERE id=ANY($1::text[])`, [
+        [owner, sharedOwner, missingStateOwner],
+      ]);
       await scopedPool.query(
         `DELETE FROM revenuecat_webhook_events WHERE event_id=$1`,
         [eventId],

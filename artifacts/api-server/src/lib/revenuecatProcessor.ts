@@ -97,7 +97,7 @@ type Subject = {
 type StoredEvent = {
   event_id: string;
   type: string;
-  event_at: Date;
+  event_at: Date | string;
   environment: string | null;
   disposition: "pending" | "applied" | "stale" | "ignored_unknown";
   metadata: Record<string, unknown>;
@@ -111,6 +111,10 @@ type StoredEvent = {
   lease_current: boolean;
   next_attempt_at: Date;
 };
+
+function timestampMilliseconds(value: Date | string): number {
+  return value instanceof Date ? value.getTime() : Date.parse(value);
+}
 
 type StoredSubject = {
   subject_hash: string;
@@ -303,7 +307,8 @@ function envelopeMatches(
   const metadata = persistedMetadata(delivery, incomingSubjects.length);
   if (
     stored.event.type !== delivery.type ||
-    stored.event.event_at.getTime() !== delivery.eventAt.getTime() ||
+    timestampMilliseconds(stored.event.event_at) !==
+      delivery.eventAt.getTime() ||
     stored.event.environment !== environment ||
     stored.event.identity_count !== incomingSubjects.length ||
     !metadataEqual(stored.event.metadata, metadata) ||
