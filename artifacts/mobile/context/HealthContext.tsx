@@ -31,7 +31,16 @@ export interface RunSession {
   endTime: string;
   distanceKm: number;
   durationMins: number;
+  durationSec?: number;
   avgPaceMinKm: number;
+  elevationGainM?: number;
+  splits?: Array<{
+    index: number;
+    distanceKm: number;
+    durationSec: number;
+    paceMinPerKm: number;
+    elevationGainM: number;
+  }>;
   route: { latitude: number; longitude: number }[];
   caloriesBurned: number;
 }
@@ -72,7 +81,7 @@ interface HealthContextType {
   updateSteps: (steps: number) => void;
   startRunTracking: () => Promise<void> | void;
   stopRunTracking: () => RunSession | null;
-  addRunSession: (session: Omit<RunSession, "id">) => void;
+  addRunSession: (session: Omit<RunSession, "id">) => RunSession;
   toggleSync: (source: keyof HealthSyncStatus) => void;
   syncHealthData: () => Promise<void>;
   connectHealth: () => Promise<void>;
@@ -484,6 +493,14 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
         persist(updated);
         return updated;
       });
+      void writeWorkoutToHealth({
+        activityType: "Running",
+        start: new Date(session.startTime),
+        end: new Date(session.endTime),
+        energyKcal: session.caloriesBurned,
+        distanceKm: session.distanceKm,
+      });
+      return session;
     },
     [persist],
   );

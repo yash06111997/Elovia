@@ -14,6 +14,7 @@ import { resetCurrentAccountStorage } from "@/lib/accountSyncStorage";
 import { emitDataRestored } from "@/lib/syncEvents";
 import { NumberEditModal } from "@/components/NumberEditModal";
 import { Colors } from "@/constants/colors";
+import { tabularNumbers } from "@/constants/design";
 import {
   NavRow,
   SectionCard,
@@ -24,6 +25,7 @@ import {
   StatItem,
 } from "@/components/ui";
 import { useTheme } from "@/hooks/useTheme";
+import { calculateCaloriesFromMacros, parseMacroForm } from "@/lib/macros";
 
 const goalLabels: Record<string, string> = {
   fat_loss: "Fat Loss",
@@ -344,11 +346,12 @@ export default function ProfileScreen() {
   const [editSection, setEditSection] = useState<EditSection>(null);
   const [macroModalVisible, setMacroModalVisible] = useState(false);
   const [macroForm, setMacroForm] = useState({
-    calories: macros.calories.toString(),
     protein: macros.protein.toString(),
     carbs: macros.carbs.toString(),
     fats: macros.fats.toString(),
   });
+  const parsedMacroForm = parseMacroForm(macroForm);
+  const calculatedMacroCalories = calculateCaloriesFromMacros(parsedMacroForm);
 
   const handleResetOnboarding = () => {
     Alert.alert("Reset App", "This will clear all your data and restart the onboarding. Are you sure?", [
@@ -416,10 +419,10 @@ export default function ProfileScreen() {
   const handleSaveMacros = () => {
     const custom: CustomMacros = {
       enabled: true,
-      calories: parseInt(macroForm.calories) || macros.calories,
-      protein: parseInt(macroForm.protein) || macros.protein,
-      carbs: parseInt(macroForm.carbs) || macros.carbs,
-      fats: parseInt(macroForm.fats) || macros.fats,
+      calories: calculatedMacroCalories,
+      protein: parsedMacroForm.protein,
+      carbs: parsedMacroForm.carbs,
+      fats: parsedMacroForm.fats,
     };
     setCustomMacros(custom);
     setMacroModalVisible(false);
@@ -609,7 +612,6 @@ export default function ProfileScreen() {
                 return;
               }
               setMacroForm({
-                calories: macros.calories.toString(),
                 protein: macros.protein.toString(),
                 carbs: macros.carbs.toString(),
                 fats: macros.fats.toString(),
@@ -1130,15 +1132,15 @@ export default function ProfileScreen() {
           <View style={[styles.macroSheet, { backgroundColor: theme.surface }]}>
             <View style={styles.macroHandle} />
             <Text style={[styles.macroTitle, { color: theme.text }]}>Custom Macro Targets</Text>
-            <Text style={[styles.macroSubtitle, { color: theme.textSecondary }]}>Override the calculated values with your own targets</Text>
-            <MacroInput
-              label="Calories"
-              unit="kcal"
-              value={macroForm.calories}
-              onChange={(v) => setMacroForm((p) => ({ ...p, calories: v }))}
-              theme={theme}
-              color={Colors.accentYellow}
-            />
+            <Text style={[styles.macroSubtitle, { color: theme.textSecondary }]}>Calories update automatically from protein, carbohydrates, and fat.</Text>
+            <View style={styles.macroInputRow}>
+              <View style={[styles.macroColorDot, { backgroundColor: Colors.accentYellow }]} />
+              <Text style={[styles.macroInputLabel, { color: theme.textSecondary }]}>Calories</Text>
+              <Text style={[styles.calculatedMacroValue, tabularNumbers, { color: theme.text }]}>
+                {calculatedMacroCalories}
+              </Text>
+              <Text style={[styles.macroInputUnit, { color: theme.textMuted }]}>kcal</Text>
+            </View>
             <MacroInput label="Protein" unit="g" value={macroForm.protein} onChange={(v) => setMacroForm((p) => ({ ...p, protein: v }))} theme={theme} color={Colors.primary} />
             <MacroInput label="Carbs" unit="g" value={macroForm.carbs} onChange={(v) => setMacroForm((p) => ({ ...p, carbs: v }))} theme={theme} color={Colors.accent} />
             <MacroInput label="Fats" unit="g" value={macroForm.fats} onChange={(v) => setMacroForm((p) => ({ ...p, fats: v }))} theme={theme} color={Colors.accentGreen} />
@@ -1773,6 +1775,13 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   macroInputRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  calculatedMacroValue: {
+    flex: 1,
+    textAlign: "right",
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+    paddingVertical: 10,
+  },
   macroColorDot: { width: 10, height: 10, borderRadius: 5 },
   macroInputLabel: { fontSize: 14, fontFamily: "Inter_500Medium", width: 70 },
   macroInputField: {

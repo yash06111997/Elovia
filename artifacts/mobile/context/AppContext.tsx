@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
 import { onDataRestored } from "@/lib/syncEvents";
 import { isPlainRecord, runProviderReload } from "@/lib/providerReload";
+import { calculateCaloriesFromMacros, normalizeMacroGrams } from "@/lib/macros";
 
 export type FitnessGoal = "fat_loss" | "muscle_gain" | "maintenance" | "general_fitness" | "strength" | "endurance";
 export type FitnessLevel = "beginner" | "intermediate" | "advanced";
@@ -248,7 +249,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const setCustomMacros = useCallback((macros: CustomMacros | null) => {
     setState((prev) => {
-      const next = { ...prev, customMacros: macros };
+      const normalized = macros?.enabled
+        ? {
+            enabled: true,
+            protein: normalizeMacroGrams(macros.protein),
+            carbs: normalizeMacroGrams(macros.carbs),
+            fats: normalizeMacroGrams(macros.fats),
+            calories: calculateCaloriesFromMacros(macros),
+          }
+        : null;
+      const next = { ...prev, customMacros: normalized };
       saveState(next);
       return next;
     });
@@ -277,7 +287,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   } => {
     if (state.customMacros?.enabled) {
       return {
-        calories: state.customMacros.calories,
+        calories: calculateCaloriesFromMacros(state.customMacros),
         protein: state.customMacros.protein,
         carbs: state.customMacros.carbs,
         fats: state.customMacros.fats,
