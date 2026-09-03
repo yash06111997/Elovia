@@ -91,13 +91,7 @@ export const EMPTY_SNAPSHOT: HealthSnapshot = {
   syncedAt: new Date(0).toISOString(),
 };
 
-/** Local YYYY-MM-DD. Deliberately local, not UTC: a user's "today" is local. */
-export function toLocalDateKey(d: Date): string {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
+export { toLocalDateKey } from "../localDate";
 
 export function startOfDay(d: Date): Date {
   const out = new Date(d);
@@ -105,8 +99,17 @@ export function startOfDay(d: Date): Date {
   return out;
 }
 
-export function daysAgo(n: number): Date {
-  return startOfDay(new Date(Date.now() - n * 24 * 60 * 60 * 1000));
+export function endOfDay(d: Date): Date {
+  const out = startOfDay(d);
+  out.setDate(out.getDate() + 1);
+  out.setMilliseconds(-1);
+  return out;
+}
+
+export function daysAgo(n: number, now = new Date()): Date {
+  const out = new Date(now);
+  out.setDate(out.getDate() - n);
+  return startOfDay(out);
 }
 
 /**

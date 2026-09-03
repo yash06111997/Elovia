@@ -12,6 +12,7 @@ import {
   calculateCaloriesFromMacros,
   normalizeCustomMacroTargets,
 } from "@/lib/macros";
+import { toLocalDateKey } from "@/lib/localDate";
 
 export type FitnessGoal =
   | "fat_loss"
@@ -242,7 +243,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const getTodayMetric = useCallback((): HealthMetric | null => {
-    const today = new Date().toISOString().split("T")[0];
+    const today = toLocalDateKey(new Date());
     return (
       (state.healthMetrics ?? []).find((m) => m.date === today) ?? {
         date: today,
@@ -253,7 +254,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [state.healthMetrics]);
 
   const updateTodayMetric = useCallback((updates: Partial<HealthMetric>) => {
-    const today = new Date().toISOString().split("T")[0];
+    const today = toLocalDateKey(new Date());
     setState((prev) => {
       const existing = (prev.healthMetrics ?? []).find(
         (m) => m.date === today,

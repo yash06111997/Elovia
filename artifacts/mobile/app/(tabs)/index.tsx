@@ -22,6 +22,7 @@ import { StatCard } from "@/components/StatCard";
 import { ProgressRing } from "@/components/ProgressRing";
 import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
+import { localWeekDateKeys, toLocalDateKey } from "@/lib/localDate";
 
 export default function DashboardScreen() {
   const { theme } = useTheme();
@@ -40,6 +41,8 @@ export default function DashboardScreen() {
   const calorieProgress = macros.calories > 0 ? consumed.calories / macros.calories : 0;
   const water = todayWaterMl / 1000;
   const steps = healthData.todaySteps;
+  const todayKey = toLocalDateKey(new Date());
+  const weekDateKeys = localWeekDateKeys(new Date());
 
   const greetingHour = new Date().getHours();
   const greeting =
@@ -246,18 +249,12 @@ export default function DashboardScreen() {
       <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
         <Text style={[styles.cardTitle, { color: theme.text }]}>This Week</Text>
         <View style={styles.weekRow}>
-          {["S", "M", "T", "W", "T", "F", "S"].map((day, i) => {
-            const today = new Date().getDay();
-            const isToday = i === today;
-            const isPast = i < today;
-            const hasSession = sessions.some((s) => {
-              const d = new Date(s.date);
-              const weekStart = new Date();
-              weekStart.setDate(weekStart.getDate() - today);
-              const target = new Date(weekStart);
-              target.setDate(target.getDate() + i);
-              return d.toDateString() === target.toDateString() && s.completed;
-            });
+          {["M", "T", "W", "T", "F", "S", "S"].map((day, i) => {
+            const dateKey = weekDateKeys[i];
+            const isToday = dateKey === todayKey;
+            const hasSession = sessions.some(
+              (session) => session.date === dateKey && session.completed,
+            );
             return (
               <View key={i} style={styles.weekDayCol}>
                 <Text style={[styles.weekDayLabel, { color: isToday ? Colors.primary : theme.textSecondary }]}>{day}</Text>

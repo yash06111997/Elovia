@@ -17,6 +17,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
 import { useNutrition } from "@/context/NutritionContext";
+import { toLocalDateKey } from "@/lib/localDate";
 import {
   lookupBarcode,
   novaLabel,
@@ -70,7 +71,7 @@ export default function ScanScreen() {
 
   const logFood = (food: PackagedFood) => {
     logFoodEntry({
-      date: new Date().toISOString().split("T")[0],
+      date: toLocalDateKey(new Date()),
       name: food.name,
       calories: Math.round(food.calories * servings),
       protein: Math.round(food.protein * servings),

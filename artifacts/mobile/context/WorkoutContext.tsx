@@ -8,6 +8,8 @@ import {
   runProviderReload,
 } from "@/lib/providerReload";
 import { recommendTrainingAdjustment, type TrainingAdjustment, type WorkoutFeedback } from "@/lib/trainingAdaptation";
+import { toLocalDateKey } from "@/lib/localDate";
+import { buildWorkoutProgress } from "@/lib/progressMetrics";
 
 export type { TrainingAdjustment, WorkoutFeedback } from "@/lib/trainingAdaptation";
 
@@ -186,7 +188,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   const startSession = useCallback((day: WorkoutDay) => {
     const session: WorkoutSession = {
       id: Date.now().toString(),
-      date: new Date().toISOString().split("T")[0],
+      date: toLocalDateKey(new Date()),
       workoutDayId: day.id,
       workoutDayName: day.dayName,
       exerciseLogs: [],
@@ -200,7 +202,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   const startFreeSession = useCallback((name?: string) => {
     const session: WorkoutSession = {
       id: Date.now().toString(),
-      date: new Date().toISOString().split("T")[0],
+      date: toLocalDateKey(new Date()),
       workoutDayId: "free",
       workoutDayName: name || "Free Workout",
       exerciseLogs: [],
@@ -398,7 +400,9 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
 
   const getLastPerformance = useCallback(
     (exerciseId: string): { date: string; sets: SetLog[] } | null => {
-      const completedSessions = [...sessions].filter((s) => s.completed).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      const completedSessions = [...sessions]
+        .filter((session) => session.completed)
+        .sort((left, right) => right.date.localeCompare(left.date));
       for (const session of completedSessions) {
         const log = session.exerciseLogs.find((l) => l.exerciseId === exerciseId);
         if (log && log.sets.some((s) => s.completed)) {
@@ -410,19 +414,18 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
     [sessions],
   );
 
-  const todaySession = sessions.find((s) => s.date === new Date().toISOString().split("T")[0]) ?? null;
+  const todaySession =
+    sessions.find((session) => session.date === toLocalDateKey(new Date())) ??
+    null;
 
   const getWeeklyCompletion = useCallback((): number => {
-    const today = new Date();
-    const weekStart = new Date(today);
-    weekStart.setDate(today.getDate() - today.getDay());
-    const weekSessions = sessions.filter((s) => {
-      const d = new Date(s.date);
-      return d >= weekStart && d <= today && s.completed;
-    });
     const activePlan = activePlanType === "custom" ? customPlans.find((cp) => cp.id === activeCustomPlanId) : plan;
     const target = activePlan ? activePlan.days.length : 3;
-    return Math.min(100, Math.round((weekSessions.length / target) * 100));
+    return buildWorkoutProgress(
+      sessions,
+      target,
+      toLocalDateKey(new Date()),
+    ).week.completionPercent;
   }, [sessions, plan, customPlans, activePlanType, activeCustomPlanId]);
 
   const addCustomPlan = useCallback((planData: Omit<CustomWorkoutPlan, "id" | "createdAt" | "updatedAt">): CustomWorkoutPlan => {

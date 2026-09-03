@@ -26,13 +26,14 @@ import {
   type AccountDataExport,
 } from "@/utils/api";
 import { trackEvent } from "@/lib/telemetry";
+import { toLocalDateKey } from "@/lib/localDate";
 
 async function shareJson(data: AccountDataExport | Record<string, unknown>) {
   const json = JSON.stringify(data, null, 2);
   if (!FileSystem.cacheDirectory) {
     throw new Error("Temporary file storage is unavailable on this device.");
   }
-  const fileUri = `${FileSystem.cacheDirectory}elovia-data-${new Date().toISOString().slice(0, 10)}.json`;
+  const fileUri = `${FileSystem.cacheDirectory}elovia-data-${toLocalDateKey(new Date())}.json`;
   await FileSystem.writeAsStringAsync(fileUri, json, {
     encoding: FileSystem.EncodingType.UTF8,
   });

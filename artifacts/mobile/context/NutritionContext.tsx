@@ -7,6 +7,10 @@ import {
   parseStoredJson,
   runProviderReload,
 } from "@/lib/providerReload";
+import {
+  localDateKeysEndingAt,
+  toLocalDateKey,
+} from "@/lib/localDate";
 
 export interface Meal {
   id: string;
@@ -162,7 +166,7 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const getTodayLog = useCallback((): FoodLogEntry[] => {
-    const today = new Date().toISOString().split("T")[0];
+    const today = toLocalDateKey(new Date());
     return foodLog.filter((e) => e.date === today);
   }, [foodLog]);
 
@@ -183,15 +187,12 @@ export function NutritionProvider({ children }: { children: React.ReactNode }) {
     date: string;
     calories: number;
   }[] => {
-    const result: { date: string; calories: number }[] = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().split("T")[0];
-      const cal = foodLog.filter((e) => e.date === dateStr).reduce((sum, e) => sum + e.calories, 0);
-      result.push({ date: dateStr, calories: cal });
-    }
-    return result;
+    return localDateKeysEndingAt(new Date(), 7).map((date) => ({
+      date,
+      calories: foodLog
+        .filter((entry) => entry.date === date)
+        .reduce((sum, entry) => sum + entry.calories, 0),
+    }));
   }, [foodLog]);
 
   const addCustomMealPlan = useCallback((planData: Omit<CustomMealPlan, "id" | "createdAt" | "updatedAt">): CustomMealPlan => {

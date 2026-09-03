@@ -11,7 +11,11 @@ import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
 import { getFirebaseAuth } from "@/lib/firebase";
 import { onDataRestored } from "@/lib/syncEvents";
 import { isPlainRecord, runProviderReload } from "@/lib/providerReload";
-import { toLocalDateKey } from "@/lib/health";
+import {
+  calendarDayDifference,
+  localDateKeysEndingAt,
+  toLocalDateKey,
+} from "@/lib/localDate";
 
 /**
  * Hydration, supplement adherence, and streaks.
@@ -125,27 +129,23 @@ function computeStreaks(activeDays: string[]): { current: number; longest: numbe
   if (activeDays.length === 0) return { current: 0, longest: 0 };
 
   const unique = [...new Set(activeDays)].sort();
-  const asDate = (key: string) => new Date(`${key}T00:00:00`);
-
   let longest = 1;
   let run = 1;
   for (let i = 1; i < unique.length; i++) {
-    const gap =
-      (asDate(unique[i]).getTime() - asDate(unique[i - 1]).getTime()) / 86_400_000;
+    const gap = calendarDayDifference(unique[i - 1], unique[i]);
     run = gap === 1 ? run + 1 : 1;
     longest = Math.max(longest, run);
   }
 
   const today = toLocalDateKey(new Date());
-  const yesterday = toLocalDateKey(new Date(Date.now() - 86_400_000));
+  const yesterday = localDateKeysEndingAt(new Date(), 2)[0];
   const last = unique[unique.length - 1];
 
   if (last !== today && last !== yesterday) return { current: 0, longest };
 
   let current = 1;
   for (let i = unique.length - 1; i > 0; i--) {
-    const gap =
-      (asDate(unique[i]).getTime() - asDate(unique[i - 1]).getTime()) / 86_400_000;
+    const gap = calendarDayDifference(unique[i - 1], unique[i]);
     if (gap !== 1) break;
     current++;
   }
@@ -185,7 +185,7 @@ export function WellnessProvider({ children }: { children: React.ReactNode }) {
           }
         // Keep 60 days: enough for streaks and the weekly chart without letting
         // the blob grow unbounded on a long-lived install.
-          const cutoff = toLocalDateKey(new Date(Date.now() - 60 * 86_400_000));
+          const cutoff = localDateKeysEndingAt(new Date(), 61)[0];
           setState({
             water: parsed.water.filter((w) => isPlainRecord(w) && typeof w.date === "string" && w.date >= cutoff) as unknown as WaterEntry[],
             supplementLogs: parsed.supplementLogs.filter((log) => isPlainRecord(log) && typeof log.date === "string" && log.date >= cutoff) as unknown as SupplementLog[],
@@ -230,8 +230,8 @@ export function WellnessProvider({ children }: { children: React.ReactNode }) {
 
   const weeklyWater = useMemo(() => {
     const buckets = new Map<string, number>();
-    for (let i = 6; i >= 0; i--) {
-      buckets.set(toLocalDateKey(new Date(Date.now() - i * 86_400_000)), 0);
+    for (const date of localDateKeysEndingAt(new Date(), 7)) {
+      buckets.set(date, 0);
     }
     for (const entry of state.water) {
       if (buckets.has(entry.date)) {

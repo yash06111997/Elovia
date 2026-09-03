@@ -1,6 +1,7 @@
 import { Platform } from "react-native";
 import {
   daysAgo,
+  endOfDay,
   startOfDay,
   toLocalDateKey,
   type DailySteps,
@@ -122,7 +123,7 @@ export const pedometerProvider: HealthProvider = {
 
     for (let i = window - 1; i >= 0; i--) {
       const dayStart = daysAgo(i);
-      const dayEnd = i === 0 ? new Date() : new Date(dayStart.getTime() + 24 * 60 * 60 * 1000 - 1);
+      const dayEnd = i === 0 ? new Date() : endOfDay(dayStart);
       try {
         const result = await pedometer.getStepCountAsync(dayStart, dayEnd);
         weeklySteps.push({
