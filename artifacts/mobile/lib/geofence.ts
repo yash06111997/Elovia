@@ -222,6 +222,7 @@ export async function recordPendingArrival(
 export type PermissionOutcome =
   | "granted"
   | "foreground_only"
+  | "blocked"
   | "denied"
   | "unsupported";
 
@@ -237,10 +238,13 @@ export async function requestGeofencePermissions(): Promise<PermissionOutcome> {
 
   try {
     const foreground = await Location.requestForegroundPermissionsAsync();
-    if (foreground.status !== "granted") return "denied";
+    if (foreground.status !== "granted") {
+      return foreground.canAskAgain === false ? "blocked" : "denied";
+    }
 
     const background = await Location.requestBackgroundPermissionsAsync();
-    return background.status === "granted" ? "granted" : "foreground_only";
+    if (background.status === "granted") return "granted";
+    return background.canAskAgain === false ? "blocked" : "foreground_only";
   } catch {
     return "denied";
   }

@@ -1,6 +1,18 @@
 import React, { useState, useEffect } from "react";
 import { getPublicApiUrl } from "@/utils/api";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, ActivityIndicator, Modal, BackHandler, Alert, Linking } from "react-native";
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  Platform,
+  ActivityIndicator,
+  Modal,
+  BackHandler,
+  Alert,
+  Linking,
+} from "react-native";
 import { router, useLocalSearchParams, useNavigation } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -11,7 +23,11 @@ import { useTheme } from "@/hooks/useTheme";
 import { useSubscription } from "@/context/SubscriptionContext";
 import { useRevenueCat } from "@/lib/revenuecat";
 import { useAuth } from "@/lib/auth";
-import { PREMIUM_FEATURES, PAYWALL_COPY, FAQ_ITEMS } from "@/constants/subscription";
+import {
+  PREMIUM_FEATURES,
+  PAYWALL_COPY,
+  FAQ_ITEMS,
+} from "@/constants/subscription";
 import { trackEvent } from "@/lib/telemetry";
 
 type PlanKey = "yearly" | "monthly" | "lifetime";
@@ -48,9 +64,15 @@ export default function PaywallScreen() {
   const currentOffering = rc.offerings?.current;
   const packages = currentOffering?.availablePackages ?? [];
 
-  const monthlyPkg = packages.find((p) => p.packageType === "MONTHLY" || p.identifier === "$rc_monthly");
-  const yearlyPkg = packages.find((p) => p.packageType === "ANNUAL" || p.identifier === "$rc_annual");
-  const lifetimePkg = packages.find((p) => p.packageType === "LIFETIME" || p.identifier === "$rc_lifetime");
+  const monthlyPkg = packages.find(
+    (p) => p.packageType === "MONTHLY" || p.identifier === "$rc_monthly",
+  );
+  const yearlyPkg = packages.find(
+    (p) => p.packageType === "ANNUAL" || p.identifier === "$rc_annual",
+  );
+  const lifetimePkg = packages.find(
+    (p) => p.packageType === "LIFETIME" || p.identifier === "$rc_lifetime",
+  );
 
   const monthlyPrice = monthlyPkg?.product.priceString;
   const yearlyPrice = yearlyPkg?.product.priceString;
@@ -62,12 +84,32 @@ export default function PaywallScreen() {
   const yearlyMonthlyFormatted = (() => {
     if (!yearlyPkg || !monthlyRaw) return "";
     const perMonth = yearlyRaw / 12;
-    const sym = yearlyPkg.product.priceString?.replace(/[\d.,\s]/g, "").trim() || "";
+    const sym =
+      yearlyPkg.product.priceString?.replace(/[\d.,\s]/g, "").trim() || "";
     return `${sym}${perMonth.toFixed(2)}/mo`;
   })();
-  const savingsPercent = monthlyRaw > 0 ? Math.round((1 - yearlyRaw / (monthlyRaw * 12)) * 100) : 0;
+  const savingsPercent =
+    monthlyRaw > 0 ? Math.round((1 - yearlyRaw / (monthlyRaw * 12)) * 100) : 0;
 
-  const selectedPackage = selectedPlan === "yearly" ? yearlyPkg : selectedPlan === "lifetime" ? lifetimePkg : monthlyPkg;
+  const selectedPackage =
+    selectedPlan === "yearly"
+      ? yearlyPkg
+      : selectedPlan === "lifetime"
+        ? lifetimePkg
+        : monthlyPkg;
+  const firstAvailablePlan: PlanKey | null = yearlyPkg
+    ? "yearly"
+    : monthlyPkg
+      ? "monthly"
+      : lifetimePkg
+        ? "lifetime"
+        : null;
+
+  useEffect(() => {
+    if (!selectedPackage && firstAvailablePlan) {
+      setSelectedPlan(firstAvailablePlan);
+    }
+  }, [firstAvailablePlan, selectedPackage]);
 
   const waitForServerAccess = async () => {
     for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -135,7 +177,9 @@ export default function PaywallScreen() {
       const accessReady = await waitForServerAccess();
       Alert.alert(
         accessReady ? "Purchases restored" : "No active access found",
-        accessReady ? "Your Elovia access is active." : "No active Elovia subscription was found for this signed-in account.",
+        accessReady
+          ? "Your Elovia access is active."
+          : "No active Elovia subscription was found for this signed-in account.",
       );
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
@@ -147,47 +191,97 @@ export default function PaywallScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
-      <View style={[styles.header, { paddingTop: Platform.OS === "web" ? 20 : insets.top + 8 }]}>
+      <View
+        style={[
+          styles.header,
+          { paddingTop: Platform.OS === "web" ? 20 : insets.top + 8 },
+        ]}
+      >
         {!isPostOnboarding && (
-          <TouchableOpacity onPress={() => router.back()} style={styles.closeBtn} activeOpacity={0.7} accessibilityRole="button" accessibilityLabel="Close">
+          <TouchableOpacity
+            onPress={() => router.back()}
+            style={styles.closeBtn}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+          >
             <Ionicons name="close" size={24} color={theme.text} />
           </TouchableOpacity>
         )}
       </View>
 
-      <ScrollView contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 32 }]} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: insets.bottom + 32 },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.heroSection}>
-          <View style={[styles.iconCircle, { backgroundColor: Colors.primary + "20" }]}>
+          <View
+            style={[
+              styles.iconCircle,
+              { backgroundColor: Colors.primary + "20" },
+            ]}
+          >
             <Ionicons name="diamond" size={36} color={Colors.primary} />
           </View>
-          <Text style={[styles.headline, { color: theme.text }]}>{PAYWALL_COPY.headline}</Text>
-          <Text style={[styles.subheadline, { color: theme.textSecondary }]}>{PAYWALL_COPY.subheadline}</Text>
+          <Text style={[styles.headline, { color: theme.text }]}>
+            {PAYWALL_COPY.headline}
+          </Text>
+          <Text style={[styles.subheadline, { color: theme.textSecondary }]}>
+            {PAYWALL_COPY.subheadline}
+          </Text>
         </View>
 
         <View style={styles.featuresSection}>
           {PREMIUM_FEATURES.map((feature, i) => (
-            <View key={i} style={[styles.featureRow, { borderBottomColor: theme.border }]}>
-              <View style={[styles.featureIcon, { backgroundColor: Colors.primary + "15" }]}>
-                <Ionicons name={feature.icon as any} size={20} color={Colors.primary} />
+            <View
+              key={i}
+              style={[styles.featureRow, { borderBottomColor: theme.border }]}
+            >
+              <View
+                style={[
+                  styles.featureIcon,
+                  { backgroundColor: Colors.primary + "15" },
+                ]}
+              >
+                <Ionicons
+                  name={feature.icon as any}
+                  size={20}
+                  color={Colors.primary}
+                />
               </View>
               <View style={styles.featureText}>
-                <Text style={[styles.featureTitle, { color: theme.text }]}>{feature.title}</Text>
-                <Text style={[styles.featureDesc, { color: theme.textSecondary }]}>{feature.description}</Text>
+                <Text style={[styles.featureTitle, { color: theme.text }]}>
+                  {feature.title}
+                </Text>
+                <Text
+                  style={[styles.featureDesc, { color: theme.textSecondary }]}
+                >
+                  {feature.description}
+                </Text>
               </View>
             </View>
           ))}
         </View>
 
         <View style={styles.planSection}>
-          <Text style={[styles.sectionTitle, { color: theme.text }]}>Choose Your Plan</Text>
+          <Text style={[styles.sectionTitle, { color: theme.text }]}>
+            Choose Your Plan
+          </Text>
 
           {yearlyPkg && (
             <TouchableOpacity
               style={[
                 styles.planCard,
                 {
-                  backgroundColor: selectedPlan === "yearly" ? Colors.primary + "12" : theme.card,
-                  borderColor: selectedPlan === "yearly" ? Colors.primary : theme.border,
+                  backgroundColor:
+                    selectedPlan === "yearly"
+                      ? Colors.primary + "12"
+                      : theme.card,
+                  borderColor:
+                    selectedPlan === "yearly" ? Colors.primary : theme.border,
                   borderWidth: selectedPlan === "yearly" ? 2 : 1,
                 },
               ]}
@@ -206,17 +300,35 @@ export default function PaywallScreen() {
                     style={[
                       styles.radioOuter,
                       {
-                        borderColor: selectedPlan === "yearly" ? Colors.primary : theme.textMuted,
+                        borderColor:
+                          selectedPlan === "yearly"
+                            ? Colors.primary
+                            : theme.textMuted,
                       },
                     ]}
                   >
-                    {selectedPlan === "yearly" && <View style={[styles.radioInner, { backgroundColor: Colors.primary }]} />}
+                    {selectedPlan === "yearly" && (
+                      <View
+                        style={[
+                          styles.radioInner,
+                          { backgroundColor: Colors.primary },
+                        ]}
+                      />
+                    )}
                   </View>
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.planName, { color: theme.text }]}>Yearly Premium</Text>
-                  <Text style={[styles.planPrice, { color: theme.textSecondary }]}>{yearlyPrice}</Text>
-                  <Text style={[styles.planSaving, { color: Colors.accentGreen }]}>
+                  <Text style={[styles.planName, { color: theme.text }]}>
+                    Yearly Premium
+                  </Text>
+                  <Text
+                    style={[styles.planPrice, { color: theme.textSecondary }]}
+                  >
+                    {yearlyPrice}
+                  </Text>
+                  <Text
+                    style={[styles.planSaving, { color: Colors.accentGreen }]}
+                  >
                     {yearlyMonthlyFormatted} · Save {savingsPercent}%
                   </Text>
                 </View>
@@ -229,8 +341,12 @@ export default function PaywallScreen() {
               style={[
                 styles.planCard,
                 {
-                  backgroundColor: selectedPlan === "monthly" ? Colors.primary + "12" : theme.card,
-                  borderColor: selectedPlan === "monthly" ? Colors.primary : theme.border,
+                  backgroundColor:
+                    selectedPlan === "monthly"
+                      ? Colors.primary + "12"
+                      : theme.card,
+                  borderColor:
+                    selectedPlan === "monthly" ? Colors.primary : theme.border,
                   borderWidth: selectedPlan === "monthly" ? 2 : 1,
                 },
               ]}
@@ -246,16 +362,32 @@ export default function PaywallScreen() {
                     style={[
                       styles.radioOuter,
                       {
-                        borderColor: selectedPlan === "monthly" ? Colors.primary : theme.textMuted,
+                        borderColor:
+                          selectedPlan === "monthly"
+                            ? Colors.primary
+                            : theme.textMuted,
                       },
                     ]}
                   >
-                    {selectedPlan === "monthly" && <View style={[styles.radioInner, { backgroundColor: Colors.primary }]} />}
+                    {selectedPlan === "monthly" && (
+                      <View
+                        style={[
+                          styles.radioInner,
+                          { backgroundColor: Colors.primary },
+                        ]}
+                      />
+                    )}
                   </View>
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.planName, { color: theme.text }]}>Monthly Premium</Text>
-                  <Text style={[styles.planPrice, { color: theme.textSecondary }]}>{monthlyPrice}</Text>
+                  <Text style={[styles.planName, { color: theme.text }]}>
+                    Monthly Premium
+                  </Text>
+                  <Text
+                    style={[styles.planPrice, { color: theme.textSecondary }]}
+                  >
+                    {monthlyPrice}
+                  </Text>
                 </View>
               </View>
             </TouchableOpacity>
@@ -266,8 +398,12 @@ export default function PaywallScreen() {
               style={[
                 styles.planCard,
                 {
-                  backgroundColor: selectedPlan === "lifetime" ? Colors.primary + "12" : theme.card,
-                  borderColor: selectedPlan === "lifetime" ? Colors.primary : theme.border,
+                  backgroundColor:
+                    selectedPlan === "lifetime"
+                      ? Colors.primary + "12"
+                      : theme.card,
+                  borderColor:
+                    selectedPlan === "lifetime" ? Colors.primary : theme.border,
                   borderWidth: selectedPlan === "lifetime" ? 2 : 1,
                 },
               ]}
@@ -286,56 +422,125 @@ export default function PaywallScreen() {
                     style={[
                       styles.radioOuter,
                       {
-                        borderColor: selectedPlan === "lifetime" ? Colors.primary : theme.textMuted,
+                        borderColor:
+                          selectedPlan === "lifetime"
+                            ? Colors.primary
+                            : theme.textMuted,
                       },
                     ]}
                   >
-                    {selectedPlan === "lifetime" && <View style={[styles.radioInner, { backgroundColor: Colors.primary }]} />}
+                    {selectedPlan === "lifetime" && (
+                      <View
+                        style={[
+                          styles.radioInner,
+                          { backgroundColor: Colors.primary },
+                        ]}
+                      />
+                    )}
                   </View>
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={[styles.planName, { color: theme.text }]}>Lifetime Premium</Text>
-                  <Text style={[styles.planPrice, { color: theme.textSecondary }]}>{lifetimePrice}</Text>
-                  <Text style={[styles.planSaving, { color: Colors.accentGreen }]}>Pay once, own forever</Text>
+                  <Text style={[styles.planName, { color: theme.text }]}>
+                    Lifetime Premium
+                  </Text>
+                  <Text
+                    style={[styles.planPrice, { color: theme.textSecondary }]}
+                  >
+                    {lifetimePrice}
+                  </Text>
+                  <Text
+                    style={[styles.planSaving, { color: Colors.accentGreen }]}
+                  >
+                    Pay once, own forever
+                  </Text>
                 </View>
               </View>
             </TouchableOpacity>
           )}
 
-          {packages.length === 0 && !rc.isLoading && (
+          {rc.isOfferingsLoading && (
             <View
               style={[
-                styles.planCard,
+                styles.planState,
                 {
                   backgroundColor: theme.card,
                   borderColor: theme.border,
-                  borderWidth: 1,
                 },
               ]}
             >
-              <Text
-                style={[
-                  styles.planPrice,
-                  {
-                    color: theme.textSecondary,
-                    textAlign: "center",
-                    padding: 12,
-                  },
-                ]}
-              >
-                Loading plans...
+              <ActivityIndicator size="small" color={Colors.primary} />
+              <Text style={[styles.planStateTitle, { color: theme.text }]}>
+                Loading subscription plans…
               </Text>
+              <Text
+                style={[styles.planStateBody, { color: theme.textSecondary }]}
+              >
+                Checking the App Store for current prices.
+              </Text>
+            </View>
+          )}
+
+          {packages.length === 0 && !rc.isOfferingsLoading && (
+            <View
+              style={[
+                styles.planState,
+                {
+                  backgroundColor: theme.card,
+                  borderColor: theme.border,
+                },
+              ]}
+            >
+              <Ionicons
+                name="cloud-offline-outline"
+                size={26}
+                color={theme.textMuted}
+              />
+              <Text
+                accessibilityRole="alert"
+                style={[styles.planStateTitle, { color: theme.text }]}
+              >
+                Plans unavailable
+              </Text>
+              <Text
+                style={[styles.planStateBody, { color: theme.textSecondary }]}
+              >
+                We couldn&apos;t load current store prices. Check your
+                connection and try again.
+              </Text>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Try again"
+                style={[styles.retryButton, { borderColor: Colors.primary }]}
+                onPress={() => void rc.refetchOfferings()}
+                activeOpacity={0.75}
+              >
+                <Text
+                  style={[styles.retryButtonText, { color: Colors.primary }]}
+                >
+                  Try again
+                </Text>
+              </TouchableOpacity>
             </View>
           )}
         </View>
 
         {!isAuthenticated ? (
-          <TouchableOpacity style={[styles.ctaPrimary, { backgroundColor: Colors.primary }]} onPress={login} activeOpacity={0.85}>
+          <TouchableOpacity
+            style={[styles.ctaPrimary, { backgroundColor: Colors.primary }]}
+            onPress={login}
+            activeOpacity={0.85}
+          >
             <Ionicons name="log-in-outline" size={20} color="#000" />
-            <Text style={styles.ctaPrimaryText}>Sign in to Start Trial or Subscribe</Text>
+            <Text style={styles.ctaPrimaryText}>
+              Sign in to Start Trial or Subscribe
+            </Text>
           </TouchableOpacity>
         ) : showTrialButton ? (
-          <TouchableOpacity style={[styles.ctaPrimary, { backgroundColor: Colors.primary }]} onPress={handleStartTrial} activeOpacity={0.85}>
+          <TouchableOpacity
+            style={[styles.ctaPrimary, { backgroundColor: Colors.primary }]}
+            onPress={handleStartTrial}
+            activeOpacity={0.85}
+          >
             <Ionicons name="sparkles" size={20} color="#000" />
             <Text style={styles.ctaPrimaryText}>{PAYWALL_COPY.ctaPrimary}</Text>
           </TouchableOpacity>
@@ -350,30 +555,57 @@ export default function PaywallScreen() {
             ]}
             onPress={handlePurchase}
             activeOpacity={0.85}
-            disabled={rc.isPurchasing || !selectedPackage}
+            disabled={
+              rc.isPurchasing || rc.isOfferingsLoading || !selectedPackage
+            }
           >
             {rc.isPurchasing ? (
               <ActivityIndicator size="small" color="#000" />
             ) : (
               <>
                 <Ionicons name="diamond" size={20} color="#000" />
-                <Text style={styles.ctaPrimaryText}>{selectedPlan === "lifetime" ? "Buy Lifetime Access" : "Subscribe Now"}</Text>
+                <Text style={styles.ctaPrimaryText}>
+                  {selectedPlan === "lifetime"
+                    ? "Buy Lifetime Access"
+                    : "Subscribe Now"}
+                </Text>
               </>
             )}
           </TouchableOpacity>
         )}
 
-        {showTrialButton && <Text style={[styles.trialNote, { color: theme.textSecondary }]}>{PAYWALL_COPY.trialNote}</Text>}
+        {showTrialButton && (
+          <Text style={[styles.trialNote, { color: theme.textSecondary }]}>
+            {PAYWALL_COPY.trialNote}
+          </Text>
+        )}
 
-        <TouchableOpacity style={[styles.ctaSecondary, { borderColor: theme.border }]} onPress={handleContinueFree} activeOpacity={0.7}>
-          <Text style={[styles.ctaSecondaryText, { color: theme.textSecondary }]}>{isPostOnboarding ? "Continue with Free" : PAYWALL_COPY.ctaSecondary}</Text>
+        <TouchableOpacity
+          style={[styles.ctaSecondary, { borderColor: theme.border }]}
+          onPress={handleContinueFree}
+          activeOpacity={0.7}
+        >
+          <Text
+            style={[styles.ctaSecondaryText, { color: theme.textSecondary }]}
+          >
+            {isPostOnboarding
+              ? "Continue with Free"
+              : PAYWALL_COPY.ctaSecondary}
+          </Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.restoreBtn} onPress={handleRestore} disabled={rc.isRestoring} activeOpacity={0.7}>
+        <TouchableOpacity
+          style={styles.restoreBtn}
+          onPress={handleRestore}
+          disabled={rc.isRestoring}
+          activeOpacity={0.7}
+        >
           {rc.isRestoring ? (
             <ActivityIndicator size="small" color={theme.textMuted} />
           ) : (
-            <Text style={[styles.restoreText, { color: theme.textMuted }]}>{PAYWALL_COPY.ctaRestore}</Text>
+            <Text style={[styles.restoreText, { color: theme.textMuted }]}>
+              {PAYWALL_COPY.ctaRestore}
+            </Text>
           )}
         </TouchableOpacity>
 
@@ -386,28 +618,39 @@ export default function PaywallScreen() {
         */}
         <View style={styles.legalSection}>
           <Text style={[styles.legalText, { color: theme.textMuted }]}>
-            Subscriptions renew automatically at the price shown until cancelled. Cancel any time
-            in your {Platform.OS === "ios" ? "Apple ID" : "Google Play"} account settings; cancelling
-            takes effect at the end of the current period. Lifetime access is a one-time purchase
-            and does not renew.
+            Subscriptions renew automatically at the price shown until
+            cancelled. Cancel any time in your{" "}
+            {Platform.OS === "ios" ? "Apple ID" : "Google Play"} account
+            settings; cancelling takes effect at the end of the current period.
+            Lifetime access is a one-time purchase and does not renew.
           </Text>
           <View style={styles.legalLinks}>
             <TouchableOpacity
-              onPress={() => Linking.openURL(getPublicApiUrl("/api/legal/terms"))}
+              onPress={() =>
+                Linking.openURL(getPublicApiUrl("/api/legal/terms"))
+              }
               hitSlop={10}
               accessibilityRole="link"
               accessibilityLabel="Terms of Use"
             >
-              <Text style={[styles.legalLink, { color: theme.textSecondary }]}>Terms of Use</Text>
+              <Text style={[styles.legalLink, { color: theme.textSecondary }]}>
+                Terms of Use
+              </Text>
             </TouchableOpacity>
-            <Text style={[styles.legalText, { color: theme.textMuted }]}>·</Text>
+            <Text style={[styles.legalText, { color: theme.textMuted }]}>
+              ·
+            </Text>
             <TouchableOpacity
-              onPress={() => Linking.openURL(getPublicApiUrl("/api/legal/privacy"))}
+              onPress={() =>
+                Linking.openURL(getPublicApiUrl("/api/legal/privacy"))
+              }
               hitSlop={10}
               accessibilityRole="link"
               accessibilityLabel="Privacy Policy"
             >
-              <Text style={[styles.legalLink, { color: theme.textSecondary }]}>Privacy Policy</Text>
+              <Text style={[styles.legalLink, { color: theme.textSecondary }]}>
+                Privacy Policy
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -415,18 +658,57 @@ export default function PaywallScreen() {
         <View style={styles.trustSection}>
           {PAYWALL_COPY.trustItems.map((item, i) => (
             <View key={i} style={styles.trustRow}>
-              <Ionicons name="checkmark-circle" size={16} color={Colors.accentGreen} />
-              <Text style={[styles.trustText, { color: theme.textSecondary }]}>{item}</Text>
+              <Ionicons
+                name="checkmark-circle"
+                size={16}
+                color={Colors.accentGreen}
+              />
+              <Text style={[styles.trustText, { color: theme.textSecondary }]}>
+                {item}
+              </Text>
             </View>
           ))}
         </View>
 
-        <View style={[styles.comparisonSection, { backgroundColor: theme.card, borderColor: theme.border }]}>
-          <Text style={[styles.sectionTitle, { color: theme.text, marginBottom: 16 }]}>Free vs Premium</Text>
+        <View
+          style={[
+            styles.comparisonSection,
+            { backgroundColor: theme.card, borderColor: theme.border },
+          ]}
+        >
+          <Text
+            style={[
+              styles.sectionTitle,
+              { color: theme.text, marginBottom: 16 },
+            ]}
+          >
+            Free vs Premium
+          </Text>
           <View style={styles.compHeader}>
-            <Text style={[styles.compHeaderLabel, { color: theme.textMuted, flex: 1 }]}>Feature</Text>
-            <Text style={[styles.compHeaderLabel, { color: theme.textMuted, width: 60, textAlign: "center" }]}>Free</Text>
-            <Text style={[styles.compHeaderLabel, { color: Colors.primary, width: 72, textAlign: "center" }]}>Premium</Text>
+            <Text
+              style={[
+                styles.compHeaderLabel,
+                { color: theme.textMuted, flex: 1 },
+              ]}
+            >
+              Feature
+            </Text>
+            <Text
+              style={[
+                styles.compHeaderLabel,
+                { color: theme.textMuted, width: 60, textAlign: "center" },
+              ]}
+            >
+              Free
+            </Text>
+            <Text
+              style={[
+                styles.compHeaderLabel,
+                { color: Colors.primary, width: 72, textAlign: "center" },
+              ]}
+            >
+              Premium
+            </Text>
           </View>
           {[
             { name: "Workout tracking", free: true, premium: true },
@@ -439,41 +721,88 @@ export default function PaywallScreen() {
             { name: "Health insights", free: false, premium: true },
             { name: "Adaptive plans", free: false, premium: true },
           ].map((row, i) => (
-            <View key={i} style={[styles.compRow, { borderTopColor: theme.border }]}>
-              <Text style={[styles.compName, { color: theme.text }]}>{row.name}</Text>
+            <View
+              key={i}
+              style={[styles.compRow, { borderTopColor: theme.border }]}
+            >
+              <Text style={[styles.compName, { color: theme.text }]}>
+                {row.name}
+              </Text>
               <View style={{ width: 60, alignItems: "center" }}>
-                <Ionicons name={row.free ? "checkmark-circle" : "close-circle"} size={18} color={row.free ? Colors.accentGreen : theme.textMuted} />
+                <Ionicons
+                  name={row.free ? "checkmark-circle" : "close-circle"}
+                  size={18}
+                  color={row.free ? Colors.accentGreen : theme.textMuted}
+                />
               </View>
               <View style={{ width: 72, alignItems: "center" }}>
-                <Ionicons name="checkmark-circle" size={18} color={Colors.accentGreen} />
+                <Ionicons
+                  name="checkmark-circle"
+                  size={18}
+                  color={Colors.accentGreen}
+                />
               </View>
             </View>
           ))}
         </View>
 
         <View style={styles.faqSection}>
-          <Text style={[styles.sectionTitle, { color: theme.text, marginBottom: 12 }]}>FAQ</Text>
+          <Text
+            style={[
+              styles.sectionTitle,
+              { color: theme.text, marginBottom: 12 },
+            ]}
+          >
+            FAQ
+          </Text>
           {FAQ_ITEMS.map((item, i) => (
             <TouchableOpacity
               key={i}
-              style={[styles.faqItem, { backgroundColor: theme.card, borderColor: theme.border }]}
+              style={[
+                styles.faqItem,
+                { backgroundColor: theme.card, borderColor: theme.border },
+              ]}
               onPress={() => setExpandedFaq(expandedFaq === i ? null : i)}
               activeOpacity={0.8}
             >
               <View style={styles.faqHeader}>
-                <Text style={[styles.faqQuestion, { color: theme.text }]}>{item.question}</Text>
-                <Ionicons name={expandedFaq === i ? "chevron-up" : "chevron-down"} size={18} color={theme.textMuted} />
+                <Text style={[styles.faqQuestion, { color: theme.text }]}>
+                  {item.question}
+                </Text>
+                <Ionicons
+                  name={expandedFaq === i ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={theme.textMuted}
+                />
               </View>
-              {expandedFaq === i && <Text style={[styles.faqAnswer, { color: theme.textSecondary }]}>{item.answer}</Text>}
+              {expandedFaq === i && (
+                <Text
+                  style={[styles.faqAnswer, { color: theme.textSecondary }]}
+                >
+                  {item.answer}
+                </Text>
+              )}
             </TouchableOpacity>
           ))}
         </View>
       </ScrollView>
 
-      <Modal visible={confirmVisible} transparent animationType="fade" onRequestClose={() => setConfirmVisible(false)}>
+      <Modal
+        visible={confirmVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setConfirmVisible(false)}
+      >
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>Confirm Purchase</Text>
+          <View
+            style={[
+              styles.modalCard,
+              { backgroundColor: theme.card, borderColor: theme.border },
+            ]}
+          >
+            <Text style={[styles.modalTitle, { color: theme.text }]}>
+              Confirm Purchase
+            </Text>
             <Text style={[styles.modalBody, { color: theme.textSecondary }]}>
               {selectedPlan === "lifetime"
                 ? `You are about to purchase Lifetime Premium for ${lifetimePrice ?? "the listed price"}.`
@@ -481,11 +810,23 @@ export default function PaywallScreen() {
                   ? `You are about to subscribe to Yearly Premium for ${yearlyPrice ?? "the listed price"}.`
                   : `You are about to subscribe to Monthly Premium for ${monthlyPrice ?? "the listed price"}.`}
             </Text>
-            <TouchableOpacity style={[styles.modalConfirm, { backgroundColor: Colors.primary }]} onPress={confirmPurchase} activeOpacity={0.85}>
+            <TouchableOpacity
+              style={[styles.modalConfirm, { backgroundColor: Colors.primary }]}
+              onPress={confirmPurchase}
+              activeOpacity={0.85}
+            >
               <Text style={styles.modalConfirmText}>Confirm</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.modalCancel} onPress={() => setConfirmVisible(false)} activeOpacity={0.7}>
-              <Text style={[styles.modalCancelText, { color: theme.textSecondary }]}>Cancel</Text>
+            <TouchableOpacity
+              style={styles.modalCancel}
+              onPress={() => setConfirmVisible(false)}
+              activeOpacity={0.7}
+            >
+              <Text
+                style={[styles.modalCancelText, { color: theme.textSecondary }]}
+              >
+                Cancel
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -549,6 +890,35 @@ const styles = StyleSheet.create({
   },
   featureDesc: { fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 18 },
   planSection: { marginBottom: 24 },
+  planState: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 20,
+    alignItems: "center",
+    gap: 8,
+  },
+  planStateTitle: {
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+    textAlign: "center",
+  },
+  planStateBody: {
+    fontSize: 13,
+    lineHeight: 19,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    maxWidth: 300,
+  },
+  retryButton: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 4,
+  },
+  retryButtonText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   sectionTitle: { fontSize: 18, fontFamily: "Inter_700Bold", marginBottom: 4 },
   planCard: {
     borderRadius: 14,
@@ -631,10 +1001,28 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_400Regular",
     textDecorationLine: "underline",
   },
-  legalSection: { gap: Space.sm, paddingHorizontal: Space.xs, marginTop: Space.lg },
-  legalText: { fontSize: 11, lineHeight: 16, fontFamily: "Inter_400Regular", textAlign: "center" },
-  legalLinks: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: Space.sm },
-  legalLink: { fontSize: 11, fontFamily: "Inter_600SemiBold", textDecorationLine: "underline" },
+  legalSection: {
+    gap: Space.sm,
+    paddingHorizontal: Space.xs,
+    marginTop: Space.lg,
+  },
+  legalText: {
+    fontSize: 11,
+    lineHeight: 16,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+  },
+  legalLinks: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: Space.sm,
+  },
+  legalLink: {
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    textDecorationLine: "underline",
+  },
   trustSection: { marginBottom: 28 },
   trustRow: {
     flexDirection: "row",

@@ -5,6 +5,7 @@ import {
   StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
+  Linking,
   Platform,
   ScrollView,
 } from "react-native";
@@ -87,7 +88,11 @@ export default function ScanScreen() {
     return (
       <View style={[styles.center, { backgroundColor: theme.background }]}>
         <Stack.Screen options={{ title: "Scan", headerShown: true }} />
-        <Ionicons name="phone-portrait-outline" size={40} color={theme.textMuted} />
+        <Ionicons
+          name="phone-portrait-outline"
+          size={40}
+          color={theme.textMuted}
+        />
         <Text style={[styles.centerText, { color: theme.textSecondary }]}>
           Barcode scanning needs the mobile app.
         </Text>
@@ -104,20 +109,40 @@ export default function ScanScreen() {
   }
 
   if (!permission.granted) {
+    const canAskAgain = permission.canAskAgain;
     return (
       <View style={[styles.center, { backgroundColor: theme.background }]}>
         <Stack.Screen options={{ title: "Scan", headerShown: true }} />
         <Ionicons name="camera-outline" size={40} color={theme.textMuted} />
-        <Text style={[styles.centerTitle, { color: theme.text }]}>Camera access needed</Text>
+        <Text style={[styles.centerTitle, { color: theme.text }]}>
+          {canAskAgain ? "Camera access needed" : "Camera access is blocked"}
+        </Text>
         <Text style={[styles.centerText, { color: theme.textSecondary }]}>
-          Elovia uses the camera to read barcodes on packaged food.
+          {canAskAgain
+            ? "Elovia uses the camera to read barcodes on packaged food."
+            : "Camera access was denied. Open your device settings and allow camera access for Elovia to scan barcodes."}
         </Text>
         <TouchableOpacity
           style={[styles.permissionBtn, { backgroundColor: Colors.primary }]}
-          onPress={requestPermission}
+          onPress={() => {
+            if (canAskAgain) {
+              void requestPermission();
+            } else {
+              void Linking.openSettings();
+            }
+          }}
           activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel={canAskAgain ? "Allow camera" : "Open Settings"}
+          accessibilityHint={
+            canAskAgain
+              ? "Shows the system camera permission prompt"
+              : "Opens device settings where camera access can be enabled"
+          }
         >
-          <Text style={styles.permissionBtnText}>Allow camera</Text>
+          <Text style={styles.permissionBtnText}>
+            {canAskAgain ? "Allow camera" : "Open Settings"}
+          </Text>
         </TouchableOpacity>
       </View>
     );
@@ -149,7 +174,10 @@ export default function ScanScreen() {
         <View
           style={[
             styles.sheet,
-            { backgroundColor: theme.background, paddingBottom: insets.bottom + 16 },
+            {
+              backgroundColor: theme.background,
+              paddingBottom: insets.bottom + 16,
+            },
           ]}
         >
           <ScrollView showsVerticalScrollIndicator={false}>
@@ -164,7 +192,11 @@ export default function ScanScreen() {
             ) : (
               <View style={styles.miss}>
                 <Ionicons
-                  name={result.status === "not_found" ? "help-circle-outline" : "alert-circle-outline"}
+                  name={
+                    result.status === "not_found"
+                      ? "help-circle-outline"
+                      : "alert-circle-outline"
+                  }
                   size={34}
                   color={theme.textMuted}
                 />
@@ -187,12 +219,17 @@ export default function ScanScreen() {
                 onPress={resetScan}
                 activeOpacity={0.85}
               >
-                <Text style={[styles.secondaryBtnText, { color: theme.text }]}>Scan again</Text>
+                <Text style={[styles.secondaryBtnText, { color: theme.text }]}>
+                  Scan again
+                </Text>
               </TouchableOpacity>
 
               {result.status === "found" && (
                 <TouchableOpacity
-                  style={[styles.primaryBtn, { backgroundColor: Colors.primary }]}
+                  style={[
+                    styles.primaryBtn,
+                    { backgroundColor: Colors.primary },
+                  ]}
                   onPress={() => logFood(result.food)}
                   activeOpacity={0.85}
                 >
@@ -224,55 +261,115 @@ function FoundProduct({
 
   return (
     <View style={styles.product}>
-      <Text style={[styles.productName, { color: theme.text }]}>{food.name}</Text>
+      <Text style={[styles.productName, { color: theme.text }]}>
+        {food.name}
+      </Text>
       <Text style={[styles.productServing, { color: theme.textMuted }]}>
         Per {food.servingSize}
         {food.per100gOnly ? " (no serving size on the label)" : ""}
       </Text>
 
       <View style={styles.macroRow}>
-        <Macro label="kcal" value={Math.round(food.calories * servings)} tone={Colors.accentYellow} theme={theme} />
-        <Macro label="protein" value={Math.round(food.protein * servings)} unit="g" tone={Colors.primary} theme={theme} />
-        <Macro label="carbs" value={Math.round(food.carbs * servings)} unit="g" tone={Colors.accent} theme={theme} />
-        <Macro label="fat" value={Math.round(food.fats * servings)} unit="g" tone={Colors.accentGreen} theme={theme} />
+        <Macro
+          label="kcal"
+          value={Math.round(food.calories * servings)}
+          tone={Colors.accentYellow}
+          theme={theme}
+        />
+        <Macro
+          label="protein"
+          value={Math.round(food.protein * servings)}
+          unit="g"
+          tone={Colors.primary}
+          theme={theme}
+        />
+        <Macro
+          label="carbs"
+          value={Math.round(food.carbs * servings)}
+          unit="g"
+          tone={Colors.accent}
+          theme={theme}
+        />
+        <Macro
+          label="fat"
+          value={Math.round(food.fats * servings)}
+          unit="g"
+          tone={Colors.accentGreen}
+          theme={theme}
+        />
       </View>
 
       <View style={[styles.servingRow, { borderColor: theme.border }]}>
-        <Text style={[styles.servingLabel, { color: theme.textSecondary }]}>Servings</Text>
+        <Text style={[styles.servingLabel, { color: theme.textSecondary }]}>
+          Servings
+        </Text>
         <TouchableOpacity
           onPress={() => onServingsChange(Math.max(0.5, servings - 0.5))}
-          hitSlop={10} accessibilityRole="button" accessibilityLabel="Decrease"
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Decrease"
         >
-          <Ionicons name="remove-circle-outline" size={26} color={theme.textMuted} />
+          <Ionicons
+            name="remove-circle-outline"
+            size={26}
+            color={theme.textMuted}
+          />
         </TouchableOpacity>
-        <Text style={[styles.servingValue, { color: theme.text }]}>{servings}</Text>
+        <Text style={[styles.servingValue, { color: theme.text }]}>
+          {servings}
+        </Text>
         <TouchableOpacity
           onPress={() => onServingsChange(Math.min(20, servings + 0.5))}
-          hitSlop={10} accessibilityRole="button" accessibilityLabel="Increase"
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Increase"
         >
-          <Ionicons name="add-circle-outline" size={26} color={Colors.primary} />
+          <Ionicons
+            name="add-circle-outline"
+            size={26}
+            color={Colors.primary}
+          />
         </TouchableOpacity>
       </View>
 
       {(food.nutriScore || nova) && (
         <View style={styles.badges}>
           {food.nutriScore && (
-            <View style={[styles.badge, { backgroundColor: nutriScoreColor(food.nutriScore) + "25" }]}>
-              <Text style={[styles.badgeText, { color: nutriScoreColor(food.nutriScore) }]}>
+            <View
+              style={[
+                styles.badge,
+                { backgroundColor: nutriScoreColor(food.nutriScore) + "25" },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.badgeText,
+                  { color: nutriScoreColor(food.nutriScore) },
+                ]}
+              >
                 Nutri-Score {food.nutriScore}
               </Text>
             </View>
           )}
           {nova && (
-            <View style={[styles.badge, { backgroundColor: Colors.dark.text + "12" }]}>
-              <Text style={[styles.badgeText, { color: theme.textSecondary }]}>{nova}</Text>
+            <View
+              style={[
+                styles.badge,
+                { backgroundColor: Colors.dark.text + "12" },
+              ]}
+            >
+              <Text style={[styles.badgeText, { color: theme.textSecondary }]}>
+                {nova}
+              </Text>
             </View>
           )}
         </View>
       )}
 
       {food.allergens.length > 0 && (
-        <View style={[styles.allergenBox, { borderColor: Colors.accentRed + "40" }]}>
+        <View
+          style={[styles.allergenBox, { borderColor: Colors.accentRed + "40" }]}
+        >
           <Ionicons name="warning-outline" size={15} color={Colors.accentRed} />
           <Text style={[styles.allergenText, { color: theme.textSecondary }]}>
             Contains: {food.allergens.join(", ")}
@@ -302,7 +399,9 @@ function Macro({
         {value}
         {unit ?? ""}
       </Text>
-      <Text style={[styles.macroLabel, { color: theme.textMuted }]}>{label}</Text>
+      <Text style={[styles.macroLabel, { color: theme.textMuted }]}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -333,13 +432,38 @@ function guessMealType(): "breakfast" | "lunch" | "dinner" | "snack" {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 32, gap: 10 },
+  center: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 32,
+    gap: 10,
+  },
   centerTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold" },
-  centerText: { fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 19 },
-  permissionBtn: { borderRadius: 12, paddingHorizontal: 24, paddingVertical: 13, marginTop: 8 },
-  permissionBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#000" },
+  centerText: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    lineHeight: 19,
+  },
+  permissionBtn: {
+    borderRadius: 12,
+    paddingHorizontal: 24,
+    paddingVertical: 13,
+    marginTop: 8,
+  },
+  permissionBtnText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: "#000",
+  },
 
-  overlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 20 },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 20,
+  },
   reticle: {
     width: "72%",
     height: 150,
@@ -362,7 +486,11 @@ const styles = StyleSheet.create({
   },
   product: { gap: 12 },
   productName: { fontSize: 18, fontFamily: "Inter_700Bold" },
-  productServing: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: -8 },
+  productServing: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    marginTop: -8,
+  },
 
   macroRow: { flexDirection: "row", gap: 8 },
   macro: { flex: 1, alignItems: "center", gap: 2 },
@@ -379,7 +507,12 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   servingLabel: { flex: 1, fontSize: 13, fontFamily: "Inter_500Medium" },
-  servingValue: { fontSize: 16, fontFamily: "Inter_600SemiBold", minWidth: 32, textAlign: "center" },
+  servingValue: {
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
+    minWidth: 32,
+    textAlign: "center",
+  },
 
   badges: { flexDirection: "row", gap: 6, flexWrap: "wrap" },
   badge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
@@ -397,11 +530,31 @@ const styles = StyleSheet.create({
 
   miss: { alignItems: "center", gap: 8, paddingVertical: 20 },
   missTitle: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
-  missBody: { fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 19 },
+  missBody: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    lineHeight: 19,
+  },
 
   sheetActions: { flexDirection: "row", gap: 10, marginTop: 18 },
-  secondaryBtn: { flex: 1, borderWidth: 1, borderRadius: 12, paddingVertical: 14, alignItems: "center" },
+  secondaryBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
   secondaryBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  primaryBtn: { flex: 1, borderRadius: 12, paddingVertical: 14, alignItems: "center" },
-  primaryBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold", color: "#000" },
+  primaryBtn: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  primaryBtnText: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
+    color: "#000",
+  },
 });

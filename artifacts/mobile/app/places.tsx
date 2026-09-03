@@ -9,6 +9,7 @@ import {
   Alert,
   Switch,
   ActivityIndicator,
+  Linking,
   Platform,
 } from "react-native";
 import { Stack } from "expo-router";
@@ -111,15 +112,42 @@ export default function PlacesScreen() {
       return;
     }
 
+    if (outcome === "unsupported") {
+      Alert.alert("Not available", "Place reminders need the mobile app.");
+      return;
+    }
+
+    const instructions =
+      Platform.OS === "ios"
+        ? 'Choose Location, then "Always". Without it, arrivals can only be detected while the app is open.'
+        : 'Choose Permissions > Location, then "Allow all the time".';
+
+    if (outcome === "blocked") {
+      Alert.alert(
+        "Background location is blocked",
+        `Open Elovia's device settings and ${instructions}`,
+        [
+          { text: "Not now", style: "cancel" },
+          {
+            text: "Open Settings",
+            onPress: () => void Linking.openSettings(),
+          },
+        ],
+      );
+      return;
+    }
+
     Alert.alert(
-      outcome === "unsupported"
-        ? "Not available"
-        : "Background location needed",
-      outcome === "unsupported"
-        ? "Place reminders need the mobile app."
-        : Platform.OS === "ios"
-          ? 'Open Settings > Elovia > Location and choose "Always". Without it, arrivals can only be detected while the app is open.'
-          : 'Open Settings > Apps > Elovia > Permissions > Location and choose "Allow all the time".',
+      outcome === "foreground_only"
+        ? "Always location needed"
+        : "Location permission needed",
+      outcome === "foreground_only"
+        ? instructions
+        : "Allow location access to use arrival reminders. You can try again when you are ready.",
+      [
+        { text: "Not now", style: "cancel" },
+        { text: "Try again", onPress: () => void enableBackground() },
+      ],
     );
   };
 

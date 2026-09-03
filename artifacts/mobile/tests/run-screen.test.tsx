@@ -93,7 +93,7 @@ jest.mock("@/components/RunRouteMap", () => {
   };
 });
 
-import RunScreen from "./run";
+import RunScreen from "../app/run";
 
 describe("run recorder presentation", () => {
   it("renders the live route and primary Strava-style activity metrics", async () => {

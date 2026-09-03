@@ -2,6 +2,7 @@ import React from "react";
 import { Colors } from "@/constants/colors";
 import { View, Text, StyleSheet } from "react-native";
 import Animated, {
+  ReduceMotion,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
@@ -17,12 +18,20 @@ interface Props {
   isDark?: boolean;
 }
 
-export function MacroBar({ label, current, target, unit = "g", color, isDark = true }: Props) {
+export function MacroBar({ label, current, target, unit = "g", color }: Props) {
   const progress = useSharedValue(0);
-  const pct = target > 0 ? Math.min(current / target, 1) : 0;
+  const safeCurrent = Math.max(0, Number.isFinite(current) ? current : 0);
+  const safeTarget = Math.max(0, Number.isFinite(target) ? target : 0);
+  const pct = safeTarget > 0 ? Math.min(safeCurrent / safeTarget, 1) : 0;
+  const roundedCurrent = Math.round(safeCurrent);
+  const roundedTarget = Math.round(safeTarget);
+  const spokenUnit = unit === "g" ? "grams" : unit;
 
   useEffect(() => {
-    progress.value = withSpring(pct, { damping: 15 });
+    progress.value = withSpring(pct, {
+      damping: 15,
+      reduceMotion: ReduceMotion.System,
+    });
   }, [pct]);
 
   const barStyle = useAnimatedStyle(() => ({
@@ -38,12 +47,31 @@ export function MacroBar({ label, current, target, unit = "g", color, isDark = t
       <View style={styles.header}>
         <Text style={[styles.label, { color: textColor }]}>{label}</Text>
         <Text style={[styles.value, { color: mutedColor }]}>
-          <Text style={{ color: textColor, fontWeight: "600" }}>{Math.round(current)}</Text>
-          /{Math.round(target)}{unit}
+          <Text style={{ color: textColor, fontWeight: "600" }}>
+            {roundedCurrent}
+          </Text>
+          /{roundedTarget}
+          {unit}
         </Text>
       </View>
-      <View style={[styles.track, { backgroundColor: trackColor }]}>
-        <Animated.View style={[styles.bar, { backgroundColor: color }, barStyle]} />
+      <View
+        accessible
+        accessibilityRole="progressbar"
+        accessibilityLabel={label}
+        accessibilityValue={{
+          min: 0,
+          max: safeTarget > 0 ? roundedTarget : 1,
+          now: safeTarget > 0 ? Math.min(roundedCurrent, roundedTarget) : 0,
+          text:
+            safeTarget > 0
+              ? `${roundedCurrent} of ${roundedTarget} ${spokenUnit}`
+              : `${roundedCurrent} ${spokenUnit} recorded; no target set`,
+        }}
+        style={[styles.track, { backgroundColor: trackColor }]}
+      >
+        <Animated.View
+          style={[styles.bar, { backgroundColor: color }, barStyle]}
+        />
       </View>
     </View>
   );

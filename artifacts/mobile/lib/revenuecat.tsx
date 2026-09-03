@@ -7,7 +7,8 @@ import { useAuth } from "./auth";
 
 const REVENUECAT_TEST_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_TEST_API_KEY;
 const REVENUECAT_IOS_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY;
-const REVENUECAT_ANDROID_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY;
+const REVENUECAT_ANDROID_API_KEY =
+  process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY;
 
 export const REVENUECAT_ENTITLEMENT_IDENTIFIER = "Elovia Pro";
 
@@ -20,21 +21,27 @@ function getRevenueCatApiKey(): string {
     if (REVENUECAT_TEST_API_KEY) return REVENUECAT_TEST_API_KEY;
     throw new Error(
       "EXPO_PUBLIC_REVENUECAT_TEST_API_KEY is required for Expo Go / web. " +
-      "See https://rev.cat/sdk-test-store"
+        "See https://rev.cat/sdk-test-store",
     );
   }
 
   if (Platform.OS === "ios") {
     if (REVENUECAT_IOS_API_KEY) return REVENUECAT_IOS_API_KEY;
-    throw new Error("EXPO_PUBLIC_REVENUECAT_IOS_API_KEY is required for iOS production builds");
+    throw new Error(
+      "EXPO_PUBLIC_REVENUECAT_IOS_API_KEY is required for iOS production builds",
+    );
   }
 
   if (Platform.OS === "android") {
     if (REVENUECAT_ANDROID_API_KEY) return REVENUECAT_ANDROID_API_KEY;
-    throw new Error("EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY is required for Android production builds");
+    throw new Error(
+      "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY is required for Android production builds",
+    );
   }
 
-  throw new Error("No RevenueCat API key available for platform: " + Platform.OS);
+  throw new Error(
+    "No RevenueCat API key available for platform: " + Platform.OS,
+  );
 }
 
 export function initializeRevenueCat() {
@@ -94,11 +101,14 @@ function useRevenueCatContext() {
 
   const purchaseMutation = useMutation({
     mutationFn: async (packageToPurchase: any) => {
-      const { customerInfo } = await Purchases.purchasePackage(packageToPurchase);
+      const { customerInfo } =
+        await Purchases.purchasePackage(packageToPurchase);
       return customerInfo;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["revenuecat", "customer-info"] });
+      queryClient.invalidateQueries({
+        queryKey: ["revenuecat", "customer-info"],
+      });
     },
   });
 
@@ -107,33 +117,50 @@ function useRevenueCatContext() {
       return Purchases.restorePurchases();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["revenuecat", "customer-info"] });
+      queryClient.invalidateQueries({
+        queryKey: ["revenuecat", "customer-info"],
+      });
     },
   });
 
   const isSubscribed =
-    customerInfoQuery.data?.entitlements.active?.[REVENUECAT_ENTITLEMENT_IDENTIFIER] !== undefined;
+    customerInfoQuery.data?.entitlements.active?.[
+      REVENUECAT_ENTITLEMENT_IDENTIFIER
+    ] !== undefined;
 
   return {
     customerInfo: customerInfoQuery.data,
     offerings: offeringsQuery.data,
+    offeringsError: offeringsQuery.error,
     isSubscribed,
     isLoading: customerInfoQuery.isLoading || offeringsQuery.isLoading,
+    isOfferingsLoading: offeringsQuery.isLoading,
     purchase: purchaseMutation.mutateAsync,
     restore: restoreMutation.mutateAsync,
     isPurchasing: purchaseMutation.isPending,
     isRestoring: restoreMutation.isPending,
+    refetchOfferings: offeringsQuery.refetch,
     refetchCustomerInfo: () =>
-      queryClient.invalidateQueries({ queryKey: ["revenuecat", "customer-info"] }),
+      queryClient.invalidateQueries({
+        queryKey: ["revenuecat", "customer-info"],
+      }),
   };
 }
 
 type RevenueCatContextValue = ReturnType<typeof useRevenueCatContext>;
 const RevenueCatContext = createContext<RevenueCatContextValue | null>(null);
 
-export function RevenueCatProvider({ children }: { children: React.ReactNode }) {
+export function RevenueCatProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const value = useRevenueCatContext();
-  return <RevenueCatContext.Provider value={value}>{children}</RevenueCatContext.Provider>;
+  return (
+    <RevenueCatContext.Provider value={value}>
+      {children}
+    </RevenueCatContext.Provider>
+  );
 }
 
 export function useRevenueCat() {

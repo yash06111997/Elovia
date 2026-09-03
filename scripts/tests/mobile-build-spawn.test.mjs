@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { createRequire } from "node:module";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
 const {
   resolvePnpmInvocation,
   runWithMetroCleanup,
@@ -72,4 +79,23 @@ test("mobile build awaits Metro cleanup when its operation times out", async () 
     /Metro timeout/,
   );
   assert.deepEqual(events, ["operation", "cleanup"]);
+});
+
+test("Expo Router app directory contains no test files that can leak into release bundles", () => {
+  const appRoot = path.join(repoRoot, "artifacts", "mobile", "app");
+  const pending = [appRoot];
+  const testRoutes = [];
+
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) pending.push(entryPath);
+      if (entry.isFile() && /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(entry.name)) {
+        testRoutes.push(path.relative(appRoot, entryPath));
+      }
+    }
+  }
+
+  assert.deepEqual(testRoutes, []);
 });
