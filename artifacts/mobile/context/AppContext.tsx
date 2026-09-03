@@ -1,14 +1,38 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useCallback,
+} from "react";
 import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
 import { onDataRestored } from "@/lib/syncEvents";
 import { isPlainRecord, runProviderReload } from "@/lib/providerReload";
-import { calculateCaloriesFromMacros, normalizeMacroGrams } from "@/lib/macros";
+import {
+  calculateCaloriesFromMacros,
+  normalizeCustomMacroTargets,
+} from "@/lib/macros";
 
-export type FitnessGoal = "fat_loss" | "muscle_gain" | "maintenance" | "general_fitness" | "strength" | "endurance";
+export type FitnessGoal =
+  | "fat_loss"
+  | "muscle_gain"
+  | "maintenance"
+  | "general_fitness"
+  | "strength"
+  | "endurance";
 export type FitnessLevel = "beginner" | "intermediate" | "advanced";
-export type ActivityLevel = "sedentary" | "lightly_active" | "moderately_active" | "very_active" | "extra_active";
+export type ActivityLevel =
+  | "sedentary"
+  | "lightly_active"
+  | "moderately_active"
+  | "very_active"
+  | "extra_active";
 export type WorkoutPreference = "gym" | "home" | "mixed";
-export type FoodPreference = "vegetarian" | "eggetarian" | "non_vegetarian" | "vegan";
+export type FoodPreference =
+  | "vegetarian"
+  | "eggetarian"
+  | "non_vegetarian"
+  | "vegan";
 
 export type Equipment =
   | "dumbbells"
@@ -24,7 +48,15 @@ export type Equipment =
   | "smith_machine"
   | "no_equipment";
 
-export type DietType = "balanced" | "keto" | "low_carb" | "high_protein" | "mediterranean" | "paleo" | "vegetarian_focused" | "custom";
+export type DietType =
+  | "balanced"
+  | "keto"
+  | "low_carb"
+  | "high_protein"
+  | "mediterranean"
+  | "paleo"
+  | "vegetarian_focused"
+  | "custom";
 
 export interface UserProfile {
   name: string;
@@ -143,11 +175,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ) {
             throw new TypeError("Stored app state is malformed.");
           }
-          setState({
+          const restoredState: AppState = {
             ...defaultState,
             ...(parsed as Partial<AppState>),
-            healthMetrics: (parsed.healthMetrics as HealthMetric[] | undefined) ?? [],
-          });
+            healthMetrics:
+              (parsed.healthMetrics as HealthMetric[] | undefined) ?? [],
+            customMacros: normalizeCustomMacroTargets(parsed.customMacros),
+          };
+          setState(restoredState);
+          void accountStorage
+            .setItem("@elovia_state", JSON.stringify(restoredState))
+            .catch(() => {});
         },
       );
     } finally {
@@ -169,14 +207,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  const updateProfileField = useCallback((key: keyof UserProfile, value: any) => {
-    setState((prev) => {
-      if (!prev.profile) return prev;
-      const next = { ...prev, profile: { ...prev.profile, [key]: value } };
-      saveState(next);
-      return next;
-    });
-  }, []);
+  const updateProfileField = useCallback(
+    (key: keyof UserProfile, value: any) => {
+      setState((prev) => {
+        if (!prev.profile) return prev;
+        const next = { ...prev, profile: { ...prev.profile, [key]: value } };
+        saveState(next);
+        return next;
+      });
+    },
+    [],
+  );
 
   const completeOnboarding = useCallback(() => {
     setState((prev) => {
@@ -188,7 +229,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const addHealthMetric = useCallback((metric: HealthMetric) => {
     setState((prev) => {
-      const existing = (prev.healthMetrics ?? []).filter((m) => m.date !== metric.date);
+      const existing = (prev.healthMetrics ?? []).filter(
+        (m) => m.date !== metric.date,
+      );
       const next = {
         ...prev,
         healthMetrics: [...existing, metric].slice(-90),
@@ -212,9 +255,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const updateTodayMetric = useCallback((updates: Partial<HealthMetric>) => {
     const today = new Date().toISOString().split("T")[0];
     setState((prev) => {
-      const existing = (prev.healthMetrics ?? []).find((m) => m.date === today) ?? { date: today };
+      const existing = (prev.healthMetrics ?? []).find(
+        (m) => m.date === today,
+      ) ?? { date: today };
       const merged = { ...existing, ...updates };
-      const filtered = (prev.healthMetrics ?? []).filter((m) => m.date !== today);
+      const filtered = (prev.healthMetrics ?? []).filter(
+        (m) => m.date !== today,
+      );
       const next = {
         ...prev,
         healthMetrics: [...filtered, merged].slice(-90),
@@ -240,7 +287,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setState((prev) => {
       const next = {
         ...prev,
-        colorScheme: prev.colorScheme === "dark" ? ("light" as const) : ("dark" as const),
+        colorScheme:
+          prev.colorScheme === "dark" ? ("light" as const) : ("dark" as const),
       };
       saveState(next);
       return next;
@@ -249,15 +297,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const setCustomMacros = useCallback((macros: CustomMacros | null) => {
     setState((prev) => {
-      const normalized = macros?.enabled
-        ? {
-            enabled: true,
-            protein: normalizeMacroGrams(macros.protein),
-            carbs: normalizeMacroGrams(macros.carbs),
-            fats: normalizeMacroGrams(macros.fats),
-            calories: calculateCaloriesFromMacros(macros),
-          }
-        : null;
+      const normalized = normalizeCustomMacroTargets(macros);
       const next = { ...prev, customMacros: normalized };
       saveState(next);
       return next;
@@ -267,7 +307,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const calculateTDEE = useCallback((): number => {
     const p = state.profile;
     if (!p) return 2000;
-    const bmr = p.gender === "male" ? 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age + 5 : 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age - 161;
+    const bmr =
+      p.gender === "male"
+        ? 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age + 5
+        : 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age - 161;
 
     const activityMultipliers: Record<ActivityLevel, number> = {
       sedentary: 1.2,
@@ -316,7 +359,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     const protein = Math.round(p.weightKg * 2.0);
     const fats = Math.round((calories * 0.25) / 9);
-    const carbs = Math.max(0, Math.round((calories - protein * 4 - fats * 9) / 4));
+    const carbs = Math.max(
+      0,
+      Math.round((calories - protein * 4 - fats * 9) / 4),
+    );
 
     return { calories, protein, carbs, fats };
   }, [state.profile, state.customMacros, calculateTDEE]);

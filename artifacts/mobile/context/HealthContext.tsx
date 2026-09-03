@@ -10,6 +10,7 @@ import { Platform, Alert, AppState, type AppStateStatus } from "react-native";
 import { onDataRestored } from "@/lib/syncEvents";
 import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
 import { isPlainRecord, runProviderReload } from "@/lib/providerReload";
+import { normalizeRunSession, type RunSession } from "@/lib/runSession";
 import {
   backendLabel,
   getHealthStatus,
@@ -30,26 +31,7 @@ export interface StepData {
   steps: number;
 }
 
-export interface RunSession {
-  id: string;
-  date: string;
-  startTime: string;
-  endTime: string;
-  distanceKm: number;
-  durationMins: number;
-  durationSec?: number;
-  avgPaceMinKm: number;
-  elevationGainM?: number;
-  splits?: Array<{
-    index: number;
-    distanceKm: number;
-    durationSec: number;
-    paceMinPerKm: number;
-    elevationGainM: number;
-  }>;
-  route: { latitude: number; longitude: number }[];
-  caloriesBurned: number;
-}
+export type { RunSession } from "@/lib/runSession";
 
 /**
  * Retained for the existing profile UI. These now reflect REAL permission
@@ -175,10 +157,22 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
             }
             // Merge onto defaults so data persisted by older builds, which lacked
             // the sleep/vitals fields, does not yield undefined arrays.
-            setHealthData({
+            const restoredHealthData: HealthData = {
               ...defaultHealthData,
               ...(parsed as Partial<HealthData>),
-            });
+              runSessions: Array.isArray(parsed.runSessions)
+                ? parsed.runSessions
+                    .map(normalizeRunSession)
+                    .filter(
+                      (session): session is RunSession => session !== null,
+                    )
+                    .slice(-50)
+                : [],
+            };
+            setHealthData(restoredHealthData);
+            void accountStorage
+              .setItem(STORAGE_KEY, JSON.stringify(restoredHealthData))
+              .catch(() => {});
           } else setHealthData(defaultHealthData);
         },
       );

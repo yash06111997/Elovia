@@ -235,7 +235,9 @@ export function RunRouteMap({
         >
           <Ionicons name="navigate" size={18} color={Colors.primary} />
           <Text style={[styles.waitingText, { color: theme.text }]}>
-            Waiting for an accurate GPS fix…
+            {live
+              ? "Waiting for an accurate GPS fix…"
+              : "No GPS route was recorded for this activity."}
           </Text>
         </View>
       )}

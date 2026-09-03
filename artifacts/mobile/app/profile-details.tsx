@@ -486,6 +486,8 @@ export default function ProfileScreen() {
   const topPadding = 12;
   const tdee = calculateTDEE();
   const macros = calculateMacros();
+  const latestRun =
+    healthData.runSessions[healthData.runSessions.length - 1] ?? null;
 
   const [editField, setEditField] = useState<EditField>(null);
   const [editSection, setEditSection] = useState<EditSection>(null);
@@ -1161,32 +1163,44 @@ export default function ProfileScreen() {
           </View>
         )}
 
-        {healthData?.runSessions?.length > 0 && (
-          <View style={[styles.recentRunRow, { borderTopColor: theme.border }]}>
+        {latestRun && (
+          <TouchableOpacity
+            style={[styles.recentRunRow, { borderTopColor: theme.border }]}
+            onPress={() =>
+              router.push({
+                pathname: "/run-summary",
+                params: { id: latestRun.id },
+              })
+            }
+            activeOpacity={0.75}
+            accessibilityRole="button"
+            accessibilityLabel={`View last run, ${latestRun.distanceKm} kilometres in ${latestRun.durationMins} minutes`}
+            accessibilityHint="Opens the route map, pace, calories, elevation and splits"
+            testID="view-latest-run"
+          >
             <Ionicons name="walk-outline" size={18} color={Colors.accent} />
             <View style={{ flex: 1 }}>
               <Text style={[styles.runLabel, { color: theme.text }]}>
                 Last Run
               </Text>
               <Text style={[styles.runMeta, { color: theme.textSecondary }]}>
-                {
-                  healthData.runSessions[healthData.runSessions.length - 1]
-                    .distanceKm
-                }{" "}
-                km ·{" "}
-                {
-                  healthData.runSessions[healthData.runSessions.length - 1]
-                    .durationMins
-                }{" "}
-                min ·{" "}
-                {
-                  healthData.runSessions[healthData.runSessions.length - 1]
-                    .caloriesBurned
-                }{" "}
-                kcal
+                {latestRun.distanceKm} km · {latestRun.durationMins} min ·{" "}
+                {latestRun.caloriesBurned} kcal
               </Text>
             </View>
-          </View>
+            <View style={styles.recentRunAction}>
+              <Text
+                style={[styles.recentRunActionText, { color: Colors.primary }]}
+              >
+                View route
+              </Text>
+              <Ionicons
+                name="chevron-forward"
+                size={15}
+                color={Colors.primary}
+              />
+            </View>
+          </TouchableOpacity>
         )}
 
         <View style={styles.healthActions}>
@@ -2517,6 +2531,8 @@ const styles = StyleSheet.create({
   },
   runLabel: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   runMeta: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 1 },
+  recentRunAction: { flexDirection: "row", alignItems: "center", gap: 2 },
+  recentRunActionText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
   healthActions: { flexDirection: "row", gap: 8, marginTop: 10 },
   healthActionBtn: {
     flex: 1,

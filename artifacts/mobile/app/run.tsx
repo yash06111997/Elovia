@@ -22,13 +22,8 @@ import { useTheme } from "@/hooks/useTheme";
 import { useApp } from "@/context/AppContext";
 import { useHealth } from "@/context/HealthContext";
 import { useAuth } from "@/lib/auth";
-import { toLocalDateKey } from "@/lib/health";
-import {
-  useRunTracker,
-  formatPace,
-  formatDuration,
-  simplifyRunRoute,
-} from "@/lib/runTracker";
+import { useRunTracker, formatPace, formatDuration } from "@/lib/runTracker";
+import { createRunSessionFromFinishedDraft } from "@/lib/runSession";
 
 /**
  * Live activity recorder.
@@ -164,21 +159,9 @@ export default function RunScreen() {
                 );
                 return;
               }
-              const session = await addRunSession({
-                id: finished.sessionId,
-                date: toLocalDateKey(new Date(finished.startedAt)),
-                startTime: new Date(finished.startedAt).toISOString(),
-                endTime: new Date(finished.endedAt).toISOString(),
-                distanceKm: Math.round(finished.stats.distanceKm * 100) / 100,
-                durationMins: Math.round(finished.stats.durationSec / 60),
-                durationSec: Math.round(finished.stats.durationSec),
-                avgPaceMinKm:
-                  Math.round((finished.stats.avgPaceMinPerKm ?? 0) * 100) / 100,
-                elevationGainM: finished.stats.elevationGainM,
-                splits: finished.stats.splits,
-                route: simplifyRunRoute(finished.stats.points),
-                caloriesBurned: finished.stats.calories,
-              });
+              const session = await addRunSession(
+                createRunSessionFromFinishedDraft(finished),
+              );
               const cleared = await completeSave(finished.sessionId);
               if (!cleared) {
                 throw new Error("The saved run draft could not be cleared.");
