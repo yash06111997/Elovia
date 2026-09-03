@@ -56,6 +56,7 @@ import {
   prepareAccountDeletionRequest,
   recoverAccountDeletionFinalization,
 } from "./accountDeletionRecovery";
+import { stopAndClearActiveRunForOwner } from "./runTrackingStore";
 import { deleteMyAccount, getAccountDeletionStatus } from "@/utils/api";
 
 export type { LogoutOutcome } from "./logoutWorkflow";
@@ -425,6 +426,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         geofencesCleared: true,
         verified: true,
       };
+      let activeRunCleared = true;
       const deletionRequestId =
         operation === "account_deletion" ? generateUUID() : null;
       const outcome = await runLogoutWorkflow({
@@ -433,6 +435,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         async prepare() {
           if (ownerUserId) {
             pushDetachment = await unregisterFromPush(ownerUserId);
+            activeRunCleared = await stopAndClearActiveRunForOwner(ownerUserId);
             nativeCleanup = await clearNativeAccountState({
               ownerUserId,
               cancelReminders: cancelAllReminders,
@@ -440,6 +443,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             });
           }
           const failedNativeState = [
+            !activeRunCleared ? "the active run recorder" : null,
             !nativeCleanup.remindersCleared ? "reminders" : null,
             !nativeCleanup.geofencesCleared ? "saved-place triggers" : null,
           ].filter(Boolean);
@@ -449,7 +453,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               : "Elovia could not safely disconnect push notifications. You are still signed in; check your connection and try signing out again.";
           return {
             pushDetached: canCompletePushLogout(pushDetachment),
-            nativeDetached: canCompleteNativeStateLogout(nativeCleanup),
+            nativeDetached:
+              activeRunCleared && canCompleteNativeStateLogout(nativeCleanup),
             blockedMessage,
           };
         },

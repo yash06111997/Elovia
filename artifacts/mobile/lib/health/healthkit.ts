@@ -31,7 +31,8 @@ function loadHealthKit(): HealthKitModule | null {
   loadAttempted = true;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    cachedModule = require("@kingstinct/react-native-healthkit") as HealthKitModule;
+    cachedModule =
+      require("@kingstinct/react-native-healthkit") as HealthKitModule;
   } catch {
     cachedModule = null;
   }
@@ -130,18 +131,42 @@ export const healthKitProvider: HealthProvider = {
     const filter = { startDate: from, endDate: new Date() };
 
     // Each read is independent: one denied permission must not blank the rest.
-    const [steps, energy, workouts, sleep, restingHr, hrv, weight] = await Promise.all([
-      readDailyStatistic(hk, "HKQuantityTypeIdentifierStepCount", "count", from),
-      readDailyStatistic(hk, "HKQuantityTypeIdentifierActiveEnergyBurned", "kcal", from),
-      readWorkouts(hk, filter),
-      readSleep(hk, filter),
-      readVitals(hk, "HKQuantityTypeIdentifierRestingHeartRate", "count/min", filter),
-      readVitals(hk, "HKQuantityTypeIdentifierHeartRateVariabilitySDNN", "ms", filter),
-      readVitals(hk, "HKQuantityTypeIdentifierBodyMass", "kg", filter),
-    ]);
+    const [steps, energy, workouts, sleep, restingHr, hrv, weight] =
+      await Promise.all([
+        readDailyStatistic(
+          hk,
+          "HKQuantityTypeIdentifierStepCount",
+          "count",
+          from,
+        ),
+        readDailyStatistic(
+          hk,
+          "HKQuantityTypeIdentifierActiveEnergyBurned",
+          "kcal",
+          from,
+        ),
+        readWorkouts(hk, filter),
+        readSleep(hk, filter),
+        readVitals(
+          hk,
+          "HKQuantityTypeIdentifierRestingHeartRate",
+          "count/min",
+          filter,
+        ),
+        readVitals(
+          hk,
+          "HKQuantityTypeIdentifierHeartRateVariabilitySDNN",
+          "ms",
+          filter,
+        ),
+        readVitals(hk, "HKQuantityTypeIdentifierBodyMass", "kg", filter),
+      ]);
 
     const todayKey = toLocalDateKey(new Date());
-    const weeklySteps: DailySteps[] = steps.map((s) => ({ date: s.date, steps: Math.round(s.value) }));
+    const weeklySteps: DailySteps[] = steps.map((s) => ({
+      date: s.date,
+      steps: Math.round(s.value),
+    }));
     const activeEnergyKcal: DailyEnergy[] = energy.map((s) => ({
       date: s.date,
       kcal: Math.round(s.value),
@@ -164,6 +189,17 @@ export const healthKitProvider: HealthProvider = {
     const hk = loadHealthKit();
     if (!hk) return false;
     try {
+      const existing = await hk.queryWorkoutSamples({
+        filter: {
+          metadata: {
+            withMetadataKey: "HKExternalUUID",
+            operatorType: 4,
+            value: workout.id,
+          },
+        },
+        limit: 1,
+      });
+      if (existing.length > 0) return true;
       const quantities = workout.energyKcal
         ? [
             {
@@ -181,6 +217,8 @@ export const healthKitProvider: HealthProvider = {
         quantities as never,
         workout.start,
         workout.end,
+        undefined,
+        { HKExternalUUID: workout.id },
       );
       return true;
     } catch {
@@ -206,7 +244,10 @@ async function readDailyStatistic(
       ["cumulativeSum"] as never,
       anchor,
       { day: 1 },
-      { unit: unit as never, filter: { startDate: anchor, endDate: new Date() } } as never,
+      {
+        unit: unit as never,
+        filter: { startDate: anchor, endDate: new Date() },
+      } as never,
     );
 
     return (results ?? [])
@@ -222,7 +263,10 @@ async function readDailyStatistic(
   }
 }
 
-async function readWorkouts(hk: HealthKitModule, filter: any): Promise<HealthWorkout[]> {
+async function readWorkouts(
+  hk: HealthKitModule,
+  filter: any,
+): Promise<HealthWorkout[]> {
   try {
     const samples = await hk.queryWorkoutSamples({
       filter,
@@ -241,9 +285,14 @@ async function readWorkouts(hk: HealthKitModule, filter: any): Promise<HealthWor
         activityType: String(w.workoutActivityType ?? "Workout"),
         startISO: start.toISOString(),
         endISO: end.toISOString(),
-        durationMins: Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000)),
+        durationMins: Math.max(
+          0,
+          Math.round((end.getTime() - start.getTime()) / 60000),
+        ),
         energyKcal: Number(w?.totalEnergyBurned?.quantity) || null,
-        distanceKm: distanceMeters ? Math.round((distanceMeters / 1000) * 100) / 100 : null,
+        distanceKm: distanceMeters
+          ? Math.round((distanceMeters / 1000) * 100) / 100
+          : null,
         source: w?.sourceRevision?.source?.name ?? null,
       };
     });
@@ -260,13 +309,19 @@ async function readWorkouts(hk: HealthKitModule, filter: any): Promise<HealthWor
  * inBed. Samples are attributed to the date they END on, which is the
  * convention users expect ("last night's sleep" shows on this morning).
  */
-async function readSleep(hk: HealthKitModule, filter: any): Promise<SleepNight[]> {
+async function readSleep(
+  hk: HealthKitModule,
+  filter: any,
+): Promise<SleepNight[]> {
   try {
-    const samples = await hk.queryCategorySamples("HKCategoryTypeIdentifierSleepAnalysis" as never, {
-      filter,
-      limit: 2000,
-      ascending: false,
-    } as never);
+    const samples = await hk.queryCategorySamples(
+      "HKCategoryTypeIdentifierSleepAnalysis" as never,
+      {
+        filter,
+        limit: 2000,
+        ascending: false,
+      } as never,
+    );
 
     const byNight = new Map<string, { asleep: number; inBed: number }>();
 
@@ -303,12 +358,15 @@ async function readVitals(
   filter: any,
 ): Promise<VitalSample[]> {
   try {
-    const samples = await hk.queryQuantitySamples(identifier as never, {
-      filter,
-      limit: 200,
-      ascending: false,
-      unit: unit as never,
-    } as never);
+    const samples = await hk.queryQuantitySamples(
+      identifier as never,
+      {
+        filter,
+        limit: 200,
+        ascending: false,
+        unit: unit as never,
+      } as never,
+    );
 
     return (samples ?? []).map((s: any) => ({
       date: toLocalDateKey(new Date(s.startDate)),
@@ -327,7 +385,8 @@ function mapActivityTypeToHealthKit(activityType: string): string {
   if (t.includes("cycl") || t.includes("bike")) return "cycling";
   if (t.includes("swim")) return "swimming";
   if (t.includes("yoga")) return "yoga";
-  if (t.includes("hiit") || t.includes("interval")) return "highIntensityIntervalTraining";
+  if (t.includes("hiit") || t.includes("interval"))
+    return "highIntensityIntervalTraining";
   if (t.includes("cardio")) return "mixedCardio";
   return "traditionalStrengthTraining";
 }

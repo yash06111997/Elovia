@@ -6,7 +6,11 @@
  * screens never branch on platform.
  */
 
-export type HealthBackend = "healthkit" | "health_connect" | "pedometer" | "none";
+export type HealthBackend =
+  | "healthkit"
+  | "health_connect"
+  | "pedometer"
+  | "none";
 
 export interface DailySteps {
   /** YYYY-MM-DD, local time. */
@@ -116,6 +120,8 @@ export interface HealthProvider {
   requestPermissions(): Promise<boolean>;
   readSnapshot(days: number): Promise<Partial<HealthSnapshot>>;
   writeWorkout?(workout: {
+    /** Stable app-owned ID used to make platform writes idempotent. */
+    id: string;
     activityType: string;
     start: Date;
     end: Date;

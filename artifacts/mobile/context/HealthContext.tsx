@@ -1,6 +1,12 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Platform, Alert, AppState, type AppStateStatus } from "react-native";
-import * as Location from "expo-location";
 import { onDataRestored } from "@/lib/syncEvents";
 import { captureAccountStorageSession } from "@/lib/accountSyncStorage";
 import { isPlainRecord, runProviderReload } from "@/lib/providerReload";
@@ -74,23 +80,16 @@ export interface HealthData {
 
 interface HealthContextType {
   healthData: HealthData;
-  isTracking: boolean;
   /** Real capability + permission state, for rendering honest settings UI. */
   status: HealthStatus | null;
   isSyncing: boolean;
   updateSteps: (steps: number) => void;
-  startRunTracking: () => Promise<void> | void;
-  stopRunTracking: () => RunSession | null;
-  addRunSession: (session: Omit<RunSession, "id">) => RunSession;
+  addRunSession: (
+    session: Omit<RunSession, "id"> & { id?: string },
+  ) => Promise<RunSession>;
   toggleSync: (source: keyof HealthSyncStatus) => void;
   syncHealthData: () => Promise<void>;
   connectHealth: () => Promise<void>;
-  currentRun: {
-    startTime: string;
-    route: { latitude: number; longitude: number }[];
-    distanceKm: number;
-  } | null;
-  addRoutePoint: (lat: number, lng: number) => void;
   backendName: string;
 }
 
@@ -117,63 +116,72 @@ const HealthContext = createContext<HealthContextType | null>(null);
 
 const STORAGE_KEY = "@elovia_health_data";
 
-function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
 export function HealthProvider({ children }: { children: React.ReactNode }) {
   const [healthData, setHealthData] = useState<HealthData>(defaultHealthData);
-  const [isTracking, setIsTracking] = useState(false);
   const [status, setStatus] = useState<HealthStatus | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const [currentRun, setCurrentRun] = useState<{
-    startTime: string;
-    route: { latitude: number; longitude: number }[];
-    distanceKm: number;
-  } | null>(null);
-
-  const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const liveStepsUnsubRef = useRef<(() => void) | null>(null);
   const syncInFlightRef = useRef(false);
+  const healthDataRef = useRef(healthData);
+  const persistenceQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const healthWriteAttemptedRunIdsRef = useRef(new Set<string>());
   const [accountStorage] = useState(captureAccountStorageSession);
 
-  const persist = useCallback((data: HealthData) => {
-    accountStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch(() => {});
-  }, []);
+  healthDataRef.current = healthData;
+
+  const enqueuePersist = useCallback(
+    (data: HealthData): Promise<void> => {
+      const operation = persistenceQueueRef.current
+        .catch(() => {})
+        .then(() => accountStorage.setItem(STORAGE_KEY, JSON.stringify(data)));
+      persistenceQueueRef.current = operation.catch(() => {});
+      return operation;
+    },
+    [accountStorage],
+  );
+
+  const persist = useCallback(
+    (data: HealthData) => {
+      void enqueuePersist(data).catch(() => {});
+    },
+    [enqueuePersist],
+  );
 
   const loadData = useCallback(async () => {
     try {
-      await runProviderReload(() => setHealthData(defaultHealthData), async () => {
-        const stored = await accountStorage.getItem(STORAGE_KEY);
-        if (stored) {
-          const parsed: unknown = JSON.parse(stored);
-          if (!isPlainRecord(parsed)) {
-            throw new TypeError("Stored health data is malformed.");
-          }
-          for (const key of [
-            "weeklySteps",
-            "runSessions",
-            "importedWorkouts",
-            "sleep",
-            "restingHeartRate",
-            "heartRateVariability",
-            "activeEnergyKcal",
-            "bodyMassKg",
-          ]) {
-            if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
+      await runProviderReload(
+        () => setHealthData(defaultHealthData),
+        async () => {
+          const stored = await accountStorage.getItem(STORAGE_KEY);
+          if (stored) {
+            const parsed: unknown = JSON.parse(stored);
+            if (!isPlainRecord(parsed)) {
               throw new TypeError("Stored health data is malformed.");
             }
-          }
-          // Merge onto defaults so data persisted by older builds, which lacked
-          // the sleep/vitals fields, does not yield undefined arrays.
-          setHealthData({ ...defaultHealthData, ...(parsed as Partial<HealthData>) });
-        } else setHealthData(defaultHealthData);
-      });
+            for (const key of [
+              "weeklySteps",
+              "runSessions",
+              "importedWorkouts",
+              "sleep",
+              "restingHeartRate",
+              "heartRateVariability",
+              "activeEnergyKcal",
+              "bodyMassKg",
+            ]) {
+              if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
+                throw new TypeError("Stored health data is malformed.");
+              }
+            }
+            // Merge onto defaults so data persisted by older builds, which lacked
+            // the sleep/vitals fields, does not yield undefined arrays.
+            setHealthData({
+              ...defaultHealthData,
+              ...(parsed as Partial<HealthData>),
+            });
+          } else setHealthData(defaultHealthData);
+        },
+      );
     } finally {
       setHydrated(true);
     }
@@ -196,8 +204,14 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
           ...prev,
           syncStatus: {
             ...prev.syncStatus,
-            appleHealth: next.platform?.backend === "healthkit" && next.platform.available && next.platform.authorized,
-            googleFit: next.platform?.backend === "health_connect" && next.platform.available && next.platform.authorized,
+            appleHealth:
+              next.platform?.backend === "healthkit" &&
+              next.platform.available &&
+              next.platform.authorized,
+            googleFit:
+              next.platform?.backend === "health_connect" &&
+              next.platform.available &&
+              next.platform.authorized,
             stepsEnabled: next.hasAnySource,
           },
         };
@@ -231,7 +245,9 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
         const updated: HealthData = {
           ...prev,
           todaySteps: snapshot.todaySteps || prev.todaySteps,
-          weeklySteps: snapshot.weeklySteps.length ? snapshot.weeklySteps : prev.weeklySteps,
+          weeklySteps: snapshot.weeklySteps.length
+            ? snapshot.weeklySteps
+            : prev.weeklySteps,
           importedWorkouts: snapshot.workouts,
           sleep: snapshot.sleep,
           restingHeartRate: snapshot.restingHeartRate,
@@ -255,7 +271,10 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
   /** Explicit user action: request permission, then immediately pull data. */
   const connectHealth = useCallback(async () => {
     if (Platform.OS === "web") {
-      Alert.alert("Not available on web", "Health syncing needs the iOS or Android app.");
+      Alert.alert(
+        "Not available on web",
+        "Health syncing needs the iOS or Android app.",
+      );
       return;
     }
 
@@ -269,13 +288,19 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
           "This build cannot access the system health store. Step tracking still works; install the full app build to sync workouts, sleep, and heart data.",
         );
       } else if (!next.hasAnySource) {
-        Alert.alert("Permission needed", "Elovia could not access health data. You can grant access later in your device settings.");
+        Alert.alert(
+          "Permission needed",
+          "Elovia could not access health data. You can grant access later in your device settings.",
+        );
       }
 
       await refreshStatus();
       await syncHealthData();
     } catch (e: any) {
-      Alert.alert("Connection failed", e?.message ?? "Could not connect to health data.");
+      Alert.alert(
+        "Connection failed",
+        e?.message ?? "Could not connect to health data.",
+      );
     }
   }, [refreshStatus, syncHealthData]);
 
@@ -302,7 +327,11 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
       }
 
       const isConnected =
-        source === "appleHealth" ? healthData.syncStatus.appleHealth : source === "googleFit" ? healthData.syncStatus.googleFit : healthData.syncStatus.stepsEnabled;
+        source === "appleHealth"
+          ? healthData.syncStatus.appleHealth
+          : source === "googleFit"
+            ? healthData.syncStatus.googleFit
+            : healthData.syncStatus.stepsEnabled;
 
       if (isConnected) {
         Alert.alert(
@@ -362,147 +391,47 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
     [persist],
   );
 
-  const startRunTracking = useCallback(async () => {
-    if (Platform.OS === "web") {
-      setIsTracking(true);
-      setCurrentRun({
-        startTime: new Date().toISOString(),
-        route: [],
-        distanceKm: 0,
-      });
-      return;
-    }
-    try {
-      const { status: permission } = await Location.requestForegroundPermissionsAsync();
-      if (permission !== "granted") {
-        Alert.alert("Permission Required", "Location permission is needed for GPS run tracking.");
-        return;
-      }
-      setIsTracking(true);
-      setCurrentRun({
-        startTime: new Date().toISOString(),
-        route: [],
-        distanceKm: 0,
-      });
-
-      const sub = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.High,
-          distanceInterval: 10,
-          timeInterval: 5000,
-        },
-        (location) => {
-          const { latitude, longitude } = location.coords;
-          setCurrentRun((prev) => {
-            if (!prev) return prev;
-            const newRoute = [...prev.route, { latitude, longitude }];
-            let dist = prev.distanceKm;
-            if (prev.route.length > 0) {
-              const last = prev.route[prev.route.length - 1];
-              dist += haversineDistance(last.latitude, last.longitude, latitude, longitude);
-            }
-            return { ...prev, route: newRoute, distanceKm: dist };
-          });
-        },
-      );
-      locationSubRef.current = sub;
-    } catch (e: any) {
-      Alert.alert("GPS Error", e?.message || "Could not start location tracking.");
-    }
-  }, []);
-
-  const addRoutePoint = useCallback((lat: number, lng: number) => {
-    setCurrentRun((prev) => {
-      if (!prev) return prev;
-      const newRoute = [...prev.route, { latitude: lat, longitude: lng }];
-      let dist = prev.distanceKm;
-      if (prev.route.length > 0) {
-        const last = prev.route[prev.route.length - 1];
-        dist += haversineDistance(last.latitude, last.longitude, lat, lng);
-      }
-      return { ...prev, route: newRoute, distanceKm: dist };
-    });
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      locationSubRef.current?.remove();
-      locationSubRef.current = null;
-    };
-  }, []);
-
-  const stopRunTracking = useCallback((): RunSession | null => {
-    if (!currentRun) return null;
-    locationSubRef.current?.remove();
-    locationSubRef.current = null;
-    setIsTracking(false);
-
-    const endTime = new Date().toISOString();
-    const startMs = new Date(currentRun.startTime).getTime();
-    const endMs = new Date(endTime).getTime();
-    const durationMins = Math.round((endMs - startMs) / 60000);
-    const avgPace = currentRun.distanceKm > 0 ? durationMins / currentRun.distanceKm : 0;
-    const caloriesBurned = Math.round(durationMins * 8);
-
-    const session: RunSession = {
-      id: `${Date.now()}${Math.random().toString(36).slice(2, 11)}`,
-      date: toLocalDateKey(new Date()),
-      startTime: currentRun.startTime,
-      endTime,
-      distanceKm: Math.round(currentRun.distanceKm * 100) / 100,
-      durationMins,
-      avgPaceMinKm: Math.round(avgPace * 100) / 100,
-      route: currentRun.route,
-      caloriesBurned,
-    };
-
-    setHealthData((prev) => {
-      const updated = {
-        ...prev,
-        runSessions: [...prev.runSessions, session].slice(-50),
-      };
-      persist(updated);
-      return updated;
-    });
-
-    // Mirror the run into the system health store so it appears alongside
-    // everything else the user records. Best-effort by design.
-    void writeWorkoutToHealth({
-      activityType: "Running",
-      start: new Date(currentRun.startTime),
-      end: new Date(endTime),
-      energyKcal: caloriesBurned,
-      distanceKm: session.distanceKm,
-    });
-
-    setCurrentRun(null);
-    return session;
-  }, [currentRun, persist]);
-
   const addRunSession = useCallback(
-    (sessionData: Omit<RunSession, "id">) => {
+    async (sessionData: Omit<RunSession, "id"> & { id?: string }) => {
       const session: RunSession = {
         ...sessionData,
-        id: `${Date.now()}${Math.random().toString(36).slice(2, 11)}`,
+        id:
+          sessionData.id ??
+          `${Date.now()}${Math.random().toString(36).slice(2, 11)}`,
       };
-      setHealthData((prev) => {
-        const updated = {
-          ...prev,
-          runSessions: [...prev.runSessions, session].slice(-50),
-        };
-        persist(updated);
-        return updated;
-      });
-      void writeWorkoutToHealth({
-        activityType: "Running",
-        start: new Date(session.startTime),
-        end: new Date(session.endTime),
-        energyKcal: session.caloriesBurned,
-        distanceKm: session.distanceKm,
-      });
+      const previous = healthDataRef.current;
+      const updated: HealthData = {
+        ...previous,
+        runSessions: [
+          ...previous.runSessions.filter(
+            (candidate) => candidate.id !== session.id,
+          ),
+          session,
+        ].slice(-50),
+      };
+      healthDataRef.current = updated;
+      setHealthData(updated);
+
+      // The screen must not display “saved” until the account-scoped local
+      // commit has resolved. The stable run ID makes a retry idempotent.
+      await enqueuePersist(updated);
+      if (!healthWriteAttemptedRunIdsRef.current.has(session.id)) {
+        healthWriteAttemptedRunIdsRef.current.add(session.id);
+        void writeWorkoutToHealth({
+          id: session.id,
+          activityType: "Running",
+          start: new Date(session.startTime),
+          end: new Date(session.endTime),
+          energyKcal: session.caloriesBurned,
+          distanceKm: session.distanceKm,
+        }).then((written) => {
+          if (!written)
+            healthWriteAttemptedRunIdsRef.current.delete(session.id);
+        });
+      }
       return session;
     },
-    [persist],
+    [enqueuePersist],
   );
 
   if (!hydrated) return null;
@@ -511,18 +440,13 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
     <HealthContext.Provider
       value={{
         healthData,
-        isTracking,
         status,
         isSyncing,
         updateSteps,
-        startRunTracking,
-        stopRunTracking,
         addRunSession,
         toggleSync,
         syncHealthData,
         connectHealth,
-        currentRun,
-        addRoutePoint,
         backendName: backendLabel(status?.active.backend ?? "none"),
       }}
     >

@@ -28,6 +28,7 @@ import {
   isAccountDeletionFinalizing,
   subscribeAccountDeletionFinalizing,
 } from "@/lib/accountDeletionRecovery";
+import { reconcileActiveRunOwner } from "@/lib/runTrackingStore";
 
 let pendingArrivalOperation: Promise<void> = Promise.resolve();
 
@@ -82,6 +83,38 @@ export function NativeLifecycleCoordinator() {
       };
     }
 
+    const activeRunRetryWaits = new Set<{
+      timer: ReturnType<typeof setTimeout>;
+      resolve(): void;
+    }>();
+    const waitForActiveRunRetry = (delayMs: number) =>
+      new Promise<void>((resolve) => {
+        const pending = {
+          timer: setTimeout(() => {
+            activeRunRetryWaits.delete(pending);
+            resolve();
+          }, delayMs),
+          resolve,
+        };
+        activeRunRetryWaits.add(pending);
+      });
+
+    // A run may legitimately survive an app restart, but never an account
+    // boundary. Native stop failures are retried instead of being left as a
+    // one-shot rejected promise and an invisible high-accuracy service.
+    void runNativeReconciliationWithRetry({
+      isCurrent: () => active && generation.current === run,
+      reconcile: () => reconcileActiveRunOwner(userId),
+      wait: waitForActiveRunRetry,
+      onFailure: (_attempt, willRetry) => {
+        reportLifecycleFailure(
+          willRetry
+            ? "ActiveRunOwnerReconciliationRetryError"
+            : "ActiveRunOwnerReconciliationPendingError",
+        );
+      },
+    });
+
     if (deletionFinalizing || !isAuthenticated || !userId) {
       const cleanupWaits = new Set<{
         timer: ReturnType<typeof setTimeout>;
@@ -124,6 +157,11 @@ export function NativeLifecycleCoordinator() {
           pending.resolve();
         }
         cleanupWaits.clear();
+        for (const pending of activeRunRetryWaits) {
+          clearTimeout(pending.timer);
+          pending.resolve();
+        }
+        activeRunRetryWaits.clear();
       };
     }
 
@@ -306,6 +344,11 @@ export function NativeLifecycleCoordinator() {
         pending.resolve();
       }
       nativeRetryWaits.clear();
+      for (const pending of activeRunRetryWaits) {
+        clearTimeout(pending.timer);
+        pending.resolve();
+      }
+      activeRunRetryWaits.clear();
       if (pushRetryTimer) clearTimeout(pushRetryTimer);
       if (retryTimer) clearTimeout(retryTimer);
       if (activeLeaseId) {

@@ -34,6 +34,8 @@ import { reportClientError } from "@/lib/telemetry";
 import { Colors } from "@/constants/colors";
 // Side-effect import: registers the background geofence task.
 import "@/lib/geofenceTask";
+// Side-effect import: registers the background run recorder before React mounts.
+import "@/lib/runLocationTask";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -196,7 +198,10 @@ export default function RootLayout() {
                           <NativeLifecycleCoordinator />
                           <GestureHandlerRootView>
                             <KeyboardProvider>
-                              <StatusBar style="light" backgroundColor={Colors.dark.background} />
+                              <StatusBar
+                                style="light"
+                                backgroundColor={Colors.dark.background}
+                              />
                               <RootLayoutNav />
                             </KeyboardProvider>
                           </GestureHandlerRootView>

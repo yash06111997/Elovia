@@ -2237,8 +2237,9 @@ test("authentication recovery and native lifecycle are connected without launch 
   assert.match(auth, /pushDetached: canCompletePushLogout\(pushDetachment\)/);
   assert.match(
     auth,
-    /nativeDetached: canCompleteNativeStateLogout\(nativeCleanup\)/,
+    /nativeDetached:\s*activeRunCleared\s*&&\s*canCompleteNativeStateLogout\(nativeCleanup\)/,
   );
+  assert.match(auth, /stopAndClearActiveRunForOwner\(ownerUserId\)/);
   assert.match(auth, /clearNativeAccountState/);
   assert.match(auth, /suspendNativeLifecycleOwner/);
   assert.match(auth, /resumeLifecycleAfterBlockedLogout/);

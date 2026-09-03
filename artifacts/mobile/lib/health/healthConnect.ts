@@ -34,7 +34,8 @@ function loadHealthConnect(): HealthConnectModule | null {
   loadAttempted = true;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    cachedModule = require("react-native-health-connect") as HealthConnectModule;
+    cachedModule =
+      require("react-native-health-connect") as HealthConnectModule;
   } catch {
     cachedModule = null;
   }
@@ -98,7 +99,8 @@ export const healthConnectProvider: HealthProvider = {
       const granted = await hc.getGrantedPermissions();
       const has = (recordType: string, accessType = "read") =>
         granted.some(
-          (p: any) => p?.recordType === recordType && p?.accessType === accessType,
+          (p: any) =>
+            p?.recordType === recordType && p?.accessType === accessType,
         );
 
       return {
@@ -108,7 +110,8 @@ export const healthConnectProvider: HealthProvider = {
         canReadSteps: has("Steps"),
         canReadWorkouts: has("ExerciseSession"),
         canReadSleep: has("SleepSession"),
-        canReadVitals: has("RestingHeartRate") || has("HeartRateVariabilityRmssd"),
+        canReadVitals:
+          has("RestingHeartRate") || has("HeartRateVariabilityRmssd"),
         canWriteWorkouts: has("ExerciseSession", "write"),
         requiresDevBuild: false,
       };
@@ -142,25 +145,42 @@ export const healthConnectProvider: HealthProvider = {
       endTime: end.toISOString(),
     };
 
-    const [steps, energy, workouts, sleep, restingHr, hrv, weight] = await Promise.all([
-      aggregateDaily(hc, "Steps", timeRangeFilter, (r: any) => Number(r?.result?.COUNT_TOTAL) || 0),
-      aggregateDaily(
-        hc,
-        "ActiveCaloriesBurned",
-        timeRangeFilter,
-        (r: any) => Number(r?.result?.ACTIVE_CALORIES_TOTAL?.inKilocalories) || 0,
-      ),
-      readWorkouts(hc, timeRangeFilter),
-      readSleep(hc, timeRangeFilter),
-      readVitals(hc, "RestingHeartRate", timeRangeFilter, (r: any) => Number(r?.beatsPerMinute) || 0),
-      readVitals(
-        hc,
-        "HeartRateVariabilityRmssd",
-        timeRangeFilter,
-        (r: any) => Number(r?.heartRateVariabilityMillis) || 0,
-      ),
-      readVitals(hc, "Weight", timeRangeFilter, (r: any) => Number(r?.weight?.inKilograms) || 0),
-    ]);
+    const [steps, energy, workouts, sleep, restingHr, hrv, weight] =
+      await Promise.all([
+        aggregateDaily(
+          hc,
+          "Steps",
+          timeRangeFilter,
+          (r: any) => Number(r?.result?.COUNT_TOTAL) || 0,
+        ),
+        aggregateDaily(
+          hc,
+          "ActiveCaloriesBurned",
+          timeRangeFilter,
+          (r: any) =>
+            Number(r?.result?.ACTIVE_CALORIES_TOTAL?.inKilocalories) || 0,
+        ),
+        readWorkouts(hc, timeRangeFilter),
+        readSleep(hc, timeRangeFilter),
+        readVitals(
+          hc,
+          "RestingHeartRate",
+          timeRangeFilter,
+          (r: any) => Number(r?.beatsPerMinute) || 0,
+        ),
+        readVitals(
+          hc,
+          "HeartRateVariabilityRmssd",
+          timeRangeFilter,
+          (r: any) => Number(r?.heartRateVariabilityMillis) || 0,
+        ),
+        readVitals(
+          hc,
+          "Weight",
+          timeRangeFilter,
+          (r: any) => Number(r?.weight?.inKilograms) || 0,
+        ),
+      ]);
 
     const todayKey = toLocalDateKey(new Date());
     const weeklySteps: DailySteps[] = steps.map((s) => ({
@@ -197,6 +217,11 @@ export const healthConnectProvider: HealthProvider = {
           endTime: workout.end.toISOString(),
           exerciseType: mapActivityTypeToHealthConnect(workout.activityType),
           title: workout.activityType,
+          metadata: {
+            clientRecordId: workout.id,
+            clientRecordVersion: 1,
+            recordingMethod: 1,
+          },
         },
       ] as never);
       return true;
@@ -235,13 +260,19 @@ async function aggregateDaily(
   }
 }
 
-async function readWorkouts(hc: HealthConnectModule, timeRangeFilter: any): Promise<HealthWorkout[]> {
+async function readWorkouts(
+  hc: HealthConnectModule,
+  timeRangeFilter: any,
+): Promise<HealthWorkout[]> {
   try {
-    const res = await hc.readRecords("ExerciseSession" as never, {
-      timeRangeFilter,
-      ascendingOrder: false,
-      pageSize: 100,
-    } as never);
+    const res = await hc.readRecords(
+      "ExerciseSession" as never,
+      {
+        timeRangeFilter,
+        ascendingOrder: false,
+        pageSize: 100,
+      } as never,
+    );
 
     return ((res as any)?.records ?? []).map((w: any) => {
       const start = new Date(w.startTime);
@@ -251,7 +282,10 @@ async function readWorkouts(hc: HealthConnectModule, timeRangeFilter: any): Prom
         activityType: String(w.title ?? exerciseTypeName(w.exerciseType)),
         startISO: start.toISOString(),
         endISO: end.toISOString(),
-        durationMins: Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000)),
+        durationMins: Math.max(
+          0,
+          Math.round((end.getTime() - start.getTime()) / 60000),
+        ),
         energyKcal: null,
         distanceKm: null,
         source: w?.metadata?.dataOrigin ?? null,
@@ -267,18 +301,27 @@ async function readWorkouts(hc: HealthConnectModule, timeRangeFilter: any): Prom
  * Stage type 1 is "awake" and is excluded from asleep time; the session's own
  * span is used for time in bed.
  */
-async function readSleep(hc: HealthConnectModule, timeRangeFilter: any): Promise<SleepNight[]> {
+async function readSleep(
+  hc: HealthConnectModule,
+  timeRangeFilter: any,
+): Promise<SleepNight[]> {
   try {
-    const res = await hc.readRecords("SleepSession" as never, {
-      timeRangeFilter,
-      ascendingOrder: false,
-      pageSize: 100,
-    } as never);
+    const res = await hc.readRecords(
+      "SleepSession" as never,
+      {
+        timeRangeFilter,
+        ascendingOrder: false,
+        pageSize: 100,
+      } as never,
+    );
 
     return ((res as any)?.records ?? []).map((s: any) => {
       const start = new Date(s.startTime);
       const end = new Date(s.endTime);
-      const inBedMins = Math.max(0, Math.round((end.getTime() - start.getTime()) / 60000));
+      const inBedMins = Math.max(
+        0,
+        Math.round((end.getTime() - start.getTime()) / 60000),
+      );
 
       let asleepMins = 0;
       if (Array.isArray(s.stages) && s.stages.length > 0) {
@@ -307,11 +350,14 @@ async function readVitals(
   extract: (row: any) => number,
 ): Promise<VitalSample[]> {
   try {
-    const res = await hc.readRecords(recordType as never, {
-      timeRangeFilter,
-      ascendingOrder: false,
-      pageSize: 200,
-    } as never);
+    const res = await hc.readRecords(
+      recordType as never,
+      {
+        timeRangeFilter,
+        ascendingOrder: false,
+        pageSize: 200,
+      } as never,
+    );
 
     return ((res as any)?.records ?? [])
       .map((r: any) => ({

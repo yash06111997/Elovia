@@ -48,7 +48,9 @@ export async function getHealthStatus(): Promise<HealthStatus> {
     pedometerProvider.getCapabilities(),
   ]);
 
-  const platformUsable = Boolean(platformCaps?.available && platformCaps.authorized);
+  const platformUsable = Boolean(
+    platformCaps?.available && platformCaps.authorized,
+  );
 
   return {
     active: platformUsable ? platformCaps! : pedometerCaps,
@@ -96,8 +98,12 @@ export async function readHealthSnapshot(days = 7): Promise<HealthSnapshot> {
 
   const empty = (): Partial<HealthSnapshot> => ({});
 
-  const [platformData, pedometerData] = await Promise.all<Partial<HealthSnapshot>>([
-    platform ? platform.readSnapshot(days).catch(empty) : Promise.resolve(empty()),
+  const [platformData, pedometerData] = await Promise.all<
+    Partial<HealthSnapshot>
+  >([
+    platform
+      ? platform.readSnapshot(days).catch(empty)
+      : Promise.resolve(empty()),
     pedometerProvider.readSnapshot(days).catch(empty),
   ]);
 
@@ -139,6 +145,7 @@ export async function readHealthSnapshot(days = 7): Promise<HealthSnapshot> {
  * Best-effort: a false return is not an error the user needs to see.
  */
 export async function writeWorkoutToHealth(workout: {
+  id: string;
   activityType: string;
   start: Date;
   end: Date;
