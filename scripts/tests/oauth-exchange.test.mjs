@@ -23,7 +23,7 @@ import {
 const encryptionSecret = "test-google-client-secret-with-enough-entropy";
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 const integrationTest = testDatabaseUrl ? test : test.skip;
-const schemaName = `elovia_oauth_test_${process.pid}_${Date.now()}`;
+const suiteDatabaseName = `elovia_oauth_test_${process.pid}_${Date.now()}`;
 const requireFromDatabasePackage = createRequire(
   new URL("../../lib/db/package.json", import.meta.url),
 );
@@ -47,9 +47,10 @@ function quotedIdentifier(identifier) {
   return `"${identifier.replaceAll('"', '""')}"`;
 }
 
-function scopedDatabaseUrl(databaseUrl) {
+function databaseUrlFor(databaseUrl, databaseName) {
   const url = new URL(databaseUrl);
-  url.searchParams.set("options", `-c search_path=${schemaName}`);
+  url.pathname = `/${databaseName}`;
+  url.searchParams.delete("options");
   return url.toString();
 }
 
@@ -63,8 +64,10 @@ if (testDatabaseUrl) {
     );
     const { Pool } = requireFromDatabasePackage("pg");
     adminPool = new Pool({ connectionString: testDatabaseUrl });
-    await adminPool.query(`CREATE SCHEMA ${quotedIdentifier(schemaName)}`);
-    const databaseUrl = scopedDatabaseUrl(testDatabaseUrl);
+    await adminPool.query(
+      `CREATE DATABASE ${quotedIdentifier(suiteDatabaseName)}`,
+    );
+    const databaseUrl = databaseUrlFor(testDatabaseUrl, suiteDatabaseName);
     const { runMigrations } = await import("../../lib/db/scripts/migrate.mjs");
     await runMigrations(databaseUrl);
     process.env.DATABASE_URL = databaseUrl;
@@ -82,7 +85,7 @@ if (testDatabaseUrl) {
     await unregisterTsx?.();
     await scopedPool?.end();
     await adminPool?.query(
-      `DROP SCHEMA ${quotedIdentifier(schemaName)} CASCADE`,
+      `DROP DATABASE ${quotedIdentifier(suiteDatabaseName)}`,
     );
     await adminPool?.end();
   });
