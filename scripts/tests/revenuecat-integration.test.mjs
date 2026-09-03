@@ -22,6 +22,7 @@ const migrationNames = [
   "0004_revenuecat_entitlement_integrity.sql",
   "0005_revenuecat_worker_authority.sql",
   "0006_revenuecat_alias_provenance.sql",
+  "0007_mobile_oauth_exchange.sql",
 ];
 const revenuecatTableNames = [
   "revenuecat_customer_aliases",
@@ -639,6 +640,16 @@ if (testDatabaseUrl) {
       ),
       REVENUECAT_ENVIRONMENT: processorConfig.environment,
       REVENUECAT_NORMALIZED_READS: "per_user",
+      GOOGLE_WEB_CLIENT_ID: "integration-google-client",
+      GOOGLE_CLIENT_SECRET: "integration-google-secret-with-safe-length",
+      PUBLIC_DOMAIN: "integration.elovia.test",
+      FIREBASE_PROJECT_ID: "integration-elovia",
+      FIREBASE_SERVICE_ACCOUNT_KEY: JSON.stringify({
+        project_id: "integration-elovia",
+        client_email: "firebase@integration.elovia.test",
+        private_key: "integration-private-key",
+      }),
+      ANTHROPIC_API_KEY: "integration-anthropic-key",
     });
     const { register } = requireFromScriptsPackage("tsx/esm/api");
     unregisterTsx = register();

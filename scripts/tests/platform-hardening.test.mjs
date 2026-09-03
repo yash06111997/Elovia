@@ -42,16 +42,26 @@ test("authentication does not duplicate Firebase credentials in app-owned storag
   assert.match(auth, /onAuthStateChanged/);
 });
 
-test("OAuth uses cryptographic state, trusted popup origins, and escaped errors", async () => {
+test("OAuth uses a request-bound one-time exchange, trusted popup origins, and escaped errors", async () => {
   const mobileAuth = await source("artifacts/mobile/lib/auth.tsx");
   const serverAuth = await source("artifacts/api-server/src/routes/auth.ts");
 
   assert.match(mobileAuth, /Crypto\.randomUUID\(\)/);
   assert.doesNotMatch(mobileAuth, /Math\.random\(\)/);
   assert.match(mobileAuth, /event\.origin !== expectedOrigin/);
+  assert.match(mobileAuth, /codeChallenge/);
+  assert.match(mobileAuth, /codeVerifier/);
+  assert.match(mobileAuth, /\/api\/auth\/google-mobile\/exchange/);
+  assert.doesNotMatch(serverAuth, /access_type["'],\s*["']offline/);
+  assert.match(serverAuth, /prompt["'],\s*["']select_account/);
   assert.match(serverAuth, /function escapeHtml/);
   assert.doesNotMatch(serverAuth, /postMessage\([\s\S]*?}, '\*'\)/);
-  assert.match(serverAuth, /returnUrl\.includes\("#"\) \? "&" : "#"/);
+  assert.match(serverAuth, /appendOAuthExchangeResult/);
+  assert.doesNotMatch(
+    serverAuth,
+    /idToken=\$\{encodeURIComponent\(idToken\)\}/,
+  );
+  assert.doesNotMatch(serverAuth, /pendingAuthStates/);
 });
 
 test("authenticated users can export and permanently delete their account data", async () => {

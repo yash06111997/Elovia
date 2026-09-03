@@ -46,6 +46,7 @@ const expectedApplicationTables = [
   "coaching_sessions",
   "friendships",
   "kudos",
+  "mobile_oauth_attempts",
   "push_tokens",
   "revenuecat_customer_aliases",
   "revenuecat_customer_state",
@@ -344,6 +345,7 @@ integrationTest(
         "0004_revenuecat_entitlement_integrity.sql",
         "0005_revenuecat_worker_authority.sql",
         "0006_revenuecat_alias_provenance.sql",
+        "0007_mobile_oauth_exchange.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -384,6 +386,10 @@ integrationTest(
             name: "0006_revenuecat_alias_provenance.sql",
             application_count: 1,
           },
+          {
+            name: "0007_mobile_oauth_exchange.sql",
+            application_count: 1,
+          },
         ]);
         await pool.query(`
           INSERT INTO users (id) VALUES ('bootstrap-ready-user');
@@ -416,6 +422,7 @@ integrationTest(
         "0004_revenuecat_entitlement_integrity.sql",
         "0005_revenuecat_worker_authority.sql",
         "0006_revenuecat_alias_provenance.sql",
+        "0007_mobile_oauth_exchange.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -452,6 +459,10 @@ integrationTest(
             name: "0006_revenuecat_alias_provenance.sql",
             application_count: 1,
           },
+          {
+            name: "0007_mobile_oauth_exchange.sql",
+            application_count: 1,
+          },
         ]);
       } finally {
         await pool.end();
@@ -474,6 +485,7 @@ integrationTest(
       "0004_revenuecat_entitlement_integrity.sql",
       "0005_revenuecat_worker_authority.sql",
       "0006_revenuecat_alias_provenance.sql",
+      "0007_mobile_oauth_exchange.sql",
     ];
 
     try {
@@ -827,6 +839,7 @@ integrationTest(
         "0004_revenuecat_entitlement_integrity.sql",
         "0005_revenuecat_worker_authority.sql",
         "0006_revenuecat_alias_provenance.sql",
+        "0007_mobile_oauth_exchange.sql",
       ],
     );
 

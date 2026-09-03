@@ -98,6 +98,25 @@ function generateUUID(): string {
   return Crypto.randomUUID();
 }
 
+async function createMobileOAuthProof(): Promise<{
+  state: string;
+  codeVerifier: string;
+  codeChallenge: string;
+}> {
+  const state = generateUUID();
+  const codeVerifier = `${generateUUID()}${generateUUID()}`.replaceAll("-", "");
+  const digest = await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    codeVerifier,
+    { encoding: Crypto.CryptoEncoding.BASE64 },
+  );
+  const codeChallenge = digest
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/g, "");
+  return { state, codeVerifier, codeChallenge };
+}
+
 interface User {
   id: string;
   email: string | null;
@@ -177,6 +196,29 @@ async function handleIdTokenFirebase(
   const credential = GoogleAuthProvider.credential(idToken);
   const result = await signInWithCredential(firebaseAuth, credential);
   return result.user;
+}
+
+async function redeemMobileOAuthCode(input: {
+  code: string;
+  state: string;
+  codeVerifier: string;
+}): Promise<string> {
+  const response = await fetch(`${API_BASE}/api/auth/google-mobile/exchange`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const body = (await response.json().catch(() => null)) as {
+    idToken?: unknown;
+  } | null;
+  if (!response.ok || typeof body?.idToken !== "string" || !body.idToken) {
+    throw new Error(
+      response.status === 400
+        ? "This sign-in link expired or was already used. Please try again."
+        : "Elovia could not finish sign-in. Check your connection and try again.",
+    );
+  }
+  return body.idToken;
 }
 
 function loginWithPopupWindow(authUrl: string, state: string): Promise<string> {
@@ -334,15 +376,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     try {
-      const state = generateUUID();
-
       if (Platform.OS === "web") {
+        const state = generateUUID();
         const authUrl = `${API_BASE}/api/auth/google-mobile?mode=popup&state=${encodeURIComponent(state)}`;
         const idToken = await loginWithPopupWindow(authUrl, state);
         await handleIdTokenFirebase(idToken);
       } else {
+        const { state, codeVerifier, codeChallenge } =
+          await createMobileOAuthProof();
         const returnUrl = Linking.createURL("auth");
-        const authUrl = `${API_BASE}/api/auth/google-mobile?returnUrl=${encodeURIComponent(returnUrl)}&state=${encodeURIComponent(state)}`;
+        const authUrl = `${API_BASE}/api/auth/google-mobile?returnUrl=${encodeURIComponent(returnUrl)}&state=${encodeURIComponent(state)}&codeChallenge=${encodeURIComponent(codeChallenge)}`;
 
         const result = await WebBrowser.openAuthSessionAsync(
           authUrl,
@@ -365,12 +408,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             Alert.alert("Sign-In Error", msg);
             return;
           }
-          const rawToken = result.url.match(/[?&#]idToken=([^&]+)/)?.[1];
-          const idToken = rawToken ? decodeURIComponent(rawToken) : null;
-          if (idToken) {
+          const rawCode = result.url.match(/[?&#]code=([^&]+)/)?.[1];
+          const exchangeCode = rawCode ? decodeURIComponent(rawCode) : null;
+          if (exchangeCode) {
+            const idToken = await redeemMobileOAuthCode({
+              code: exchangeCode,
+              state,
+              codeVerifier,
+            });
             await handleIdTokenFirebase(idToken);
           } else {
-            const msg = "No authentication token received. Please try again.";
+            const msg = "No sign-in code received. Please try again.";
             setAuthError(msg);
             Alert.alert("Sign-In Error", msg);
           }

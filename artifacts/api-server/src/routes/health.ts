@@ -3,6 +3,7 @@ import { HealthCheckResponse } from "@workspace/api-zod";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { loadRevenueCatConfig } from "../lib/revenuecatConfig";
+import { assertProductionRuntimeConfigured } from "../lib/productionConfig";
 
 const router: IRouter = Router();
 
@@ -13,6 +14,7 @@ router.get("/healthz", (_req, res) => {
 
 router.get("/readyz", async (req, res) => {
   try {
+    assertProductionRuntimeConfigured(process.env);
     const config = loadRevenueCatConfig(process.env);
     await db.execute(sql`select 1`);
     if (config.normalizedReads === "strict") {
