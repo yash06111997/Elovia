@@ -68,6 +68,7 @@
     "@babel/runtime": "7.28.6",
     "@kingstinct/react-native-healthkit": "^14.1.0",
     "@shopify/flash-list": "2.0.2",
+    "expo-apple-authentication": "~8.0.8",
     "expo-auth-session": "~7.0.11",
     "expo-build-properties": "~1.0.10",
     "expo-camera": "~17.0.10",

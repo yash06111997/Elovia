@@ -15,6 +15,7 @@
     },
     "ios": {
       "supportsTablet": false,
+      "usesAppleSignIn": true,
       "bundleIdentifier": "com.elovia.app",
       "infoPlist": {
         "NSCameraUsageDescription": "Elovia uses the camera to scan food items and log your meals with AI food recognition.",
@@ -74,6 +75,7 @@
       "favicon": "./assets/images/icon.png"
     },
     "plugins": [
+      "expo-apple-authentication",
       [
         "expo-build-properties",
         {

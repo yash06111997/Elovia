@@ -57,6 +57,10 @@ import {
   recoverAccountDeletionFinalization,
 } from "./accountDeletionRecovery";
 import { stopAndClearActiveRunForOwner } from "./runTrackingStore";
+import {
+  isAppleSignInCancellation,
+  signInWithAppleFirebase,
+} from "./appleSignIn";
 import { deleteMyAccount, getAccountDeletionStatus } from "@/utils/api";
 
 export type { LogoutOutcome } from "./logoutWorkflow";
@@ -130,7 +134,9 @@ interface AuthContextValue {
   isLoading: boolean;
   isAuthenticated: boolean;
   authError: string | null;
+  /** Google remains available on every platform for backwards compatibility. */
   login: () => Promise<void>;
+  loginWithApple: () => Promise<void>;
   logout: (options?: LogoutOptions) => Promise<LogoutOutcome>;
   getIdToken: () => Promise<string | null>;
 }
@@ -141,6 +147,7 @@ const AuthContext = createContext<AuthContextValue>({
   isAuthenticated: false,
   authError: null,
   login: async () => {},
+  loginWithApple: async () => {},
   logout: async () => ({
     status: "already_signed_out",
     operation: "sign_out",
@@ -180,6 +187,10 @@ function getErrorMessage(err: unknown): string {
         return "This account has been disabled. Please contact support.";
       case "auth/cancelled-popup-request":
         return "Another sign-in is already in progress.";
+      case "auth/account-exists-with-different-credential":
+        return "An account already exists for this email. Use the sign-in provider you originally chose.";
+      case "auth/operation-not-allowed":
+        return "This sign-in method is not enabled yet. Please use Google or contact support.";
       default:
         break;
     }
@@ -436,6 +447,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const loginWithApple = useCallback(async () => {
+    setAuthError(null);
+    if (isAccountDeletionFinalizing()) {
+      setAuthError(
+        "Account deletion is finalizing. Reopen Elovia to complete it safely before signing in again.",
+      );
+      return;
+    }
+    if (Platform.OS !== "ios") {
+      setAuthError("Sign in with Apple is available in the iOS app.");
+      return;
+    }
+
+    try {
+      await signInWithAppleFirebase();
+    } catch (error) {
+      if (isAppleSignInCancellation(error)) return;
+      const message = getErrorMessage(error);
+      console.error("Apple sign-in failed", {
+        errorType: error instanceof Error ? error.name : "UnknownError",
+        errorCode:
+          error && typeof error === "object" && "code" in error
+            ? String((error as { code?: unknown }).code)
+            : undefined,
+      });
+      setAuthError(message);
+      Alert.alert("Sign-In Error", message);
+    }
+  }, []);
+
   const logout = useCallback((options: LogoutOptions = {}) => {
     const operation = options.operation ?? "sign_out";
     return logoutSingleFlight.current!.run(async () => {
@@ -661,6 +702,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated: !!user,
         authError,
         login,
+        loginWithApple,
         logout,
         getIdToken,
       }}

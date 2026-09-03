@@ -14,6 +14,7 @@ import { Space, MIN_TOUCH } from "@/constants/design";
 import { useTheme } from "@/hooks/useTheme";
 import { getPublicApiUrl } from "@/utils/api";
 import { trackEvent } from "@/lib/telemetry";
+import { AppleSignInButton } from "@/components/AppleSignInButton";
 
 const TOTAL_STEPS = 7;
 
@@ -36,7 +37,7 @@ export default function OnboardingScreen() {
   const { setProfile, completeOnboarding } = useApp();
   const { setPlan } = useWorkout();
   const { setMealPlan } = useNutrition();
-  const { isAuthenticated, login, user, authError } = useAuth();
+  const { isAuthenticated, login, loginWithApple, user, authError } = useAuth();
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(false);
   const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false);
@@ -115,7 +116,15 @@ export default function OnboardingScreen() {
   const renderStep = () => {
     switch (step) {
       case 0:
-        return <StepWelcome isAuthenticated={isAuthenticated} login={login} user={user} authError={authError} />;
+        return (
+          <StepWelcome
+            isAuthenticated={isAuthenticated}
+            login={login}
+            loginWithApple={loginWithApple}
+            user={user}
+            authError={authError}
+          />
+        );
       case 1:
         return <StepPersonal form={form} update={update} />;
       case 2:
@@ -265,14 +274,36 @@ export default function OnboardingScreen() {
   );
 }
 
-function StepWelcome({ isAuthenticated, login, user, authError }: {
+function StepWelcome({
+  isAuthenticated,
+  login,
+  loginWithApple,
+  user,
+  authError,
+}: {
   isAuthenticated: boolean;
   /** Returns a promise; the caller fires and forgets. */
   login: () => void | Promise<void>;
+  loginWithApple: () => void | Promise<void>;
   user: { email?: string | null } | null;
   authError: string | null;
 }) {
   const { isDark, theme } = useTheme();
+  const [signingInProvider, setSigningInProvider] = useState<
+    "apple" | "google" | null
+  >(null);
+
+  const handleProviderSignIn = async (provider: "apple" | "google") => {
+    if (signingInProvider) return;
+    setSigningInProvider(provider);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      await (provider === "apple" ? loginWithApple() : login());
+    } finally {
+      setSigningInProvider(null);
+    }
+  };
+
   return (
     <View style={styles.stepContent}>
       <View style={styles.welcomeIconWrap}>
@@ -317,19 +348,33 @@ function StepWelcome({ isAuthenticated, login, user, authError }: {
         </View>
       ) : (
         <View style={styles.welcomeAuthSection}>
+          <AppleSignInButton
+            disabled={signingInProvider !== null}
+            onPress={() => void handleProviderSignIn("apple")}
+          />
           <TouchableOpacity
-            style={[styles.googleSignInBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
-            onPress={() => {
-              login();
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            }}
+            style={[
+              styles.googleSignInBtn,
+              { backgroundColor: theme.card, borderColor: theme.border },
+              signingInProvider !== null && styles.authDisabled,
+            ]}
+            onPress={() => void handleProviderSignIn("google")}
+            disabled={signingInProvider !== null}
             activeOpacity={0.8}
             accessibilityRole="button"
             accessibilityLabel="Sign in with Google"
             accessibilityHint="Signs in so your Elovia data can sync across devices"
+            accessibilityState={{
+              busy: signingInProvider === "google",
+              disabled: signingInProvider !== null,
+            }}
           >
             <Ionicons name="logo-google" size={20} color="#4285F4" />
-            <Text style={[styles.googleSignInText, { color: theme.text }]}>Sign in with Google</Text>
+            <Text style={[styles.googleSignInText, { color: theme.text }]}>
+              {signingInProvider === "google"
+                ? "Connecting securely…"
+                : "Sign in with Google"}
+            </Text>
           </TouchableOpacity>
           {authError ? <Text style={[styles.skipAuthText, { color: Colors.accentRed, marginTop: 8 }]}>{authError}</Text> : null}
           <Text style={[styles.skipAuthText, { color: theme.textMuted }]}>Optional — you can sign in later from your Profile</Text>
@@ -1188,6 +1233,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   googleSignInText: { fontSize: 16, fontFamily: "Inter_600SemiBold" },
+  authDisabled: { opacity: 0.62 },
   skipAuthText: {
     fontSize: 12,
     fontFamily: "Inter_400Regular",

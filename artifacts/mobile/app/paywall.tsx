@@ -36,7 +36,7 @@ export default function PaywallScreen() {
   const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
   const { startTrial, refreshEntitlement, isTrialActive } = useSubscription();
-  const { isAuthenticated, login } = useAuth();
+  const { isAuthenticated } = useAuth();
   const rc = useRevenueCat();
   const params = useLocalSearchParams<{ postOnboarding?: string }>();
   const isPostOnboarding = params.postOnboarding === "1";
@@ -527,7 +527,7 @@ export default function PaywallScreen() {
         {!isAuthenticated ? (
           <TouchableOpacity
             style={[styles.ctaPrimary, { backgroundColor: Colors.primary }]}
-            onPress={login}
+            onPress={() => router.push("/auth")}
             activeOpacity={0.85}
           >
             <Ionicons name="log-in-outline" size={20} color="#000" />

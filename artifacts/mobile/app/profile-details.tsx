@@ -146,7 +146,7 @@ export default function ProfileScreen() {
     connectHealth,
     backendName,
   } = useHealth();
-  const { user, isAuthenticated, login, logout } = useAuth();
+  const { user, isAuthenticated, logout } = useAuth();
   const {
     state: subState,
     isPremium,
@@ -1513,7 +1513,7 @@ export default function ProfileScreen() {
           <TouchableOpacity
             style={[styles.loginBtn, { backgroundColor: Colors.primary }]}
             onPress={() => {
-              login();
+              router.push("/auth");
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
             }}
             activeOpacity={0.8}

@@ -11,13 +11,22 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Colors } from "@/constants/colors";
+import { AppleSignInButton } from "@/components/AppleSignInButton";
 import { useAuth } from "@/lib/auth";
 
 export default function AuthScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { authError, isAuthenticated, isLoading, login } = useAuth();
-  const [isSigningIn, setIsSigningIn] = useState(false);
+  const {
+    authError,
+    isAuthenticated,
+    isLoading,
+    login,
+    loginWithApple,
+  } = useAuth();
+  const [signingInProvider, setSigningInProvider] = useState<
+    "apple" | "google" | null
+  >(null);
   const mounted = useRef(true);
   const attempt = useRef(0);
   const signInInFlight = useRef(false);
@@ -38,21 +47,25 @@ export default function AuthScreen() {
     router.replace("/(tabs)");
   }, [isAuthenticated, router]);
 
-  const handleLogin = useCallback(async () => {
-    if (signInInFlight.current || isSigningIn || isAuthenticated) return;
-    signInInFlight.current = true;
-    const currentAttempt = attempt.current + 1;
-    attempt.current = currentAttempt;
-    setIsSigningIn(true);
-    try {
-      await login();
-    } finally {
-      if (mounted.current && attempt.current === currentAttempt) {
-        signInInFlight.current = false;
-        setIsSigningIn(false);
+  const handleLogin = useCallback(
+    async (provider: "apple" | "google") => {
+      if (signInInFlight.current || signingInProvider || isAuthenticated)
+        return;
+      signInInFlight.current = true;
+      const currentAttempt = attempt.current + 1;
+      attempt.current = currentAttempt;
+      setSigningInProvider(provider);
+      try {
+        await (provider === "apple" ? loginWithApple() : login());
+      } finally {
+        if (mounted.current && attempt.current === currentAttempt) {
+          signInInFlight.current = false;
+          setSigningInProvider(null);
+        }
       }
-    }
-  }, [isAuthenticated, isSigningIn, login]);
+    },
+    [isAuthenticated, login, loginWithApple, signingInProvider],
+  );
 
   const handleBack = useCallback(() => {
     if (router.canGoBack()) {
@@ -62,7 +75,7 @@ export default function AuthScreen() {
     }
   }, [router]);
 
-  const busy = isLoading || isSigningIn;
+  const busy = isLoading || signingInProvider !== null;
 
   return (
     <View
@@ -110,39 +123,43 @@ export default function AuthScreen() {
           </View>
         ) : null}
 
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={
-            authError ? "Retry Google sign in" : "Continue with Google"
-          }
-          accessibilityState={{ busy, disabled: busy }}
-          disabled={busy}
-          onPress={handleLogin}
-          style={({ pressed }) => [
-            styles.googleButton,
-            busy && styles.disabled,
-            pressed && styles.pressed,
-          ]}
-        >
-          {busy ? (
-            <ActivityIndicator color={Colors.dark.background} />
-          ) : (
-            <View style={styles.googleGlyph}>
-              <Text style={styles.googleGlyphText}>G</Text>
-            </View>
-          )}
-          <Text style={styles.googleButtonText}>
-            {busy
-              ? "Connecting securely…"
-              : authError
-                ? "Try Google again"
+        <View style={styles.providerStack}>
+          <AppleSignInButton
+            disabled={busy}
+            onPress={() => void handleLogin("apple")}
+          />
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Continue with Google"
+            accessibilityState={{ busy, disabled: busy }}
+            disabled={busy}
+            onPress={() => void handleLogin("google")}
+            style={({ pressed }) => [
+              styles.googleButton,
+              busy && styles.disabled,
+              pressed && styles.pressed,
+            ]}
+          >
+            {signingInProvider === "google" ? (
+              <ActivityIndicator color={Colors.dark.background} />
+            ) : (
+              <View style={styles.googleGlyph}>
+                <Text style={styles.googleGlyphText}>G</Text>
+              </View>
+            )}
+            <Text style={styles.googleButtonText}>
+              {signingInProvider === "google"
+                ? "Connecting securely…"
                 : "Continue with Google"}
-          </Text>
-        </Pressable>
+            </Text>
+          </Pressable>
+        </View>
 
         <Text style={styles.privacyNote}>
-          Elovia only uses your Google account to verify your identity. Your
-          health and fitness data is never shared with Google.
+          Elovia uses the account provider you choose only to verify your
+          identity. Your health and fitness data is never shared with Apple or
+          Google.
         </Text>
       </View>
     </View>
@@ -237,6 +254,10 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 20,
     backgroundColor: Colors.primary,
+  },
+  providerStack: {
+    width: "100%",
+    gap: 12,
     marginTop: 24,
   },
   googleGlyph: {
