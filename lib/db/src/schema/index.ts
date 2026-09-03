@@ -5,4 +5,5 @@ export * from "./revenuecat";
 export * from "./aiUsage";
 export * from "./push";
 export * from "./social";
+export * from "./moderation";
 export * from "./coaching";

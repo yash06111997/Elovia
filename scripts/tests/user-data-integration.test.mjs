@@ -38,15 +38,19 @@ const expectedUserDataFields = [
 const expectedApplicationTables = [
   "account_deletions",
   "activity_comments",
+  "ai_response_receipts",
   "ai_usage",
   "challenge_participants",
   "challenges",
   "coach_availability",
   "coach_profiles",
   "coaching_sessions",
+  "community_memberships",
+  "content_reports",
   "friendships",
   "kudos",
   "mobile_oauth_attempts",
+  "moderation_audit_log",
   "push_tokens",
   "revenuecat_customer_aliases",
   "revenuecat_customer_state",
@@ -346,6 +350,7 @@ integrationTest(
         "0005_revenuecat_worker_authority.sql",
         "0006_revenuecat_alias_provenance.sql",
         "0007_mobile_oauth_exchange.sql",
+        "0008_community_safety.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -390,6 +395,10 @@ integrationTest(
             name: "0007_mobile_oauth_exchange.sql",
             application_count: 1,
           },
+          {
+            name: "0008_community_safety.sql",
+            application_count: 1,
+          },
         ]);
         await pool.query(`
           INSERT INTO users (id) VALUES ('bootstrap-ready-user');
@@ -423,6 +432,7 @@ integrationTest(
         "0005_revenuecat_worker_authority.sql",
         "0006_revenuecat_alias_provenance.sql",
         "0007_mobile_oauth_exchange.sql",
+        "0008_community_safety.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -463,6 +473,10 @@ integrationTest(
             name: "0007_mobile_oauth_exchange.sql",
             application_count: 1,
           },
+          {
+            name: "0008_community_safety.sql",
+            application_count: 1,
+          },
         ]);
       } finally {
         await pool.end();
@@ -486,6 +500,7 @@ integrationTest(
       "0005_revenuecat_worker_authority.sql",
       "0006_revenuecat_alias_provenance.sql",
       "0007_mobile_oauth_exchange.sql",
+      "0008_community_safety.sql",
     ];
 
     try {
@@ -840,6 +855,7 @@ integrationTest(
         "0005_revenuecat_worker_authority.sql",
         "0006_revenuecat_alias_provenance.sql",
         "0007_mobile_oauth_exchange.sql",
+        "0008_community_safety.sql",
       ],
     );
 

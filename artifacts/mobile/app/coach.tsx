@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
@@ -18,7 +19,13 @@ import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
 import { useApp } from "@/context/AppContext";
 import { useWorkout } from "@/context/WorkoutContext";
-import { coachChat, type CoachMessage } from "@/utils/api";
+import { ReportContentModal } from "@/components/ReportContentModal";
+import {
+  coachChat,
+  safety,
+  type CoachMessage,
+  type ReportReason,
+} from "@/utils/api";
 import { handleAiError } from "@/utils/aiErrors";
 
 const STARTERS = [
@@ -44,6 +51,11 @@ export default function CoachScreen() {
   const [messages, setMessages] = useState<CoachMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [reportTarget, setReportTarget] = useState<{
+    responseId: string;
+    content: string;
+  } | null>(null);
+  const [reportedIds, setReportedIds] = useState<string[]>([]);
   const scrollRef = useRef<ScrollView>(null);
 
   const recentWorkouts = sessions.filter((s: any) => {
@@ -78,7 +90,7 @@ export default function CoachScreen() {
 
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: result.reply },
+          { id: result.responseId, role: "assistant", content: result.reply },
         ]);
         requestAnimationFrame(() =>
           scrollRef.current?.scrollToEnd({ animated: true }),
@@ -142,6 +154,8 @@ export default function CoachScreen() {
                   ]}
                   onPress={() => void send(starter)}
                   activeOpacity={0.8}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Ask coach: ${starter}`}
                 >
                   <Text
                     style={[styles.starterText, { color: theme.textSecondary }]}
@@ -156,7 +170,7 @@ export default function CoachScreen() {
 
         {messages.map((message, index) => (
           <View
-            key={`${index}_${message.role}`}
+            key={message.id ?? `${index}_${message.role}`}
             style={[
               styles.bubble,
               message.role === "user"
@@ -175,6 +189,56 @@ export default function CoachScreen() {
             >
               {message.content}
             </Text>
+            {message.role === "assistant" && message.id ? (
+              <TouchableOpacity
+                style={styles.reportAction}
+                onPress={() =>
+                  setReportTarget({
+                    responseId: message.id!,
+                    content: message.content,
+                  })
+                }
+                disabled={reportedIds.includes(message.id)}
+                activeOpacity={0.75}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  reportedIds.includes(message.id)
+                    ? "Response reported"
+                    : "Report response"
+                }
+                accessibilityState={{
+                  disabled: reportedIds.includes(message.id),
+                }}
+              >
+                <Ionicons
+                  name={
+                    reportedIds.includes(message.id)
+                      ? "checkmark-circle"
+                      : "flag-outline"
+                  }
+                  size={15}
+                  color={
+                    reportedIds.includes(message.id)
+                      ? Colors.accentGreen
+                      : theme.textMuted
+                  }
+                />
+                <Text
+                  style={[
+                    styles.reportActionText,
+                    {
+                      color: reportedIds.includes(message.id)
+                        ? Colors.accentGreen
+                        : theme.textMuted,
+                    },
+                  ]}
+                >
+                  {reportedIds.includes(message.id)
+                    ? "Reported"
+                    : "Report response"}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         ))}
 
@@ -217,6 +281,7 @@ export default function CoachScreen() {
           multiline
           maxLength={2000}
           editable={!sending}
+          accessibilityLabel="Message to your coach"
         />
         <TouchableOpacity
           style={[
@@ -239,6 +304,32 @@ export default function CoachScreen() {
           />
         </TouchableOpacity>
       </View>
+
+      <ReportContentModal
+        visible={reportTarget !== null}
+        context="ai"
+        title="Report coach response"
+        onClose={() => setReportTarget(null)}
+        onSubmit={async (reason: ReportReason, details?: string) => {
+          if (!reportTarget) return;
+          await safety.reportAiResponse({
+            responseId: reportTarget.responseId,
+            content: reportTarget.content,
+            reason,
+            details,
+          });
+          setReportedIds((current) =>
+            current.includes(reportTarget.responseId)
+              ? current
+              : [...current, reportTarget.responseId],
+          );
+          setReportTarget(null);
+          Alert.alert(
+            "Report received",
+            "Thank you. The response has been sent to the safety review queue.",
+          );
+        }}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -280,6 +371,16 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 4,
   },
   bubbleText: { fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 20 },
+  reportAction: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 4,
+    marginBottom: -8,
+    alignSelf: "flex-start",
+  },
+  reportActionText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
 
   composer: {
     flexDirection: "row",

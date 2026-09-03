@@ -7,6 +7,8 @@ import {
   challengesTable,
   coachingSessionsTable,
   coachProfilesTable,
+  communityMembershipsTable,
+  contentReportsTable,
   friendshipsTable,
   kudosTable,
   pushTokensTable,
@@ -37,6 +39,28 @@ import { buildRevenueCatPrivacyExport } from "../lib/revenuecatPresentation";
 
 const router: IRouter = Router();
 
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return entities[character];
+  });
+}
+
+function safetyContactMarkup(): string {
+  const configured = process.env.SAFETY_CONTACT_EMAIL?.trim() ?? "";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(configured)) {
+    return "the safety contact published on Elovia's app-store listing";
+  }
+  const email = escapeHtml(configured);
+  return `<a href="mailto:${email}">${email}</a>`;
+}
+
 const page = (title: string, body: string, script = "") => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title} · Elovia</title><style>
@@ -51,7 +75,7 @@ router.get("/legal/privacy", (_req: Request, res: Response) => {
       "Privacy Notice",
       `
     <p>Elovia uses the information you provide to personalise fitness, nutrition, recovery and coaching features.</p>
-    <section><h2>Data we process</h2><p>Account details; profile and goal information; workouts, meals, measurements, habits and health-source data you choose to connect; supplement and medication entries; location during a run or for places you create; subscription status; AI requests and usage counts; coaching bookings; and content you deliberately share with friends.</p></section>
+    <section><h2>Data we process</h2><p>Account details; profile and goal information; workouts, meals, measurements, habits and health-source data you choose to connect; supplement and medication entries; location during a run or for places you create; subscription status; AI requests and usage counts; coaching bookings; content you deliberately share with friends; and a limited snapshot of reported content and report context when you use Community safety tools.</p></section>
     <section><h2>How it is used</h2><p>We use this data to operate and secure the app, sync your account, generate requested recommendations, enforce plan limits, deliver reminders, support coaching and show opted-in social activity. Elovia is a fitness tool, not a medical device, and its guidance does not replace a qualified clinician.</p></section>
     <section><h2>Services and sharing</h2><p>Data is processed by infrastructure and feature providers needed to run Elovia, including Firebase for identity, RevenueCat and the app stores for purchases, hosting and database providers, notification delivery, maps or device health services you enable, and AI providers for requests you initiate. We do not sell health data. Social data is shared only when you choose to share it.</p></section>
     <section><h2>Your controls</h2><p>You can disconnect health access in device settings, turn off social discovery, export your data, and permanently delete your Elovia account from Profile → Privacy &amp; Data. You can also use the <a href="./account-deletion">external deletion page</a>.</p></section>
@@ -71,6 +95,23 @@ router.get("/legal/terms", (_req: Request, res: Response) => {
     <section><h2>Accounts and subscriptions</h2><p>You are responsible for your account and device access. Paid plans are billed and managed by the applicable app store under the price, renewal and cancellation terms shown before purchase. Deleting an account does not automatically cancel an app-store subscription; manage that subscription in your store settings.</p></section>
     <section><h2>Acceptable use</h2><p>Do not misuse the service, attempt to bypass access controls, scrape other users, upload unlawful content, or use social and coaching features to harass others.</p></section>
     <section><h2>Availability</h2><p>Features may change and integrations can be unavailable. To the extent permitted by law, Elovia is provided without a promise that every recommendation or service will always be accurate or uninterrupted.</p></section>
+  `,
+    ),
+  );
+});
+
+router.get("/legal/community-standards", (_req: Request, res: Response) => {
+  const safetyContact = safetyContactMarkup();
+  res.type("html").send(
+    page(
+      "Community Standards",
+      `
+    <p>Elovia Community is for adults aged 18 or older. Participation requires a separate, versioned acceptance of these standards.</p>
+    <section><h2>Respect people and their privacy</h2><p>Do not harass, threaten, shame, discriminate against, impersonate or exploit another person. Do not publish anyone's private contact, health, identity or location information. Keep phone numbers, email addresses and external links out of Community posts.</p></section>
+    <section><h2>Keep content safe</h2><p>Do not post hateful, sexual, violent, fraudulent or illegal content; self-harm encouragement; scams; dangerous challenges; or advice presented as medical diagnosis or treatment. Elovia may limit or remove content and accounts when needed to protect users.</p></section>
+    <section><h2>Report and block</h2><p>Use “Report” to send a post, account or AI response privately to the safety queue. Use “Block athlete” separately to immediately hide that person and their Community activity from your view. Reports may include a limited snapshot of the reported content so reviewers can investigate it.</p></section>
+    <section><h2>Review and urgent concerns</h2><p>Urgent safety reports are prioritised for review. Elovia is not an emergency service. If someone may be in immediate danger, contact local emergency services or an appropriate crisis service. For Community safety questions, contact ${safetyContact}.</p></section>
+    <section><h2>Appeals and changes</h2><p>Contact the safety address if you believe an action was mistaken. When these standards materially change, Community access requires acceptance of the new version before social data is shown again.</p></section>
   `,
     ),
   );
@@ -140,6 +181,8 @@ router.get(
         pushDevices,
         supplements,
         socialProfile,
+        communityMembership,
+        submittedReports,
         friendships,
         sharedActivities,
         kudos,
@@ -171,8 +214,7 @@ router.get(
             prunedIdentityCount:
               revenuecatWebhookEventsTable.prunedIdentityCount,
             identityRequired: revenuecatWebhookEventsTable.identityRequired,
-            identityAppliedAt:
-              revenuecatWebhookEventsTable.identityAppliedAt,
+            identityAppliedAt: revenuecatWebhookEventsTable.identityAppliedAt,
             entitlementRequired:
               revenuecatWebhookEventsTable.entitlementRequired,
             entitlementAppliedAt:
@@ -206,6 +248,27 @@ router.get(
           .select()
           .from(socialProfilesTable)
           .where(eq(socialProfilesTable.userId, userId)),
+        db
+          .select()
+          .from(communityMembershipsTable)
+          .where(eq(communityMembershipsTable.userId, userId)),
+        db
+          .select({
+            id: contentReportsTable.id,
+            targetType: contentReportsTable.targetType,
+            targetId: contentReportsTable.targetId,
+            subjectUserId: contentReportsTable.subjectUserId,
+            reason: contentReportsTable.reason,
+            details: contentReportsTable.details,
+            status: contentReportsTable.status,
+            priority: contentReportsTable.priority,
+            reviewDueAt: contentReportsTable.reviewDueAt,
+            resolvedAt: contentReportsTable.resolvedAt,
+            createdAt: contentReportsTable.createdAt,
+            updatedAt: contentReportsTable.updatedAt,
+          })
+          .from(contentReportsTable)
+          .where(eq(contentReportsTable.reporterUserId, userId)),
         db
           .select()
           .from(friendshipsTable)
@@ -265,6 +328,8 @@ router.get(
         supplements,
         social: {
           profile: socialProfile[0] ?? null,
+          communityMembership: communityMembership[0] ?? null,
+          reports: submittedReports,
           friendships,
           sharedActivities,
           kudos,

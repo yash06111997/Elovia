@@ -143,7 +143,9 @@ test("provider tokens are authenticated-encrypted and reject tampering or a wron
   );
 
   const parts = encrypted.split(".");
-  parts[2] = `${parts[2].slice(0, -1)}${parts[2].endsWith("A") ? "B" : "A"}`;
+  const changedCiphertext = Buffer.from(parts[2], "base64url");
+  changedCiphertext[0] ^= 1;
+  parts[2] = changedCiphertext.toString("base64url");
   assert.throws(
     () => decryptOAuthProviderToken(parts.join("."), encryptionSecret),
     /decrypt/i,
@@ -221,6 +223,8 @@ test("production readiness fails closed when auth or required AI configuration i
       private_key: "private-key-material",
     }),
     ANTHROPIC_API_KEY: "anthropic-key",
+    SAFETY_CONTACT_EMAIL: "safety@elovia.example",
+    MODERATOR_USER_IDS: "firebase-moderator-uid",
   };
 
   assert.deepEqual(loadGoogleOAuthConfig(completeEnvironment), {
@@ -247,6 +251,30 @@ test("production readiness fails closed when auth or required AI configuration i
         FIREBASE_SERVICE_ACCOUNT_KEY: "not-json",
       }),
     /valid FIREBASE_SERVICE_ACCOUNT_KEY/,
+  );
+  assert.throws(
+    () =>
+      assertProductionRuntimeConfigured({
+        ...completeEnvironment,
+        SAFETY_CONTACT_EMAIL: "",
+      }),
+    /SAFETY_CONTACT_EMAIL/,
+  );
+  assert.throws(
+    () =>
+      assertProductionRuntimeConfigured({
+        ...completeEnvironment,
+        SAFETY_CONTACT_EMAIL: "not-an-email",
+      }),
+    /valid SAFETY_CONTACT_EMAIL/,
+  );
+  assert.throws(
+    () =>
+      assertProductionRuntimeConfigured({
+        ...completeEnvironment,
+        MODERATOR_USER_IDS: "",
+      }),
+    /MODERATOR_USER_IDS/,
   );
   assert.throws(
     () =>

@@ -23,6 +23,7 @@ const migrationNames = [
   "0005_revenuecat_worker_authority.sql",
   "0006_revenuecat_alias_provenance.sql",
   "0007_mobile_oauth_exchange.sql",
+  "0008_community_safety.sql",
 ];
 const revenuecatTableNames = [
   "revenuecat_customer_aliases",

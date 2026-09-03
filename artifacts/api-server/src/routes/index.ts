@@ -11,6 +11,7 @@ import socialRouter from "./social";
 import coachingRouter from "./coaching";
 import privacyRouter from "./privacy";
 import telemetryRouter from "./telemetry";
+import safetyRouter from "./safety";
 import { rateLimit } from "../lib/rateLimit";
 
 const router: IRouter = Router();
@@ -19,6 +20,7 @@ router.use(healthRouter);
 router.use(authRouter);
 router.use(privacyRouter);
 router.use(telemetryRouter);
+router.use(safetyRouter);
 
 router.use(entitlementRouter);
 router.use(diagnosticsRouter);

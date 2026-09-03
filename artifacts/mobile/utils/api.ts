@@ -54,7 +54,12 @@ export class ApiError extends Error {
   readonly resetsAt?: string;
   readonly limit?: number;
 
-  constructor(message: string, status: number, code: ApiErrorCode, extra?: { resetsAt?: string; limit?: number }) {
+  constructor(
+    message: string,
+    status: number,
+    code: ApiErrorCode,
+    extra?: { resetsAt?: string; limit?: number },
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
@@ -87,7 +92,10 @@ export class ApiError extends Error {
  * which is meaningless to them and, in a basement gym with no signal, is the
  * message they will see most often. Elovia is used in exactly those places.
  */
-async function fetchOrOffline(input: string, init?: RequestInit): Promise<Response> {
+async function fetchOrOffline(
+  input: string,
+  init?: RequestInit,
+): Promise<Response> {
   try {
     return await fetch(input, init);
   } catch {
@@ -120,7 +128,11 @@ async function postAuthed<T>(path: string, body: unknown): Promise<T> {
   const token = await getAuthToken();
 
   if (!token) {
-    throw new ApiError("Please sign in to use AI features.", 401, "unauthenticated");
+    throw new ApiError(
+      "Please sign in to use AI features.",
+      401,
+      "unauthenticated",
+    );
   }
 
   const response = await fetchOrOffline(`${getBaseUrl()}${path}`, {
@@ -133,9 +145,16 @@ async function postAuthed<T>(path: string, body: unknown): Promise<T> {
   });
 
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: "Unknown error", code: "unknown" as const }));
+    const payload = await response
+      .json()
+      .catch(() => ({ error: "Unknown error", code: "unknown" as const }));
 
-    throw new ApiError(payload.error || "Request failed", response.status, (payload.code as ApiErrorCode) || "unknown", { resetsAt: payload.resetsAt, limit: payload.limit });
+    throw new ApiError(
+      payload.error || "Request failed",
+      response.status,
+      (payload.code as ApiErrorCode) || "unknown",
+      { resetsAt: payload.resetsAt, limit: payload.limit },
+    );
   }
 
   return response.json() as Promise<T>;
@@ -160,7 +179,9 @@ export interface FoodRecognitionResult {
   description: string;
 }
 
-export async function recognizeFood(imageBase64: string): Promise<FoodRecognitionResult> {
+export async function recognizeFood(
+  imageBase64: string,
+): Promise<FoodRecognitionResult> {
   return postAuthed<FoodRecognitionResult>("/api/ai/recognize-food", {
     imageBase64,
   });
@@ -207,7 +228,11 @@ export interface AIWorkoutResult {
   goal: string;
 }
 
-export async function generateAIWorkout(profile: any, planType: "daily" | "scheduled", preferences?: { bodyParts?: string[]; message?: string }): Promise<AIWorkoutResult> {
+export async function generateAIWorkout(
+  profile: any,
+  planType: "daily" | "scheduled",
+  preferences?: { bodyParts?: string[]; message?: string },
+): Promise<AIWorkoutResult> {
   return postAuthed<AIWorkoutResult>("/api/ai/generate-workout", {
     profile,
     planType,
@@ -240,16 +265,22 @@ export async function fetchEntitlement(): Promise<EntitlementStatus | null> {
 }
 
 export interface CoachMessage {
+  id?: string;
   role: "user" | "assistant";
   content: string;
 }
 
 export interface CoachReply {
   reply: string;
+  responseId: string;
   provider: string;
 }
 
-export async function coachChat(messages: CoachMessage[], profile: any, context?: { recentWorkouts?: number; dailyCalorieTarget?: number }): Promise<CoachReply> {
+export async function coachChat(
+  messages: CoachMessage[],
+  profile: any,
+  context?: { recentWorkouts?: number; dailyCalorieTarget?: number },
+): Promise<CoachReply> {
   return postAuthed<CoachReply>("/api/ai/coach-chat", {
     messages,
     profile,
@@ -306,8 +337,15 @@ export interface SupplementAnalysis {
   disclaimer: string;
 }
 
-export async function analyseSupplement(supplementId: string, profile: any, refresh = false): Promise<{ analysis: SupplementAnalysis; cached: boolean }> {
-  return postAuthed<{ analysis: SupplementAnalysis; cached: boolean }>(`/api/supplements/${supplementId}/analyse`, { profile, refresh });
+export async function analyseSupplement(
+  supplementId: string,
+  profile: any,
+  refresh = false,
+): Promise<{ analysis: SupplementAnalysis; cached: boolean }> {
+  return postAuthed<{ analysis: SupplementAnalysis; cached: boolean }>(
+    `/api/supplements/${supplementId}/analyse`,
+    { profile, refresh },
+  );
 }
 
 export async function createSupplement(input: {
@@ -336,13 +374,24 @@ async function getAuthed<T>(path: string): Promise<T> {
   });
 
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: "Unknown error" }));
-    throw new ApiError(payload.error || "Request failed", response.status, payload.code || "unknown");
+    const payload = await response
+      .json()
+      .catch(() => ({ error: "Unknown error" }));
+    throw new ApiError(
+      payload.error || "Request failed",
+      response.status,
+      payload.code || "unknown",
+    );
   }
   return response.json() as Promise<T>;
 }
 
-async function sendAuthed<T>(path: string, method: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
+async function sendAuthed<T>(
+  path: string,
+  method: string,
+  body?: unknown,
+  extraHeaders?: Record<string, string>,
+): Promise<T> {
   const token = await getAuthToken();
   if (!token) throw new ApiError("Please sign in.", 401, "unauthenticated");
 
@@ -357,8 +406,14 @@ async function sendAuthed<T>(path: string, method: string, body?: unknown, extra
   });
 
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: "Unknown error" }));
-    throw new ApiError(payload.error || "Request failed", response.status, payload.code || "unknown");
+    const payload = await response
+      .json()
+      .catch(() => ({ error: "Unknown error" }));
+    throw new ApiError(
+      payload.error || "Request failed",
+      response.status,
+      payload.code || "unknown",
+    );
   }
   return response.json() as Promise<T>;
 }
@@ -381,10 +436,17 @@ export function exportMyData(): Promise<AccountDataExport> {
   return getAuthed<AccountDataExport>("/api/privacy/export");
 }
 
-export async function deleteMyAccount(requestId: string): Promise<{ deleted: boolean; finalizing: boolean }> {
-  const response = await sendAuthed<unknown>("/api/account", "DELETE", undefined, {
-    "X-Elovia-Deletion-Request-ID": requestId,
-  });
+export async function deleteMyAccount(
+  requestId: string,
+): Promise<{ deleted: boolean; finalizing: boolean }> {
+  const response = await sendAuthed<unknown>(
+    "/api/account",
+    "DELETE",
+    undefined,
+    {
+      "X-Elovia-Deletion-Request-ID": requestId,
+    },
+  );
   if (
     !response ||
     typeof response !== "object" ||
@@ -499,6 +561,7 @@ export interface FeedActivity {
 
 export interface ChallengeEntry {
   id: string;
+  createdBy: string;
   name: string;
   description: string | null;
   metric: string;
@@ -514,10 +577,50 @@ export interface ChallengeEntry {
   }[];
 }
 
+export interface CommunityAccess {
+  accepted: boolean;
+  adultOnly: true;
+  minimumAge: number;
+  termsVersion: string;
+}
+
+export type ReportReason =
+  | "harassment"
+  | "hate"
+  | "sexual_content"
+  | "self_harm"
+  | "dangerous_advice"
+  | "privacy"
+  | "spam"
+  | "other";
+
+export interface SafetyReportResult {
+  report: {
+    id: string;
+    status: string;
+    priority: "standard" | "urgent";
+    reviewDueAt: string;
+  };
+  duplicate: boolean;
+}
+
 export const social = {
+  access: () => getAuthed<CommunityAccess>("/api/social/access"),
+  acceptAccess: (termsVersion: string) =>
+    sendAuthed<{ accepted: true; termsVersion: string }>(
+      "/api/social/access/accept",
+      "POST",
+      { adultConfirmed: true, acceptedTerms: true, termsVersion },
+    ),
   me: () => getAuthed<{ profile: SocialProfile }>("/api/social/me"),
-  updateMe: (patch: Partial<Pick<SocialProfile, "displayName" | "bio" | "discoverable" | "leaderboardOptIn">>) =>
-    sendAuthed<{ profile: SocialProfile }>("/api/social/me", "PATCH", patch),
+  updateMe: (
+    patch: Partial<
+      Pick<
+        SocialProfile,
+        "displayName" | "bio" | "discoverable" | "leaderboardOptIn"
+      >
+    >,
+  ) => sendAuthed<{ profile: SocialProfile }>("/api/social/me", "PATCH", patch),
 
   lookup: (code: string) =>
     getAuthed<{
@@ -535,13 +638,39 @@ export const social = {
     sendAuthed<{ state: string }>("/api/social/friends/request", "POST", {
       userId,
     }),
-  respondFriend: (friendshipId: string, accept: boolean) => sendAuthed<{ state: string }>(`/api/social/friends/${friendshipId}/respond`, "POST", { accept }),
-  removeFriend: (friendshipId: string) => sendAuthed<{ removed: boolean }>(`/api/social/friends/${friendshipId}`, "DELETE"),
+  respondFriend: (friendshipId: string, accept: boolean) =>
+    sendAuthed<{ state: string }>(
+      `/api/social/friends/${friendshipId}/respond`,
+      "POST",
+      { accept },
+    ),
+  removeFriend: (friendshipId: string) =>
+    sendAuthed<{ removed: boolean }>(
+      `/api/social/friends/${friendshipId}`,
+      "DELETE",
+    ),
+  blockUser: (userId: string) =>
+    sendAuthed<{ state: "blocked" }>(
+      `/api/social/friends/${encodeURIComponent(userId)}/block`,
+      "POST",
+    ),
 
-  feed: (limit = 25) => getAuthed<{ feed: FeedActivity[] }>(`/api/social/feed?limit=${limit}`),
-  share: (input: { kind: string; title: string; caption?: string; payload?: unknown }) => sendAuthed<{ activity: unknown }>("/api/social/activities", "POST", input),
-  deleteActivity: (id: string) => sendAuthed<{ deleted: boolean }>(`/api/social/activities/${id}`, "DELETE"),
-  toggleKudos: (id: string) => sendAuthed<{ hasKudos: boolean; kudosCount: number }>(`/api/social/activities/${id}/kudos`, "POST"),
+  feed: (limit = 25) =>
+    getAuthed<{ feed: FeedActivity[] }>(`/api/social/feed?limit=${limit}`),
+  share: (input: {
+    kind: string;
+    title: string;
+    caption?: string;
+    payload?: unknown;
+  }) =>
+    sendAuthed<{ activity: unknown }>("/api/social/activities", "POST", input),
+  deleteActivity: (id: string) =>
+    sendAuthed<{ deleted: boolean }>(`/api/social/activities/${id}`, "DELETE"),
+  toggleKudos: (id: string) =>
+    sendAuthed<{ hasKudos: boolean; kudosCount: number }>(
+      `/api/social/activities/${id}/kudos`,
+      "POST",
+    ),
 
   leaderboard: (days = 7) =>
     getAuthed<{
@@ -554,10 +683,48 @@ export const social = {
       optedIn: boolean;
     }>(`/api/social/leaderboard?days=${days}`),
 
-  challenges: () => getAuthed<{ challenges: ChallengeEntry[] }>("/api/social/challenges"),
-  createChallenge: (input: { name: string; description?: string; metric: string; target: number; days: number }) =>
-    sendAuthed<{ challenge: ChallengeEntry }>("/api/social/challenges", "POST", input),
-  joinChallenge: (joinCode: string) => sendAuthed<{ challenge: ChallengeEntry }>("/api/social/challenges/join", "POST", { joinCode }),
+  challenges: () =>
+    getAuthed<{ challenges: ChallengeEntry[] }>("/api/social/challenges"),
+  createChallenge: (input: {
+    name: string;
+    description?: string;
+    metric: string;
+    target: number;
+    days: number;
+  }) =>
+    sendAuthed<{ challenge: ChallengeEntry }>(
+      "/api/social/challenges",
+      "POST",
+      input,
+    ),
+  joinChallenge: (joinCode: string) =>
+    sendAuthed<{ challenge: ChallengeEntry }>(
+      "/api/social/challenges/join",
+      "POST",
+      { joinCode },
+    ),
+};
+
+export const safety = {
+  report: (input: {
+    targetType: "activity" | "comment" | "user";
+    targetId: string;
+    reason: ReportReason;
+    details?: string;
+  }) => sendAuthed<SafetyReportResult>("/api/safety/reports", "POST", input),
+  reportAiResponse: (input: {
+    responseId: string;
+    content: string;
+    reason: ReportReason;
+    details?: string;
+  }) =>
+    sendAuthed<SafetyReportResult>("/api/safety/reports", "POST", {
+      targetType: "ai_response",
+      targetId: input.responseId,
+      content: input.content,
+      reason: input.reason,
+      details: input.details,
+    }),
 };
 
 // ---------------------------------------------------------------------------
@@ -595,7 +762,8 @@ export const coaching = {
       reason?: string;
     }>("/api/coaching/slots"),
 
-  sessions: () => getAuthed<{ sessions: CoachingSession[] }>("/api/coaching/sessions"),
+  sessions: () =>
+    getAuthed<{ sessions: CoachingSession[] }>("/api/coaching/sessions"),
 
   book: (startsAt: string, kind: "intro" | "coaching", note?: string) =>
     sendAuthed<{ session: CoachingSession }>("/api/coaching/sessions", "POST", {
@@ -604,7 +772,12 @@ export const coaching = {
       note,
     }),
 
-  cancel: (id: string, reason?: string) => sendAuthed<{ cancelled: boolean }>(`/api/coaching/sessions/${id}/cancel`, "POST", { reason }),
+  cancel: (id: string, reason?: string) =>
+    sendAuthed<{ cancelled: boolean }>(
+      `/api/coaching/sessions/${id}/cancel`,
+      "POST",
+      { reason },
+    ),
 
   /**
    * A short-lived signed URL for the session's .ics file.
@@ -613,5 +786,6 @@ export const coaching = {
    * URL — so it carries no auth header. The app trades its token for a signed
    * link here, and only the signed link is handed to Linking.
    */
-  calendarLink: (id: string) => getAuthed<{ url: string }>(`/api/coaching/sessions/${id}/calendar-link`),
+  calendarLink: (id: string) =>
+    getAuthed<{ url: string }>(`/api/coaching/sessions/${id}/calendar-link`),
 };

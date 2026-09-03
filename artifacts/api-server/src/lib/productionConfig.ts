@@ -26,6 +26,10 @@ function normalizeHostname(value: string): string {
   return candidate;
 }
 
+function isValidContactEmail(value: string): boolean {
+  return value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
 export type GoogleOAuthConfig = Readonly<{
   clientId: string;
   clientSecret: string;
@@ -142,6 +146,23 @@ export function assertProductionRuntimeConfigured(
     ])
   ) {
     missing.push("ANTHROPIC_API_KEY");
+  }
+  const safetyContactEmail = firstNonEmpty(environment, [
+    "SAFETY_CONTACT_EMAIL",
+  ]);
+  if (!safetyContactEmail) {
+    missing.push("SAFETY_CONTACT_EMAIL");
+  } else if (!isValidContactEmail(safetyContactEmail)) {
+    missing.push("valid SAFETY_CONTACT_EMAIL");
+  }
+  const moderatorIds = firstNonEmpty(environment, ["MODERATOR_USER_IDS"])
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (moderatorIds.length === 0) {
+    missing.push("MODERATOR_USER_IDS");
+  } else if (moderatorIds.some((value) => value.length > 128)) {
+    missing.push("valid MODERATOR_USER_IDS");
   }
   if (missing.length) {
     throw new Error(
