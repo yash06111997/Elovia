@@ -651,6 +651,8 @@ if (testDatabaseUrl) {
         private_key: "integration-private-key",
       }),
       ANTHROPIC_API_KEY: "integration-anthropic-key",
+      SAFETY_CONTACT_EMAIL: "safety@integration.elovia.test",
+      MODERATOR_USER_IDS: "integration-moderator",
     });
     const { register } = requireFromScriptsPackage("tsx/esm/api");
     unregisterTsx = register();
