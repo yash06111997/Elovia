@@ -4,15 +4,23 @@ import { and, eq } from "drizzle-orm";
 import { db, supplementsTable } from "@workspace/db";
 import { requireAuth } from "../middlewares/aiGate";
 import { gateAiRoute } from "../middlewares/aiGate";
-import { generate, extractJson, ProviderError } from "../lib/ai/router";
-import { recordUsage } from "../lib/aiQuota";
+import { extractJson, ProviderError } from "../lib/ai/router";
+import {
+  generateForRequest,
+  respondWithAccountingFailure,
+} from "../lib/ai/request";
 import { buildSupplementAnalysisPrompt } from "./ai/prompts";
 import { normalizeSupplementAnalysis } from "./ai/normalize";
 
 const router: IRouter = Router();
 
 const VALID_KINDS = new Set(["supplement", "medication"]);
-const VALID_FREQUENCIES = new Set(["daily", "twice_daily", "weekly", "as_needed"]);
+const VALID_FREQUENCIES = new Set([
+  "daily",
+  "twice_daily",
+  "weekly",
+  "as_needed",
+]);
 
 function sanitizeTimes(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -37,101 +45,122 @@ router.get("/supplements", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
-router.post("/supplements", requireAuth, async (req: Request, res: Response) => {
-  const { name, kind, dosage, unit, frequency, times, withFood, notes } = req.body ?? {};
+router.post(
+  "/supplements",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const { name, kind, dosage, unit, frequency, times, withFood, notes } =
+      req.body ?? {};
 
-  if (typeof name !== "string" || !name.trim()) {
-    res.status(400).json({ error: "A name is required", code: "bad_request" });
-    return;
-  }
-
-  try {
-    const row = {
-      id: randomUUID(),
-      userId: req.user!.id,
-      name: name.trim().slice(0, 120),
-      kind: VALID_KINDS.has(kind) ? kind : "supplement",
-      dosage: typeof dosage === "string" ? dosage.slice(0, 60) : null,
-      unit: typeof unit === "string" ? unit.slice(0, 20) : null,
-      frequency: VALID_FREQUENCIES.has(frequency) ? frequency : "daily",
-      times: sanitizeTimes(times),
-      withFood: withFood === true,
-      notes: typeof notes === "string" ? notes.slice(0, 500) : null,
-      active: true,
-    };
-
-    await db.insert(supplementsTable).values(row);
-    res.status(201).json({ supplement: row });
-  } catch (err) {
-    req.log.error({ err }, "Failed to create supplement");
-    res.status(500).json({ error: "Could not save that entry" });
-  }
-});
-
-router.patch("/supplements/:id", requireAuth, async (req: Request, res: Response) => {
-  const id = String(req.params.id);
-  const { name, dosage, unit, frequency, times, withFood, notes, active } = req.body ?? {};
-
-  try {
-    const updates: Record<string, unknown> = { updatedAt: new Date() };
-
-    if (typeof name === "string" && name.trim()) {
-      updates.name = name.trim().slice(0, 120);
-      // Renaming means the cached analysis is about a different substance.
-      updates.analysis = null;
-      updates.analysedAt = null;
-    }
-    if (typeof dosage === "string") updates.dosage = dosage.slice(0, 60);
-    if (typeof unit === "string") updates.unit = unit.slice(0, 20);
-    if (VALID_FREQUENCIES.has(frequency)) updates.frequency = frequency;
-    if (times !== undefined) updates.times = sanitizeTimes(times);
-    if (typeof withFood === "boolean") updates.withFood = withFood;
-    if (typeof notes === "string") updates.notes = notes.slice(0, 500);
-    if (typeof active === "boolean") updates.active = active;
-
-    const result = await db
-      .update(supplementsTable)
-      .set(updates)
-      // Scoped by userId as well as id: without it, any authenticated user
-      // could edit another user's row by guessing a UUID.
-      .where(and(eq(supplementsTable.id, id), eq(supplementsTable.userId, req.user!.id)))
-      .returning({ id: supplementsTable.id });
-
-    if (result.length === 0) {
-      res.status(404).json({ error: "Not found" });
+    if (typeof name !== "string" || !name.trim()) {
+      res
+        .status(400)
+        .json({ error: "A name is required", code: "bad_request" });
       return;
     }
 
-    res.json({ updated: true });
-  } catch (err) {
-    req.log.error({ err }, "Failed to update supplement");
-    res.status(500).json({ error: "Could not update that entry" });
-  }
-});
+    try {
+      const row = {
+        id: randomUUID(),
+        userId: req.user!.id,
+        name: name.trim().slice(0, 120),
+        kind: VALID_KINDS.has(kind) ? kind : "supplement",
+        dosage: typeof dosage === "string" ? dosage.slice(0, 60) : null,
+        unit: typeof unit === "string" ? unit.slice(0, 20) : null,
+        frequency: VALID_FREQUENCIES.has(frequency) ? frequency : "daily",
+        times: sanitizeTimes(times),
+        withFood: withFood === true,
+        notes: typeof notes === "string" ? notes.slice(0, 500) : null,
+        active: true,
+      };
 
-router.delete("/supplements/:id", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const result = await db
-      .delete(supplementsTable)
-      .where(
-        and(
-          eq(supplementsTable.id, String(req.params.id)),
-          eq(supplementsTable.userId, req.user!.id),
-        ),
-      )
-      .returning({ id: supplementsTable.id });
-
-    if (result.length === 0) {
-      res.status(404).json({ error: "Not found" });
-      return;
+      await db.insert(supplementsTable).values(row);
+      res.status(201).json({ supplement: row });
+    } catch (err) {
+      req.log.error({ err }, "Failed to create supplement");
+      res.status(500).json({ error: "Could not save that entry" });
     }
+  },
+);
 
-    res.json({ deleted: true });
-  } catch (err) {
-    req.log.error({ err }, "Failed to delete supplement");
-    res.status(500).json({ error: "Could not delete that entry" });
-  }
-});
+router.patch(
+  "/supplements/:id",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const id = String(req.params.id);
+    const { name, dosage, unit, frequency, times, withFood, notes, active } =
+      req.body ?? {};
+
+    try {
+      const updates: Record<string, unknown> = { updatedAt: new Date() };
+
+      if (typeof name === "string" && name.trim()) {
+        updates.name = name.trim().slice(0, 120);
+        // Renaming means the cached analysis is about a different substance.
+        updates.analysis = null;
+        updates.analysedAt = null;
+      }
+      if (typeof dosage === "string") updates.dosage = dosage.slice(0, 60);
+      if (typeof unit === "string") updates.unit = unit.slice(0, 20);
+      if (VALID_FREQUENCIES.has(frequency)) updates.frequency = frequency;
+      if (times !== undefined) updates.times = sanitizeTimes(times);
+      if (typeof withFood === "boolean") updates.withFood = withFood;
+      if (typeof notes === "string") updates.notes = notes.slice(0, 500);
+      if (typeof active === "boolean") updates.active = active;
+
+      const result = await db
+        .update(supplementsTable)
+        .set(updates)
+        // Scoped by userId as well as id: without it, any authenticated user
+        // could edit another user's row by guessing a UUID.
+        .where(
+          and(
+            eq(supplementsTable.id, id),
+            eq(supplementsTable.userId, req.user!.id),
+          ),
+        )
+        .returning({ id: supplementsTable.id });
+
+      if (result.length === 0) {
+        res.status(404).json({ error: "Not found" });
+        return;
+      }
+
+      res.json({ updated: true });
+    } catch (err) {
+      req.log.error({ err }, "Failed to update supplement");
+      res.status(500).json({ error: "Could not update that entry" });
+    }
+  },
+);
+
+router.delete(
+  "/supplements/:id",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    try {
+      const result = await db
+        .delete(supplementsTable)
+        .where(
+          and(
+            eq(supplementsTable.id, String(req.params.id)),
+            eq(supplementsTable.userId, req.user!.id),
+          ),
+        )
+        .returning({ id: supplementsTable.id });
+
+      if (result.length === 0) {
+        res.status(404).json({ error: "Not found" });
+        return;
+      }
+
+      res.json({ deleted: true });
+    } catch (err) {
+      req.log.error({ err }, "Failed to delete supplement");
+      res.status(500).json({ error: "Could not delete that entry" });
+    }
+  },
+);
 
 /**
  * Explain a substance in training/nutrition terms.
@@ -142,27 +171,44 @@ router.delete("/supplements/:id", requireAuth, async (req: Request, res: Respons
  */
 router.post(
   "/supplements/:id/analyse",
-  gateAiRoute("analyse-supplement"),
-  async (req: Request, res: Response) => {
-    const id = String(req.params.id);
-    const { profile, refresh } = req.body ?? {};
-
+  requireAuth,
+  async (req, res, next) => {
     try {
       const [row] = await db
         .select()
         .from(supplementsTable)
-        .where(and(eq(supplementsTable.id, id), eq(supplementsTable.userId, req.user!.id)));
-
+        .where(
+          and(
+            eq(supplementsTable.id, String(req.params.id)),
+            eq(supplementsTable.userId, req.user!.id),
+          ),
+        );
       if (!row) {
         res.status(404).json({ error: "Not found" });
         return;
       }
-
-      if (row.analysis && refresh !== true) {
+      // Reading an owned, saved analysis needs no new provider work. The same
+      // content is already available through GET /supplements for this owner.
+      if (row.analysis && req.body?.refresh !== true) {
         res.json({ analysis: row.analysis, cached: true });
         return;
       }
-
+      res.locals.analysisSupplement = row;
+      next();
+    } catch {
+      req.log.error({}, "Could not load supplement for analysis");
+      res
+        .status(503)
+        .json({ error: "Could not load that entry", code: "data_unavailable" });
+    }
+  },
+  gateAiRoute("analyse-supplement"),
+  async (req: Request, res: Response) => {
+    const row = res.locals
+      .analysisSupplement as typeof supplementsTable.$inferSelect;
+    const id = row.id;
+    const { profile } = req.body ?? {};
+    try {
       const { system, prompt } = buildSupplementAnalysisPrompt(
         {
           name: row.name,
@@ -173,19 +219,16 @@ router.post(
         profile ?? {},
       );
 
-      const result = await generate(
-        {
-          task: "structured",
-          system,
-          messages: [{ role: "user", content: prompt }],
-          maxTokens: 2048,
-          // Low temperature: this is reference information, and creative
-          // variation in health content is a liability, not a feature.
-          temperature: 0.2,
-          timeoutMs: 60_000,
-        },
-        req.log,
-      );
+      const result = await generateForRequest(req, {
+        task: "structured",
+        system,
+        messages: [{ role: "user", content: prompt }],
+        maxTokens: 2048,
+        // Low temperature: this is reference information, and creative
+        // variation in health content is a liability, not a feature.
+        temperature: 0.2,
+        timeoutMs: 60_000,
+      });
 
       const analysis = normalizeSupplementAnalysis(
         extractJson(result.text),
@@ -196,20 +239,19 @@ router.post(
       await db
         .update(supplementsTable)
         .set({ analysis, analysedAt: new Date() })
-        .where(eq(supplementsTable.id, id))
+        .where(
+          and(
+            eq(supplementsTable.id, id),
+            eq(supplementsTable.userId, req.user!.id),
+          ),
+        )
         .catch(() => undefined);
-
-      await recordUsage(req.user!.id, "analyse-supplement", {
-        inputTokens: result.usage.inputTokens,
-        outputTokens: result.usage.outputTokens,
-        estimatedCostMicros: result.estimatedCostMicros,
-        provider: result.provider,
-      });
 
       res.json({ analysis, cached: false });
     } catch (err) {
+      if (respondWithAccountingFailure(res, err)) return;
       if (err instanceof ProviderError) {
-        req.log.error({ err: err.message }, "Supplement analysis failed");
+        req.log.error({ provider: err.provider }, "Supplement analysis failed");
         res.status(502).json({
           error: "Could not analyse that right now. Please try again shortly.",
           code: "provider_unavailable",
@@ -217,7 +259,10 @@ router.post(
         return;
       }
 
-      req.log.error({ err }, "Supplement analysis failed");
+      req.log.error(
+        { code: "invalid_model_response" },
+        "Supplement analysis failed",
+      );
       res.status(502).json({
         error: "The analysis came back unusable. Please try again.",
         code: "invalid_model_response",

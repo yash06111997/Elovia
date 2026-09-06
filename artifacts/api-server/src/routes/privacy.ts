@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import {
   activityCommentsTable,
   aiUsageTable,
+  aiRequestsTable,
+  aiAttemptsTable,
   challengeParticipantsTable,
   challengesTable,
   coachingSessionsTable,
@@ -23,7 +25,7 @@ import {
   usersTable,
   db,
 } from "@workspace/db";
-import { eq, or } from "drizzle-orm";
+import { eq, or, getTableColumns } from "drizzle-orm";
 import { requireAuth } from "../middlewares/aiGate";
 import { deleteFirebaseUser } from "../lib/auth";
 import { resolveEntitlement } from "../lib/entitlements";
@@ -178,6 +180,8 @@ router.get(
         revenueCatEvents,
         revenueCatReconciliation,
         aiUsage,
+        aiRequests,
+        aiAttempts,
         pushDevices,
         supplements,
         socialProfile,
@@ -236,6 +240,18 @@ router.get(
           .from(revenuecatCustomerStateTable)
           .where(eq(revenuecatCustomerStateTable.userId, userId)),
         db.select().from(aiUsageTable).where(eq(aiUsageTable.userId, userId)),
+        db
+          .select()
+          .from(aiRequestsTable)
+          .where(eq(aiRequestsTable.userId, userId)),
+        db
+          .select(getTableColumns(aiAttemptsTable))
+          .from(aiAttemptsTable)
+          .innerJoin(
+            aiRequestsTable,
+            eq(aiRequestsTable.id, aiAttemptsTable.requestId),
+          )
+          .where(eq(aiRequestsTable.userId, userId)),
         db
           .select()
           .from(pushTokensTable)
@@ -324,6 +340,8 @@ router.get(
         subscriptions: revenueCatBilling.entitlements,
         revenueCatBilling,
         aiUsage,
+        aiRequests,
+        aiAttempts,
         pushDevices,
         supplements,
         social: {

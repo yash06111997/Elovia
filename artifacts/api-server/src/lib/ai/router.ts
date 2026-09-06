@@ -49,23 +49,33 @@ function preferQuality(): boolean {
 function chainFor(task: TaskKind): AiProvider[] {
   let names = ROUTING[task] ?? ["anthropic"];
   if (preferQuality()) {
-    names = [...names].sort((a, b) => (a === "anthropic" ? -1 : b === "anthropic" ? 1 : 0));
+    names = [...names].sort((a, b) =>
+      a === "anthropic" ? -1 : b === "anthropic" ? 1 : 0,
+    );
   }
 
-  return names
-    .map((n) => REGISTRY[n as Exclude<ProviderName, "deterministic">])
-    .filter((p): p is AiProvider => Boolean(p))
-    .filter((p) => p.supports.includes(task))
-    // Skipping unconfigured providers is what makes NVIDIA optional: with no
-    // NVIDIA_API_KEY set, structured traffic silently routes to Claude and the
-    // app works exactly as before.
-    .filter((p) => p.isConfigured());
+  return (
+    names
+      .map((n) => REGISTRY[n as Exclude<ProviderName, "deterministic">])
+      .filter((p): p is AiProvider => Boolean(p))
+      .filter((p) => p.supports.includes(task))
+      // Skipping unconfigured providers is what makes NVIDIA optional: with no
+      // NVIDIA_API_KEY set, structured traffic silently routes to Claude and the
+      // app works exactly as before.
+      .filter((p) => p.isConfigured())
+  );
 }
 
 export interface RoutedResult extends GenerateResult {
   estimatedCostMicros: number;
   /** Providers that failed before this one succeeded, for telemetry. */
   attempted: { provider: ProviderName; error: string }[];
+}
+
+/** Accounting is outside provider fallback: a database failure must stop spend. */
+export interface AttemptAccounting {
+  reserve(provider: ProviderName, opts: GenerateOptions): Promise<string>;
+  settle(attemptId: string, result: RoutedResult): Promise<void>;
 }
 
 /**
@@ -75,7 +85,8 @@ export interface RoutedResult extends GenerateResult {
  */
 export async function generate(
   opts: GenerateOptions,
-  log?: { warn: (obj: unknown, msg: string) => void },
+  log: { warn: (obj: unknown, msg: string) => void } | undefined,
+  accounting: AttemptAccounting,
 ): Promise<RoutedResult> {
   const chain = chainFor(opts.task);
 
@@ -90,31 +101,47 @@ export async function generate(
   const attempted: { provider: ProviderName; error: string }[] = [];
   let lastError: unknown;
 
+  function failed(provider: AiProvider, err: unknown) {
+    lastError = err;
+    // Provider messages can contain echoed prompts or health information.
+    const error =
+      err instanceof ProviderError
+        ? "provider_unavailable"
+        : "invalid_model_response";
+    attempted.push({ provider: provider.name, error });
+    log?.warn(
+      { provider: provider.name, task: opts.task, error },
+      "AI provider attempt failed",
+    );
+    if (err instanceof ProviderError && !err.retryable) throw err;
+  }
+
   for (const provider of chain) {
+    const attemptId = await accounting.reserve(provider.name, opts);
+    let response: GenerateResult;
     try {
-      const result = await provider.generate(opts);
-
-      // Validate before accepting. A provider that answers with unparseable
-      // output has failed just as surely as one that timed out, and should
-      // hand over to the next in the chain rather than end the request.
-      opts.validate?.(result.text);
-
-      return {
-        ...result,
-        estimatedCostMicros: estimateCostMicros(result.model, result.usage, result.provider),
-        attempted,
-      };
+      response = await provider.generate(opts);
     } catch (err) {
-      lastError = err;
-      const message = err instanceof Error ? err.message : String(err);
-      attempted.push({ provider: provider.name, error: message });
-
-      log?.warn(
-        { provider: provider.name, task: opts.task, err: message },
-        "AI provider failed, trying next in chain",
-      );
-
-      if (err instanceof ProviderError && !err.retryable) throw err;
+      // No reliable usage response: keep the committed reservation counted.
+      failed(provider, err);
+      continue;
+    }
+    const result: RoutedResult = {
+      ...response,
+      estimatedCostMicros: estimateCostMicros(
+        response.model,
+        response.usage,
+        response.provider,
+      ),
+      attempted,
+    };
+    await accounting.settle(attemptId, result);
+    try {
+      if (!result.text.trim()) throw new Error("Empty AI response");
+      opts.validate?.(result.text);
+      return result;
+    } catch (err) {
+      failed(provider, err);
     }
   }
 

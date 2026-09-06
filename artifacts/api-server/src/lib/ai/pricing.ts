@@ -1,4 +1,4 @@
-import type { ProviderName, TokenUsage } from "./types";
+import type { GenerateOptions, ProviderName, TokenUsage } from "./types";
 
 /**
  * Cost table, in micro-USD (1e-6 USD) per MILLION tokens.
@@ -15,23 +15,62 @@ interface ModelCost {
 
 const COSTS: Record<string, ModelCost> = {
   // Anthropic
-  "claude-sonnet-4-6": { inputPerMillion: 3_000_000, outputPerMillion: 15_000_000 },
-  "claude-haiku-4-5-20251001": { inputPerMillion: 1_000_000, outputPerMillion: 5_000_000 },
+  "claude-sonnet-4-6": {
+    inputPerMillion: 3_000_000,
+    outputPerMillion: 15_000_000,
+  },
+  "claude-haiku-4-5-20251001": {
+    inputPerMillion: 1_000_000,
+    outputPerMillion: 5_000_000,
+  },
 
   // NVIDIA NIM — open-weight models, roughly an order of magnitude cheaper.
   // This is the whole economic argument for routing structured generation here.
-  "meta/llama-3.3-70b-instruct": { inputPerMillion: 120_000, outputPerMillion: 300_000 },
+  "meta/llama-3.3-70b-instruct": {
+    inputPerMillion: 120_000,
+    outputPerMillion: 300_000,
+  },
   "nvidia/llama-3.1-nemotron-70b-instruct": {
     inputPerMillion: 120_000,
     outputPerMillion: 300_000,
   },
 };
 
-/** Conservative default for an unknown model, so cost is never under-counted. */
+/** Conservative fallback estimate; new model prices must still be reviewed. */
 const DEFAULT_COST: ModelCost = {
   inputPerMillion: 3_000_000,
   outputPerMillion: 15_000_000,
 };
+
+/**
+ * Reserve before IO using UTF-8 bytes (not a chars/4 token guess), framing
+ * headroom and the maximum requested output. One image gets 20,000 tokens of
+ * headroom. This is an estimated guardrail, not a provider invoice guarantee.
+ * Use the highest configured rate so fallback models have room too.
+ */
+export function estimateReservationMicros(opts: GenerateOptions): number {
+  const outputTokens = opts.maxTokens ?? 2048;
+  if (
+    !Number.isSafeInteger(outputTokens) ||
+    outputTokens <= 0 ||
+    outputTokens > 16_384
+  ) {
+    throw new Error("Invalid AI output token budget");
+  }
+  const inputTokens =
+    Buffer.byteLength(
+      JSON.stringify({ system: opts.system, messages: opts.messages }),
+      "utf8",
+    ) +
+    1024 +
+    (opts.image ? 20_000 : 0);
+  const rates = [...Object.values(COSTS), DEFAULT_COST];
+  return Math.ceil(
+    (inputTokens * Math.max(...rates.map((r) => r.inputPerMillion)) +
+      outputTokens * Math.max(...rates.map((r) => r.outputPerMillion))) /
+      1_000_000,
+  );
+}
 
 export function estimateCostMicros(
   model: string,

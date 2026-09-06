@@ -38,6 +38,8 @@ const expectedUserDataFields = [
 const expectedApplicationTables = [
   "account_deletions",
   "activity_comments",
+  "ai_attempts",
+  "ai_requests",
   "ai_response_receipts",
   "ai_usage",
   "challenge_participants",
@@ -351,6 +353,7 @@ integrationTest(
         "0006_revenuecat_alias_provenance.sql",
         "0007_mobile_oauth_exchange.sql",
         "0008_community_safety.sql",
+        "0009_ai_accounting.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -399,6 +402,10 @@ integrationTest(
             name: "0008_community_safety.sql",
             application_count: 1,
           },
+          {
+            name: "0009_ai_accounting.sql",
+            application_count: 1,
+          },
         ]);
         await pool.query(`
           INSERT INTO users (id) VALUES ('bootstrap-ready-user');
@@ -433,6 +440,7 @@ integrationTest(
         "0006_revenuecat_alias_provenance.sql",
         "0007_mobile_oauth_exchange.sql",
         "0008_community_safety.sql",
+        "0009_ai_accounting.sql",
       ]);
 
       const pool = new Pool({ connectionString: databaseUrl });
@@ -477,6 +485,10 @@ integrationTest(
             name: "0008_community_safety.sql",
             application_count: 1,
           },
+          {
+            name: "0009_ai_accounting.sql",
+            application_count: 1,
+          },
         ]);
       } finally {
         await pool.end();
@@ -501,6 +513,7 @@ integrationTest(
       "0006_revenuecat_alias_provenance.sql",
       "0007_mobile_oauth_exchange.sql",
       "0008_community_safety.sql",
+      "0009_ai_accounting.sql",
     ];
 
     try {
@@ -856,6 +869,7 @@ integrationTest(
         "0006_revenuecat_alias_provenance.sql",
         "0007_mobile_oauth_exchange.sql",
         "0008_community_safety.sql",
+        "0009_ai_accounting.sql",
       ],
     );
 

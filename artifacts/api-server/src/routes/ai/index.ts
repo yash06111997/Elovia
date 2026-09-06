@@ -1,7 +1,11 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { gateAiRoute } from "../../middlewares/aiGate";
-import { generate, extractJson, ProviderError } from "../../lib/ai/router";
-import { recordUsage, type AiRoute } from "../../lib/aiQuota";
+import { extractJson, ProviderError } from "../../lib/ai/router";
+import type { AiRoute } from "../../lib/aiQuota";
+import {
+  generateForRequest,
+  respondWithAccountingFailure,
+} from "../../lib/ai/request";
 import { createAiResponseReceipt } from "../../lib/communitySafetyStore";
 import {
   buildWorkoutPrompt,
@@ -20,11 +24,7 @@ import {
 
 const router: IRouter = Router();
 
-/**
- * Book-keeping shared by every handler: record what the call actually cost so
- * the daily ceiling in aiQuota has real numbers to work with, and surface which
- * provider served the request for debugging quality complaints.
- */
+/** Safe telemetry only; durable accounting happens before output validation. */
 async function accountFor(
   req: Request,
   route: AiRoute,
@@ -37,13 +37,6 @@ async function accountFor(
     attempted: { provider: string; error: string }[];
   },
 ) {
-  await recordUsage(req.user!.id, route, {
-    inputTokens: result.usage.inputTokens,
-    outputTokens: result.usage.outputTokens,
-    estimatedCostMicros: result.estimatedCostMicros,
-    provider: result.provider,
-  });
-
   req.log.info(
     {
       route,
@@ -66,11 +59,9 @@ function respondWithFailure(
   err: unknown,
   what: string,
 ) {
+  if (respondWithAccountingFailure(res, err)) return;
   if (err instanceof ProviderError) {
-    req.log.error(
-      { err: err.message, provider: err.provider },
-      `${what} failed`,
-    );
+    req.log.error({ provider: err.provider }, `${what} failed`);
     res.status(502).json({
       error: `Could not ${what} right now. Please try again in a moment.`,
       code: "provider_unavailable",
@@ -80,10 +71,7 @@ function respondWithFailure(
 
   // A parse/validation failure means the model replied with something unusable.
   // That is a 502 too, not a 500 — nothing is wrong with our server.
-  req.log.error(
-    { err: err instanceof Error ? err.message : String(err) },
-    `${what} failed`,
-  );
+  req.log.error({ code: "invalid_model_response" }, `${what} failed`);
   res.status(502).json({
     error: `The AI returned an unusable response. Please try again.`,
     code: "invalid_model_response",
@@ -133,17 +121,14 @@ router.post(
     const { system, prompt } = buildFoodRecognitionPrompt();
 
     try {
-      const result = await generate(
-        {
-          task: "vision",
-          system,
-          messages: [{ role: "user", content: prompt }],
-          image: { base64: imageBase64, mediaType },
-          maxTokens: 2048,
-          timeoutMs: 60_000,
-        },
-        req.log,
-      );
+      const result = await generateForRequest(req, {
+        task: "vision",
+        system,
+        messages: [{ role: "user", content: prompt }],
+        image: { base64: imageBase64, mediaType },
+        maxTokens: 2048,
+        timeoutMs: 60_000,
+      });
 
       const parsed = normalizeFoodRecognition(extractJson(result.text));
       await accountFor(req, "recognize-food", result);
@@ -180,22 +165,19 @@ router.post(
     );
 
     try {
-      const result = await generate(
-        {
-          task: "structured",
-          system,
-          messages: [{ role: "user", content: prompt }],
-          maxTokens: 4096,
-          temperature: 0.7,
-          timeoutMs: 90_000,
-          // Run the parse inside the router so an unusable response falls
-          // through to the next provider instead of failing the request.
-          validate: (text) => {
-            normalizeWorkoutPlan(extractJson(text), profile.goal);
-          },
+      const result = await generateForRequest(req, {
+        task: "structured",
+        system,
+        messages: [{ role: "user", content: prompt }],
+        maxTokens: 4096,
+        temperature: 0.7,
+        timeoutMs: 90_000,
+        // Run the parse inside the router so an unusable response falls
+        // through to the next provider instead of failing the request.
+        validate: (text) => {
+          normalizeWorkoutPlan(extractJson(text), profile.goal);
         },
-        req.log,
-      );
+      });
 
       const parsed = normalizeWorkoutPlan(
         extractJson(result.text),
@@ -232,17 +214,14 @@ router.post(
     );
 
     try {
-      const result = await generate(
-        {
-          task: "structured",
-          system,
-          messages: [{ role: "user", content: prompt }],
-          maxTokens: 4096,
-          temperature: 0.8,
-          timeoutMs: 90_000,
-        },
-        req.log,
-      );
+      const result = await generateForRequest(req, {
+        task: "structured",
+        system,
+        messages: [{ role: "user", content: prompt }],
+        maxTokens: 4096,
+        temperature: 0.8,
+        timeoutMs: 90_000,
+      });
 
       const parsed = normalizeMealPlan(extractJson(result.text), dietType);
       await accountFor(req, "generate-meal-plan", result);
@@ -273,17 +252,14 @@ router.post(
     const { system, prompt } = buildRecipePrompt(profile, options ?? {});
 
     try {
-      const result = await generate(
-        {
-          task: "structured",
-          system,
-          messages: [{ role: "user", content: prompt }],
-          maxTokens: 4096,
-          temperature: 0.9,
-          timeoutMs: 90_000,
-        },
-        req.log,
-      );
+      const result = await generateForRequest(req, {
+        task: "structured",
+        system,
+        messages: [{ role: "user", content: prompt }],
+        maxTokens: 4096,
+        temperature: 0.9,
+        timeoutMs: 90_000,
+      });
 
       const recipes = normalizeRecipes(extractJson(result.text));
       await accountFor(req, "generate-recipe", result);
@@ -330,17 +306,14 @@ router.post("/coach-chat", gateAiRoute("coach-chat"), async (req, res) => {
   }
 
   try {
-    const result = await generate(
-      {
-        task: "chat",
-        system: buildCoachSystemPrompt(profile ?? {}, context ?? {}),
-        messages: trimmed,
-        maxTokens: 1024,
-        temperature: 0.7,
-        timeoutMs: 45_000,
-      },
-      req.log,
-    );
+    const result = await generateForRequest(req, {
+      task: "chat",
+      system: buildCoachSystemPrompt(profile ?? {}, context ?? {}),
+      messages: trimmed,
+      maxTokens: 1024,
+      temperature: 0.7,
+      timeoutMs: 45_000,
+    });
 
     const reply = result.text.trim();
     const responseId = await createAiResponseReceipt(

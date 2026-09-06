@@ -1,6 +1,11 @@
 import { type Request, type Response, type NextFunction } from "express";
 import { resolveEntitlement, type Entitlement } from "../lib/entitlements";
-import { claimQuota, releaseQuota, type AiRoute, type QuotaDecision } from "../lib/aiQuota";
+import {
+  claimQuota,
+  releaseQuota,
+  type AiRoute,
+  type QuotaDecision,
+} from "../lib/aiQuota";
 
 declare global {
   namespace Express {
@@ -90,16 +95,24 @@ export function gateAiRoute(route: AiRoute) {
     req.quota = decision;
     req.aiRoute = route;
 
-    // If the handler never reaches the provider (validation error, upstream
-    // failure), hand the claim back rather than charging the user for nothing.
+    // Validation/cache hits refund the unused claim, even for successful HTTP
+    // responses. Provider failures stay counted. Closing is durable/idempotent.
     let settled = false;
-    res.on("finish", () => {
+    const closeClaim = () => {
       if (settled) return;
       settled = true;
-      if (res.statusCode >= 400) {
-        void releaseQuota(userId, route);
+      if (decision.claim) {
+        void releaseQuota(decision.claim).catch(() => {
+          req.log.error({ route }, "Could not close AI quota claim");
+        });
       }
-    });
+    };
+    res.once("finish", closeClaim);
+    res.once("close", closeClaim);
+    if (res.destroyed) {
+      closeClaim();
+      return;
+    }
 
     // Surface remaining budget so the client can render it without a second call.
     res.setHeader("X-RateLimit-Limit", String(decision.limit));
@@ -113,7 +126,9 @@ export function gateAiRoute(route: AiRoute) {
 /** Guard for non-AI routes that still require a signed-in user. */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!req.isAuthenticated()) {
-    res.status(401).json({ error: "Authentication required", code: "unauthenticated" });
+    res
+      .status(401)
+      .json({ error: "Authentication required", code: "unauthenticated" });
     return;
   }
   next();

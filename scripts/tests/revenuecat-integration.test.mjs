@@ -24,6 +24,7 @@ const migrationNames = [
   "0006_revenuecat_alias_provenance.sql",
   "0007_mobile_oauth_exchange.sql",
   "0008_community_safety.sql",
+  "0009_ai_accounting.sql",
 ];
 const revenuecatTableNames = [
   "revenuecat_customer_aliases",
