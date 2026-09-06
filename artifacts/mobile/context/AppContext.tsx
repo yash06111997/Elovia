@@ -115,6 +115,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AppState>(defaultState);
   const [loaded, setLoaded] = useState(false);
 
+  const normalizeCustomMacros = useCallback((value: unknown): CustomMacros | null => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+
+    const toMacroNumber = (raw: unknown): number => {
+      return normalizeMacroGrams(typeof raw === "number" ? raw : typeof raw === "string" ? raw : 0);
+    };
+
+    const enabled =
+      record.enabled === true ||
+      record.enabled === "true" ||
+      record.enabled === 1 ||
+      record.enabled === "1";
+    if (!enabled) return null;
+    return {
+      enabled: true,
+      protein: toMacroNumber(record.protein ?? 0),
+      carbs: toMacroNumber(record.carbs ?? 0),
+      fats: toMacroNumber(record.fats ?? 0),
+      calories: calculateCaloriesFromMacros({
+        protein: toMacroNumber(record.protein ?? 0),
+        carbs: toMacroNumber(record.carbs ?? 0),
+        fats: toMacroNumber(record.fats ?? 0),
+      }),
+    };
+  }, []);
+
   useEffect(() => {
     loadState();
   }, []);
@@ -130,9 +157,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const saved = await AsyncStorage.getItem("@elovia_state");
       if (saved) {
         const parsed = JSON.parse(saved) as AppState;
+        const customMacros = normalizeCustomMacros(parsed.customMacros);
         setState({
           ...defaultState,
           ...parsed,
+          customMacros,
           healthMetrics: parsed.healthMetrics ?? [],
         });
       }

@@ -96,7 +96,7 @@ export default function RunScreen() {
           });
 
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          router.replace({ pathname: "/run-summary", params: { id: session.id } });
+          router.replace(`/run-summary?id=${encodeURIComponent(session.id)}` as any);
         },
       },
     ]);
