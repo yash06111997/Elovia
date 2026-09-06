@@ -595,7 +595,14 @@ export default function ProfileScreen() {
         )}
 
         {healthData?.runSessions?.length > 0 && (
-          <View style={[styles.recentRunRow, { borderTopColor: theme.border }]}>
+          <TouchableOpacity
+            style={[styles.recentRunRow, { borderTopColor: theme.border }]}
+            onPress={() => {
+              const latest = healthData.runSessions[healthData.runSessions.length - 1];
+              if (latest?.id) router.push(`/run-summary?id=${latest.id}` as any);
+            }}
+            activeOpacity={0.85}
+          >
             <Ionicons name="walk-outline" size={18} color={Colors.accent} />
             <View style={{ flex: 1 }}>
               <Text style={[styles.runLabel, { color: theme.text }]}>Last Run</Text>
@@ -604,7 +611,8 @@ export default function ProfileScreen() {
                 {healthData.runSessions[healthData.runSessions.length - 1].caloriesBurned} kcal
               </Text>
             </View>
-          </View>
+            <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
+          </TouchableOpacity>
         )}
 
         {isTracking && currentRun && (

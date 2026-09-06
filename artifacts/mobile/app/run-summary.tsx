@@ -18,6 +18,20 @@ export default function RunSummaryScreen() {
   const { healthData } = useHealth();
   const run = healthData.runSessions.find((session) => session.id === runId);
 
+  const routePoints = (value: unknown) => {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((raw) => {
+        if (!raw || typeof raw !== "object") return null;
+        const next = raw as { latitude?: unknown; longitude?: unknown };
+        const latitude = Number(next.latitude);
+        const longitude = Number(next.longitude);
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+        return { latitude, longitude };
+      })
+      .filter((point): point is { latitude: number; longitude: number } => point !== null);
+  };
+
   if (!run) {
     return (
       <View style={[styles.empty, { backgroundColor: theme.background }]}>
@@ -33,6 +47,14 @@ export default function RunSummaryScreen() {
   }
 
   const durationSec = run.durationSec ?? run.durationMins * 60;
+  const route = routePoints(run.route);
+  const hasSplits = !!run.splits?.length;
+  const bestPace = hasSplits
+    ? run.splits?.reduce((lowest, split) => Math.min(lowest, split.paceMinPerKm), Number.POSITIVE_INFINITY) ?? null
+    : null;
+  const slowestPace = hasSplits
+    ? run.splits?.reduce((highest, split) => Math.max(highest, split.paceMinPerKm), 0) ?? null
+    : null;
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
@@ -52,7 +74,12 @@ export default function RunSummaryScreen() {
           </View>
         </View>
 
-        <RunRouteMap points={run.route} height={300} />
+        {route.length > 0 ? <RunRouteMap points={route} height={300} /> : (
+          <View style={[styles.mapFallback, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <Ionicons name="map-outline" size={24} color={theme.textMuted} />
+            <Text style={[styles.emptyMeta, { color: theme.textMuted }]}>No GPS route was captured for this run.</Text>
+          </View>
+        )}
 
         <View style={styles.metricGrid}>
           <Metric label="Distance" value={run.distanceKm.toFixed(2)} suffix="km" />
@@ -60,13 +87,22 @@ export default function RunSummaryScreen() {
           <Metric label="Average pace" value={formatPace(run.avgPaceMinKm)} suffix="/km" />
           <Metric label="Calories" value={String(run.caloriesBurned)} suffix="kcal" />
           <Metric label="Elevation" value={String(run.elevationGainM ?? 0)} suffix="m" />
-          <Metric label="GPS points" value={String(run.route.length)} />
+          <Metric label="GPS points" value={String(route.length)} />
         </View>
 
-        {!!run.splits?.length && (
+        {!!hasSplits && (
+          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <Text style={[styles.cardTitle, { color: theme.text }]}>Pace range</Text>
+            <Text style={[styles.paceRange, { color: theme.textSecondary }]}>
+              {`Best: ${formatPace(bestPace)} /km · Slowest: ${formatPace(slowestPace)}`}
+            </Text>
+          </View>
+        )}
+
+        {!!hasSplits && (
           <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
             <Text style={[styles.cardTitle, { color: theme.text }]}>Kilometre splits</Text>
-            {run.splits.map((split) => (
+            {run.splits!.map((split) => (
               <View key={split.index} style={[styles.splitRow, { borderTopColor: theme.border }]}>
                 <Text style={[styles.splitIndex, { color: theme.textSecondary }]}>Km {split.index}</Text>
                 <Text style={[styles.splitValue, tabularNumbers, { color: theme.text }]}>{formatPace(split.paceMinPerKm)}</Text>
@@ -109,8 +145,23 @@ const styles = StyleSheet.create({
   metricValue: { fontSize: 21, fontFamily: "Inter_700Bold" },
   metricSuffix: { fontSize: 11, fontFamily: "Inter_500Medium" },
   metricLabel: { fontSize: 11, fontFamily: "Inter_500Medium" },
+  mapFallback: {
+    borderWidth: 1,
+    borderRadius: 14,
+    height: 300,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+  },
+  emptyMeta: {
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
+    textAlign: "center",
+  },
   card: { borderWidth: 1, borderRadius: 16, padding: 14 },
   cardTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold", marginBottom: 4 },
+  paceRange: { fontSize: 12, fontFamily: "Inter_500Medium" },
   splitRow: { flexDirection: "row", alignItems: "center", borderTopWidth: StyleSheet.hairlineWidth, paddingVertical: 11 },
   splitIndex: { width: 64, fontSize: 12, fontFamily: "Inter_500Medium" },
   splitValue: { flex: 1, fontSize: 14, fontFamily: "Inter_600SemiBold" },
