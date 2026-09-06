@@ -99,8 +99,24 @@ if (testUrl) {
     );
     await workspacePool?.end();
     await pool?.end();
-    unregister?.();
-    await admin?.query(`DROP DATABASE IF EXISTS "${suiteName}" WITH (FORCE)`);
+    await unregister?.();
+    // Pool.end() can resolve before PostgreSQL has processed every socket's
+    // shutdown. Forcing a drop in that window produces late 57P01 errors on
+    // Linux. Wait for server-side closure; do not kill active connections.
+    if (admin) {
+      let remaining = 0;
+      for (let tries = 0; tries < 100; tries++) {
+        const result = await admin.query(
+          "SELECT count(*)::int AS remaining FROM pg_stat_activity WHERE datname=$1",
+          [suiteName],
+        );
+        remaining = result.rows[0].remaining;
+        if (remaining === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.equal(remaining, 0, "All test database connections must close before dropping it");
+      await admin.query(`DROP DATABASE IF EXISTS "${suiteName}"`);
+    }
     await admin?.end();
   });
 }
