@@ -9,6 +9,10 @@ export interface CustomMacroTargets extends MacroGramValues {
   calories: number;
 }
 
+function isEnabledLikeBoolean(value: unknown): value is true {
+  return value === true || value === 1 || value === "1" || value === "true";
+}
+
 /**
  * Macro targets are user-entered decimal gram values. Keep one decimal place
  * for display/storage, reject negative and non-finite input, and let an empty
@@ -39,7 +43,7 @@ export function normalizeCustomMacroTargets(
 ): CustomMacroTargets | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
-  if (candidate.enabled !== true) return null;
+  if (!isEnabledLikeBoolean(candidate.enabled)) return null;
   const targets: MacroGramValues = {
     protein: normalizeMacroGrams(
       typeof candidate.protein === "string" ||

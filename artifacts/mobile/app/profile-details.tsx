@@ -498,7 +498,10 @@ export default function ProfileScreen() {
     fats: macros.fats.toString(),
   });
   const parsedMacroForm = parseMacroForm(macroForm);
-  const calculatedMacroCalories = calculateCaloriesFromMacros(parsedMacroForm);
+  const calculatedMacroCalories = Math.max(
+    0,
+    calculateCaloriesFromMacros(parsedMacroForm),
+  );
 
   const handleResetOnboarding = () => {
     Alert.alert(

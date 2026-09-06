@@ -8,7 +8,28 @@ import { Colors } from "@/constants/colors";
 import { tabularNumbers } from "@/constants/design";
 import { useHealth } from "@/context/HealthContext";
 import { useTheme } from "@/hooks/useTheme";
-import { formatDuration, formatPace } from "@/lib/runTracker";
+import { estimateCalories, formatDuration, formatPace } from "@/lib/runTracker";
+
+const FALLBACK_RUN_WEIGHT_KG = 70;
+
+function estimateDistance(points: { latitude: number; longitude: number }[]): number {
+  if (points.length < 2) return 0;
+  let meters = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    const previous = points[i - 1];
+    const point = points[i];
+    const deltaLat = ((point.latitude - previous.latitude) * Math.PI) / 180;
+    const deltaLng = ((point.longitude - previous.longitude) * Math.PI) / 180;
+    const lat1 = (previous.latitude * Math.PI) / 180;
+    const lat2 = (point.latitude * Math.PI) / 180;
+    const a =
+      Math.sin(deltaLat / 2) ** 2 +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
+    const segment = 2 * 6_371_000 * Math.asin(Math.sqrt(Math.min(1, Math.max(0, a))));
+    meters += segment;
+  }
+  return Math.round((meters / 1000) * 100) / 100;
+}
 
 export default function RunSummaryScreen() {
   const { theme } = useTheme();
@@ -33,6 +54,12 @@ export default function RunSummaryScreen() {
   }
 
   const durationSec = run.durationSec ?? run.durationMins * 60;
+  const distanceKm = run.distanceKm > 0 ? run.distanceKm : estimateDistance(run.route);
+  const paceSec = distanceKm > 0 && durationSec > 0 ? durationSec / 60 / distanceKm : 0;
+  const caloriesBurned =
+    run.caloriesBurned > 0
+      ? run.caloriesBurned
+      : estimateCalories(distanceKm, durationSec, FALLBACK_RUN_WEIGHT_KG);
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
@@ -55,10 +82,18 @@ export default function RunSummaryScreen() {
         <RunRouteMap points={run.route} height={300} />
 
         <View style={styles.metricGrid}>
-          <Metric label="Distance" value={run.distanceKm.toFixed(2)} suffix="km" />
+          <Metric
+            label="Distance"
+            value={distanceKm.toFixed(2)}
+            suffix="km"
+          />
           <Metric label="Moving time" value={formatDuration(durationSec)} />
-          <Metric label="Average pace" value={formatPace(run.avgPaceMinKm)} suffix="/km" />
-          <Metric label="Calories" value={String(run.caloriesBurned)} suffix="kcal" />
+          <Metric
+            label="Average pace"
+            value={formatPace(run.avgPaceMinKm || paceSec)}
+            suffix="/km"
+          />
+          <Metric label="Calories" value={String(caloriesBurned)} suffix="kcal" />
           <Metric label="Elevation" value={String(run.elevationGainM ?? 0)} suffix="m" />
           <Metric label="GPS points" value={String(run.route.length)} />
         </View>

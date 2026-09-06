@@ -80,4 +80,28 @@ describe("saved run session integrity", () => {
       splits: [],
     });
   });
+
+  it("repairs legacy route migration from `points` when route was saved without normalization", () => {
+    const restored = normalizeRunSession({
+      id: "legacy-route-run",
+      date: "2026-09-03",
+      startTime: "2026-09-03T10:00:00.000Z",
+      endTime: "2026-09-03T10:30:00.000Z",
+      durationMins: 30,
+      distanceKm: 0,
+      caloriesBurned: 0,
+      points: [
+        { latitude: 1.0, longitude: 2.0 },
+        { latitude: 1.0005, longitude: 2.0005 },
+      ],
+    });
+
+    expect(restored).not.toBeNull();
+    expect(restored?.route).toEqual([
+      { latitude: 1.0, longitude: 2.0 },
+      { latitude: 1.0005, longitude: 2.0005 },
+    ]);
+    expect(restored?.distanceKm).toBeGreaterThan(0.06);
+    expect(restored?.caloriesBurned).toBeGreaterThan(0);
+  });
 });

@@ -19,6 +19,43 @@ export interface RunSession {
   caloriesBurned: number;
 }
 
+const DEFAULT_RUN_WEIGHT_KG = 70;
+
+function distanceKmFromRoute(
+  points: readonly { latitude: number; longitude: number }[],
+): number {
+  if (points.length < 2) return 0;
+  let meters = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    const previous = points[i - 1];
+    const point = points[i];
+    const deltaLat = ((point.latitude - previous.latitude) * Math.PI) / 180;
+    const deltaLng = ((point.longitude - previous.longitude) * Math.PI) / 180;
+    const meanLat = ((point.latitude + previous.latitude) * Math.PI) / 360;
+    const a =
+      Math.sin(deltaLat / 2) ** 2 +
+      Math.cos(meanLat) * Math.cos((previous.latitude * Math.PI) / 180) *
+        Math.sin(deltaLng / 2) ** 2;
+    const segment = 2 * 6_371_000 * Math.asin(Math.sqrt(Math.min(1, Math.max(0, a))));
+    meters += segment;
+  }
+  return meters / 1000;
+}
+
+function estimateCaloriesFallback(distanceKm: number, durationSec: number): number {
+  if (durationSec <= 0 || distanceKm <= 0) return 0;
+  const speedKmh = distanceKm / (durationSec / 3600);
+  let met: number;
+  if (speedKmh < 4) met = 2.5;
+  else if (speedKmh < 6.5) met = 3.5;
+  else if (speedKmh < 8) met = 8.3;
+  else if (speedKmh < 9.7) met = 9.8;
+  else if (speedKmh < 11.3) met = 11;
+  else if (speedKmh < 12.9) met = 11.8;
+  else met = 12.8;
+  return Math.round((met * 3.5 * DEFAULT_RUN_WEIGHT_KG * (durationSec / 60)) / 200);
+}
+
 export interface FinishedRunDraftLike {
   sessionId: string;
   startedAt: number;
@@ -141,40 +178,58 @@ export function normalizeRunSession(value: unknown): RunSession | null {
     candidate.id.length > 128 ||
     !validIso(candidate.startTime) ||
     !validIso(candidate.endTime)
-  ) {
+    ) {
     return null;
   }
+
+  const route = normalizeRoute(
+    candidate.route === undefined ? candidate.points : candidate.route,
+  );
   const distanceKm = finiteNonnegative(candidate.distanceKm);
+  const fallbackDistanceKm = distanceKmFromRoute(route);
   const storedMinutes = finiteNonnegative(candidate.durationMins);
   const durationSec = Math.round(
     finiteNonnegative(candidate.durationSec, storedMinutes * 60),
   );
+  const endTime = String(candidate.endTime);
+  const startTime = String(candidate.startTime);
+  const derivedDurationFromTimestamps = Math.max(
+    0,
+    Math.round((Date.parse(endTime) - Date.parse(startTime)) / 1000),
+  );
+  const finalDistanceKm = distanceKm > 0 ? distanceKm : fallbackDistanceKm;
+  const finalDurationSec = durationSec > 0 ? durationSec : derivedDurationFromTimestamps;
   const storedPace = finiteNonnegative(candidate.avgPaceMinKm);
   const avgPaceMinKm =
     storedPace > 0
       ? storedPace
-      : distanceKm > 0
-        ? durationSec / 60 / distanceKm
+      : finalDistanceKm > 0 && finalDurationSec > 0
+        ? finalDurationSec / 60 / finalDistanceKm
         : 0;
+  const storedCalories = finiteNonnegative(candidate.caloriesBurned);
+  const caloriesBurned =
+    storedCalories > 0
+      ? storedCalories
+      : estimateCaloriesFallback(finalDistanceKm, finalDurationSec);
   return {
     id: candidate.id,
     date:
       typeof candidate.date === "string" &&
       /^\d{4}-\d{2}-\d{2}$/.test(candidate.date)
         ? candidate.date
-        : localDateKey(Date.parse(candidate.startTime)),
+        : localDateKey(Date.parse(startTime)),
     startTime: candidate.startTime,
     endTime: candidate.endTime,
-    distanceKm,
+    distanceKm: finalDistanceKm,
     durationMins:
-      durationSec > 0
-        ? Math.max(1, Math.round(durationSec / 60))
+      finalDurationSec > 0
+        ? Math.max(1, Math.round(finalDurationSec / 60))
         : Math.round(storedMinutes),
-    durationSec,
+    durationSec: finalDurationSec,
     avgPaceMinKm,
     elevationGainM: finiteNonnegative(candidate.elevationGainM),
     splits: normalizeSplits(candidate.splits),
-    route: normalizeRoute(candidate.route),
-    caloriesBurned: finiteNonnegative(candidate.caloriesBurned),
+    route,
+    caloriesBurned,
   };
 }
