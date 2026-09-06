@@ -42,7 +42,7 @@ jobs:
       - run: corepack prepare pnpm@10.33.0 --activate
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
-      - run: pnpm --filter @workspace/mobile test -- --runInBand
+      - run: pnpm --filter @workspace/mobile test --runInBand
       - run: pnpm typecheck
       - run: pnpm --filter @workspace/mobile typecheck
       - run: pnpm --filter @workspace/api-server typecheck
