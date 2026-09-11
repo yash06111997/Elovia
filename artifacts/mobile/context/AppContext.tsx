@@ -128,16 +128,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       record.enabled === "true" ||
       record.enabled === 1 ||
       record.enabled === "1";
-    if (!enabled) return null;
+    const protein = toMacroNumber(record.protein ?? 0);
+    const carbs = toMacroNumber(record.carbs ?? 0);
+    const fats = toMacroNumber(record.fats ?? 0);
+    const hasCustomMacros = protein > 0 || carbs > 0 || fats > 0;
+    if (!enabled && !hasCustomMacros) return null;
     return {
       enabled: true,
-      protein: toMacroNumber(record.protein ?? 0),
-      carbs: toMacroNumber(record.carbs ?? 0),
-      fats: toMacroNumber(record.fats ?? 0),
+      protein,
+      carbs,
+      fats,
       calories: calculateCaloriesFromMacros({
-        protein: toMacroNumber(record.protein ?? 0),
-        carbs: toMacroNumber(record.carbs ?? 0),
-        fats: toMacroNumber(record.fats ?? 0),
+        protein,
+        carbs,
+        fats,
       }),
     };
   }, []);

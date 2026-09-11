@@ -44,6 +44,23 @@ export interface RunSession {
   caloriesBurned: number;
 }
 
+type PersistedRunSession = Partial<RunSession> & {
+  id?: unknown;
+  date?: unknown;
+  startTime?: unknown;
+  endTime?: unknown;
+  distanceKm?: unknown;
+  durationMins?: unknown;
+  avgPaceMinKm?: unknown;
+  elevationGainM?: unknown;
+  splits?: unknown;
+  route?: unknown;
+  caloriesBurned?: unknown;
+  durationSec?: unknown;
+};
+
+type PersistedStepData = Partial<StepData> & { date?: unknown; steps?: unknown };
+
 /**
  * Retained for the existing profile UI. These now reflect REAL permission
  * state read back from the platform rather than a boolean the app flips
@@ -112,6 +129,143 @@ const defaultHealthData: HealthData = {
   bodyMassKg: [],
 };
 
+const toSafeNumber = (value: unknown, fallback = 0): number => {
+  const parsed = typeof value === "number" ? value : Number.parseFloat(String(value));
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const toSafeString = (value: unknown, fallback: string): string => {
+  if (typeof value === "string" && value.trim().length > 0) return value;
+  return fallback;
+};
+
+function sanitizeRoutePoint(value: unknown): { latitude: number; longitude: number } | null {
+  if (!value || typeof value !== "object") return null;
+  const next = value as { latitude?: unknown; longitude?: unknown };
+  const latitude = toSafeNumber(next.latitude, Number.NaN);
+  const longitude = toSafeNumber(next.longitude, Number.NaN);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return { latitude, longitude };
+}
+
+function sanitizeRoutePoints(value: unknown): { latitude: number; longitude: number }[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((point) => sanitizeRoutePoint(point))
+    .filter((point): point is { latitude: number; longitude: number } => point !== null);
+}
+
+function sanitizeSplit(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+  const split = value as {
+    index?: unknown;
+    distanceKm?: unknown;
+    durationSec?: unknown;
+    paceMinPerKm?: unknown;
+    elevationGainM?: unknown;
+  };
+
+  const index = Math.round(toSafeNumber(split.index, 0));
+  if (!Number.isInteger(index) || index <= 0) return null;
+
+  return {
+    index,
+    distanceKm: Math.max(0, toSafeNumber(split.distanceKm, 0)),
+    durationSec: Math.max(0, Math.round(toSafeNumber(split.durationSec, 0))),
+    paceMinPerKm: Math.max(0, toSafeNumber(split.paceMinPerKm, 0)),
+    elevationGainM: Math.round(Math.max(0, toSafeNumber(split.elevationGainM, 0))),
+  };
+}
+
+function sanitizeRunSession(raw: unknown): RunSession | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as PersistedRunSession;
+
+  const rawDistance = toSafeNumber(record.distanceKm, 0);
+  const rawDuration = toSafeNumber(record.durationMins, 0);
+  const durationSec =
+    record.durationSec == null || Number.isNaN(toSafeNumber(record.durationSec, Number.NaN))
+      ? Math.round(rawDuration * 60)
+      : Math.round(toSafeNumber(record.durationSec, 0));
+
+  const distanceKm = Math.max(0, rawDistance);
+  const avgPaceMinKm = toSafeNumber(record.avgPaceMinKm, rawDuration > 0 ? durationSec / 60 / Math.max(0.01, distanceKm) : 0);
+
+  return {
+    id: toSafeString(record.id, `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`),
+    date: toSafeString(record.date, new Date().toISOString().split("T")[0]),
+    startTime: toSafeString(record.startTime, new Date().toISOString()),
+    endTime: toSafeString(record.endTime, new Date().toISOString()),
+    distanceKm: Math.round(distanceKm * 100) / 100,
+    durationMins: Math.max(0, Math.round(rawDuration)),
+    durationSec,
+    avgPaceMinKm: Math.max(0, Number.parseFloat(avgPaceMinKm.toFixed(2))),
+    elevationGainM: Math.round(Math.max(0, toSafeNumber(record.elevationGainM, 0))),
+    splits: Array.isArray(record.splits)
+      ? record.splits
+          .map((split) => sanitizeSplit(split))
+          .filter((split): split is NonNullable<ReturnType<typeof sanitizeSplit>> => split !== null)
+      : [],
+    route: sanitizeRoutePoints(record.route),
+    caloriesBurned: Math.max(0, Math.round(toSafeNumber(record.caloriesBurned, 0))),
+  };
+}
+
+function sanitizeStepData(raw: unknown): StepData[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const item = entry as PersistedStepData;
+      const date = typeof item.date === "string" ? item.date : "";
+      const steps = Math.max(0, Math.round(toSafeNumber(item.steps, 0)));
+      if (!date) return null;
+      return { date, steps };
+    })
+    .filter((entry): entry is StepData => entry !== null);
+}
+
+function sanitizeRunSessions(raw: unknown): RunSession[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((entry) => sanitizeRunSession(entry))
+    .filter((entry): entry is RunSession => entry !== null)
+    .slice(-50);
+}
+
+function sanitizeHealthData(raw: unknown): HealthData {
+  if (!raw || typeof raw !== "object") {
+    return defaultHealthData;
+  }
+
+  const record = raw as Record<string, unknown>;
+  const rawSyncStatus = record.syncStatus;
+  const syncStatus =
+    rawSyncStatus != null && typeof rawSyncStatus === "object" ? (rawSyncStatus as Record<string, unknown>) : null;
+
+  return {
+    ...defaultHealthData,
+    ...record,
+    todaySteps: Math.max(0, Math.round(toSafeNumber(record.todaySteps, 0))),
+    weeklySteps: sanitizeStepData(record.weeklySteps),
+    runSessions: sanitizeRunSessions(record.runSessions),
+    lastSynced: typeof record.lastSynced === "string" ? record.lastSynced : null,
+    importedWorkouts: Array.isArray(record.importedWorkouts) ? (record.importedWorkouts as HealthWorkout[]) : [],
+    sleep: Array.isArray(record.sleep) ? (record.sleep as SleepNight[]) : [],
+    restingHeartRate: Array.isArray(record.restingHeartRate) ? (record.restingHeartRate as VitalSample[]) : [],
+    heartRateVariability: Array.isArray(record.heartRateVariability) ? (record.heartRateVariability as VitalSample[]) : [],
+    activeEnergyKcal: Array.isArray(record.activeEnergyKcal) ? (record.activeEnergyKcal as DailyEnergy[]) : [],
+    bodyMassKg: Array.isArray(record.bodyMassKg) ? (record.bodyMassKg as VitalSample[]) : [],
+    syncStatus: {
+      appleHealth: syncStatus != null && typeof syncStatus.appleHealth === "boolean" ? syncStatus.appleHealth : false,
+      googleFit: syncStatus != null && typeof syncStatus.googleFit === "boolean" ? syncStatus.googleFit : false,
+      stepsEnabled: syncStatus != null && typeof syncStatus.stepsEnabled === "boolean" ? syncStatus.stepsEnabled : false,
+      locationEnabled:
+        syncStatus != null && typeof syncStatus.locationEnabled === "boolean" ? syncStatus.locationEnabled : false,
+    },
+  };
+}
+
 const HealthContext = createContext<HealthContextType | null>(null);
 
 const STORAGE_KEY = "@elovia_health_data";
@@ -148,9 +302,7 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
       const stored = await AsyncStorage.getItem(STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
-        // Merge onto defaults so data persisted by older builds, which lacked
-        // the sleep/vitals fields, does not yield undefined arrays.
-        setHealthData({ ...defaultHealthData, ...parsed });
+        setHealthData(sanitizeHealthData(parsed));
       }
     } catch {
       // Corrupt cache is not worth failing startup over.
@@ -460,26 +612,51 @@ export function HealthProvider({ children }: { children: React.ReactNode }) {
 
   const addRunSession = useCallback(
     (sessionData: Omit<RunSession, "id">) => {
-      const session: RunSession = {
+      const fallbackId = `${Date.now()}${Math.random().toString(36).slice(2, 11)}`;
+      const safeDistance = Math.max(0, Math.round(toSafeNumber(sessionData.distanceKm, 0) * 100) / 100);
+      const safeDurationSec = Math.max(0, Math.round(toSafeNumber(sessionData.durationSec, sessionData.durationMins * 60)));
+
+      const session = sanitizeRunSession({
         ...sessionData,
-        id: `${Date.now()}${Math.random().toString(36).slice(2, 11)}`,
+        id: fallbackId,
+        distanceKm: safeDistance,
+        durationSec: safeDurationSec,
+        avgPaceMinKm:
+          safeDurationSec > 0 && safeDistance > 0 ? (safeDurationSec / 60) / safeDistance : Math.max(0, toSafeNumber(sessionData.avgPaceMinKm, 0)),
+      });
+
+      const normalizedSession: RunSession = session ?? {
+        id: fallbackId,
+        date: toSafeString(sessionData.date, toLocalDateKey(new Date())),
+        startTime: toSafeString(sessionData.startTime, new Date().toISOString()),
+        endTime: toSafeString(sessionData.endTime, new Date().toISOString()),
+        distanceKm: safeDistance,
+        durationMins: Math.max(0, Math.round(toSafeNumber(sessionData.durationMins, safeDurationSec / 60))),
+        durationSec: safeDurationSec,
+        avgPaceMinKm:
+          safeDistance > 0 ? Math.max(0, Math.round(((safeDurationSec / 60) / safeDistance) * 100) / 100) : Math.max(0, toSafeNumber(sessionData.avgPaceMinKm, 0)),
+        elevationGainM: Math.round(Math.max(0, toSafeNumber(sessionData.elevationGainM, 0))),
+        splits: Array.isArray(sessionData.splits) ? sessionData.splits : [],
+        route: sanitizeRoutePoints(sessionData.route),
+        caloriesBurned: Math.max(0, Math.round(toSafeNumber(sessionData.caloriesBurned, 0))),
       };
+
       setHealthData((prev) => {
-        const updated = {
+        const updated: HealthData = {
           ...prev,
-          runSessions: [...prev.runSessions, session].slice(-50),
+          runSessions: [...prev.runSessions, normalizedSession].slice(-50),
         };
         persist(updated);
         return updated;
       });
       void writeWorkoutToHealth({
         activityType: "Running",
-        start: new Date(session.startTime),
-        end: new Date(session.endTime),
-        energyKcal: session.caloriesBurned,
-        distanceKm: session.distanceKm,
+        start: new Date(normalizedSession.startTime),
+        end: new Date(normalizedSession.endTime),
+        energyKcal: normalizedSession.caloriesBurned,
+        distanceKm: normalizedSession.distanceKm,
       });
-      return session;
+      return normalizedSession;
     },
     [persist],
   );
