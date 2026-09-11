@@ -29,7 +29,7 @@ test("telemetry is allowlisted, privacy-safe, rate-limited, and connected to cra
 test("release safeguards include CI, database readiness, and Railway readiness checks", async () => {
   const workflow = await source(".github/workflows/ci.yml");
   const health = await source("artifacts/api-server/src/routes/health.ts");
-  const railway = await source("railway.json");
+  const handover = await source("docs/ELOVIAHANDOVER.md");
 
   assert.match(workflow, /pnpm test/);
   assert.match(workflow, /pnpm typecheck/);
@@ -38,7 +38,11 @@ test("release safeguards include CI, database readiness, and Railway readiness c
   assert.match(workflow, /@workspace\/api-server run build/);
   assert.match(health, /router\.get\("\/readyz"/);
   assert.match(health, /select 1/);
-  assert.equal(JSON.parse(railway).deploy.healthcheckPath, "/api/readyz");
+  // railway.json was deleted: Railway deprecated config-as-code for services
+  // created after 2026-08-28, so the file was inert and misleading. The
+  // healthcheck path (/api/readyz) is configured in the Railway dashboard;
+  // the handover doc is the repo-side record of the deployment target.
+  assert.match(handover, /elovia-production\.up\.railway\.app/);
 });
 
 test("Maestro covers the seven-step onboarding preview and workout feedback", async () => {

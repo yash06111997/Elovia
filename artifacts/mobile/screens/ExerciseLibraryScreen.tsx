@@ -7,9 +7,9 @@ import {
   TouchableOpacity,
   TextInput,
   Modal,
-  FlatList,
   Platform,
 } from "react-native";
+import { FlashList } from "@shopify/flash-list";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -244,7 +244,7 @@ export function ExerciseLibraryScreen({
         </Text>
 
         {/* List */}
-        <FlatList
+        <FlashList
           data={filtered}
           keyExtractor={(item) => item.id}
           renderItem={renderExercise}

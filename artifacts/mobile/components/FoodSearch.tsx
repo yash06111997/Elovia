@@ -5,9 +5,9 @@ import {
   StyleSheet,
   TouchableOpacity,
   TextInput,
-  FlatList,
   Modal,
 } from "react-native";
+import { FlashList } from "@shopify/flash-list";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Colors } from "@/constants/colors";
@@ -105,11 +105,12 @@ export function FoodSearch({ visible, onClose, onSelect }: Props) {
           </View>
 
           {!query.trim() && !selectedCategory && (
-            <FlatList
+            <FlashList
               data={[...foodCategories]}
               keyExtractor={(item) => item}
               showsVerticalScrollIndicator={false}
-              contentContainerStyle={{ gap: 8, paddingBottom: 20 }}
+              contentContainerStyle={{ paddingBottom: 20 }}
+              ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={[styles.categoryCard, { backgroundColor: theme.card, borderColor: theme.border }]}
@@ -138,11 +139,12 @@ export function FoodSearch({ visible, onClose, onSelect }: Props) {
                   <Text style={[styles.backText, { color: Colors.primary }]}>{selectedCategory}</Text>
                 </TouchableOpacity>
               )}
-              <FlatList
+              <FlashList
                 data={results}
                 keyExtractor={(item) => item.id}
                 showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ gap: 6, paddingBottom: 20 }}
+                contentContainerStyle={{ paddingBottom: 20 }}
+                ItemSeparatorComponent={() => <View style={{ height: 6 }} />}
                 ListEmptyComponent={
                   <View style={styles.emptyState}>
                     <Ionicons name="search-outline" size={40} color={theme.textMuted} />

@@ -21,7 +21,11 @@ function contrast(first, second) {
 
 test("secondary and muted text colors meet WCAG AA on app backgrounds", async () => {
   const { Colors } = await import("../../artifacts/mobile/constants/colors.ts");
-  for (const palette of [Colors.dark, Colors.light]) {
+  // The palette is dark-only by design (see constants/colors.ts); guard every
+  // scheme that exists without pretending a deleted light scheme is still here.
+  const palettes = [Colors.dark, Colors.light].filter(Boolean);
+  assert.ok(palettes.length > 0, "at least one palette must exist");
+  for (const palette of palettes) {
     for (const textColor of [palette.textSecondary, palette.textMuted]) {
       assert.ok(contrast(textColor, palette.background) >= 4.5);
       assert.ok(contrast(textColor, palette.card) >= 4.5);

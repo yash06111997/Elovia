@@ -1,5 +1,14 @@
 # Elovia — Fitness, food, and life in balance
 
+> **⚠️ STALE — kept for historical reference only.**
+> This file was written for the Replit Agent era of the project. The app has
+> since migrated off Replit: the backend now runs on Railway (Express +
+> Postgres/Drizzle), AI calls go directly to Anthropic / NVIDIA NIM (not the
+> Replit AI Integrations proxy), and builds are via EAS. The UI/UX decisions
+> below (colors, typography, theming) are still accurate. For the current
+> architecture, security posture and known issues see
+> [`docs/ELOVIAHANDOVER.md`](docs/ELOVIAHANDOVER.md).
+
 ## Overview
 Elovia is a production-ready mobile health and fitness application built with Expo (React Native). It aims to provide users with a balanced approach to fitness, nutrition, and overall well-being. The app incorporates AI-powered features for personalized workout generation and food recognition, delivered across iOS, Android, and Web platforms. Its core vision is to offer a comprehensive and intelligent solution for users looking to achieve their health and fitness goals.
 
