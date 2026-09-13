@@ -111,9 +111,9 @@ overrides:
   "ws@>=8.0.0 <8.21.0": "8.21.0"
   "xcode>uuid": "11.1.1"
   "yaml@>=2.0.0 <2.8.3": "2.8.3"
-  # replit uses linux-x64 only, we can exclude all other platforms
-  "esbuild>@esbuild/darwin-arm64": "-"
-  "esbuild>@esbuild/darwin-x64": "-"
+  # Unused platform binaries are excluded to keep installs small. darwin is
+  # kept because EAS iOS builds run on macOS; linux-x64-gnu (EAS Android,
+  # Railway) and win32-x64 (local dev) are kept by omission.
   "esbuild>@esbuild/freebsd-arm64": "-"
   "esbuild>@esbuild/freebsd-x64": "-"
   "esbuild>@esbuild/linux-arm": "-"
@@ -136,9 +136,9 @@ overrides:
   "esbuild>@esbuild/android-arm64": '-'
   "esbuild>@esbuild/android-x64": '-'
   "esbuild>@esbuild/openharmony-arm64": '-'
+  # darwin binaries stay installed: EAS builds iOS on macOS, and NativeWind's
+  # Metro config loads lightningcss natively there.
   "lightningcss>lightningcss-android-arm64": "-"
-  "lightningcss>lightningcss-darwin-arm64": "-"
-  "lightningcss>lightningcss-darwin-x64": "-"
   "lightningcss>lightningcss-freebsd-x64": "-"
   "lightningcss>lightningcss-linux-arm-gnueabihf": "-"
   "lightningcss>lightningcss-linux-arm64-gnu": "-"
