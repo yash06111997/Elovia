@@ -49,7 +49,7 @@ if (testUrl) {
       REVENUECAT_PRO_ENTITLEMENT_ID: "Elovia Pro",
       REVENUECAT_COACHING_ENTITLEMENT_ID: "Elovia Coaching",
       REVENUECAT_PRO_PRODUCTS_JSON: JSON.stringify([
-        { id: "pro", kind: "auto_renewing" },
+        { id: "elovia_pro_yearly", kind: "auto_renewing" },
       ]),
       REVENUECAT_COACHING_PRODUCTS_JSON: JSON.stringify([
         { id: "coaching", kind: "auto_renewing" },
@@ -120,9 +120,31 @@ if (testUrl) {
     await admin?.end();
   });
 }
-async function user() {
+async function user({ annualTrial = true } = {}) {
   const id = randomUUID();
   await pool.query("INSERT INTO users (id) VALUES ($1)", [id]);
+  // AI accounting tests exercise entitled traffic, not account-age trials.
+  // Seed the same canonical annual store entitlement production requires.
+  if (annualTrial) {
+    const operation = `worker:${randomUUID()}`;
+    await pool.query(
+      `INSERT INTO revenuecat_customer_state
+       (user_id,canonicalization_state,source_kind,source_environment,
+        last_snapshot_at,last_operation_id,last_reconciled_at,reconcile_reason,reconcile_after)
+       VALUES ($1,'canonical','worker_canonical','sandbox',now(),$2,now(),
+               'scheduled',now() + interval '1 day')`,
+      [id, operation],
+    );
+    await pool.query(
+      `INSERT INTO subscription_entitlements
+       (user_id,entitlement_id,active,status,product_id,store,period_ends_at,
+        access_ends_at,will_renew,source_environment,source_kind,source_snapshot_at,source_operation_id)
+       VALUES ($1,'Elovia Pro',true,'trial','elovia_pro_yearly','app_store',
+               now() + interval '14 days',now() + interval '14 days',true,
+               'sandbox','worker_canonical',now(),$2)`,
+      [id, operation],
+    );
+  }
   return id;
 }
 async function claim(uid, route = "coach-chat") {
@@ -146,6 +168,17 @@ const measured = {
   provider: "nvidia",
   model: "test-model",
 };
+
+integrationTest("a new account without a store subscription cannot dispatch paid AI", async (t) => {
+  let calls = 0;
+  providers(t, "unused", () => calls++);
+  const uid = await user({ annualTrial: false });
+  const res = await http(uid, "/api/ai/generate-workout", { profile: {} });
+  assert.equal(res.status, 402);
+  assert.equal(res.body.code, "payment_required");
+  assert.equal(calls, 0);
+  assert.deepEqual(await usage(uid), []);
+});
 
 integrationTest(
   "concurrent claims admit exactly the route limit without leaking rejected increments",
