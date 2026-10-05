@@ -398,7 +398,7 @@ test("production startup runs ordered migrations and CI exercises PostgreSQL int
   assert.match(accountDeletionOutboxMigrationSql, /identity_lease_id/);
   assert.match(errorHandler, /VALIDATION_ERROR/);
   assert.match(errorHandler, /PAYLOAD_TOO_LARGE/);
-  assert.match(ci, /postgres:\s*\[14,\s*16\]/);
+  assert.match(ci, /postgres:\s*\[14,\s*16,\s*18\]/);
   assert.match(ci, /image:\s*postgres:\$\{\{\s*matrix\.postgres\s*\}\}-alpine/);
   assert.match(ci, /services:\s*[\s\S]*postgres:/);
   assert.match(ci, /TEST_DATABASE_URL/);

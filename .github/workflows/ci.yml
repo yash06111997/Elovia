@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres: [14, 16]
+        postgres: [14, 16, 18]
     env:
       TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/elovia_test
     services:
