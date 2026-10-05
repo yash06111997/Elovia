@@ -6864,8 +6864,8 @@ integrationTest(
       tier: "free",
       hasProAccess: false,
       hasCoaching: false,
-      status: "expired",
-      trialEndsAt: new Date("2020-01-16T00:00:00.000Z"),
+      status: "free",
+      trialEndsAt: null,
       currentPeriodEndsAt: null,
       productId: null,
     });
