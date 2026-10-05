@@ -23,3 +23,17 @@ test("my-equipment filter requires all listed equipment, including a bench", () 
   const bodyweight = browseExercises({ ownedEquipment: ["no_equipment"] });
   expect(bodyweight.every(e => e.equipment.every(eq => eq === "none"))).toBe(true);
 });
+
+test("free commercial demos match the exercise and preserve existing licensed clips", () => {
+  const squat = allExercises.find(e => e.id === "legs_bb_squat")!;
+  expect(squat.demo?.source.provider).toBe("YMove");
+  expect(squat.demo?.source.licenseUrl).toBe("https://ymove.app/free-exercise-videos");
+  expect(allExercises.find(e => e.id === "legs_front_squat")?.demo?.url).not.toBe(squat.demo?.url);
+  expect(allExercises.find(e => e.id === "back_deadlift")?.demo?.url).not.toBe(
+    allExercises.find(e => e.id === "back_deadlift_conv")?.demo?.url,
+  );
+  expect(allExercises.find(e => e.id === "legs_leg_ext")?.equipment).toEqual(["machine"]);
+  expect(allExercises.find(e => e.id === "chest_pec_deck")?.equipment).toEqual(["machine"]);
+  expect(allExercises.filter(e => e.demo?.source.provider === "wger")).toHaveLength(46);
+  expect(allExercises.some(e => !e.demo)).toBe(true);
+});

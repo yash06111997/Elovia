@@ -1,0 +1,182 @@
+{
+  "Barbell Back Squat": {
+    "url": "https://ymove.app/api/free/fd0eaa34-d14b-4421-b41c-1669f93253b3",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Barbell Bench Press": {
+    "url": "https://ymove.app/api/free/dd7e706c-2086-4f4b-867f-d7fece2f720d",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Barbell Deadlift": {
+    "url": "https://ymove.app/api/free/b59952ca-1551-4c07-835d-ab78bfe9953c",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Dumbbell Lateral Raise": {
+    "url": "https://ymove.app/api/free/a16f0235-20eb-4306-b9cc-c01ae51b3b9b",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Hammer Curls": {
+    "url": "https://ymove.app/api/free/b11e6c6f-b2e8-44ca-95dc-adf0dcd34426",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Dumbbell Goblet Squat": {
+    "url": "https://ymove.app/api/free/a2a797d0-f6f6-436e-8616-6c1d93e73d67",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Kettlebell swing": {
+    "url": "https://ymove.app/api/free/13263f92-5fe2-4d92-bec0-808f8b315620",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Lat Pulldown with V-Grip": {
+    "url": "https://ymove.app/api/free/9302ad5d-b97a-4b27-afae-611b6ce70a06",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Seated Cable Row Neutral Grip": {
+    "url": "https://ymove.app/api/free/499ccaa4-719d-40bd-b441-511291482471",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Pec Deck Fly": {
+    "url": "https://ymove.app/api/free/4d197e26-766c-4c5c-b937-9918e56c5b9b",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Cable Tricep Pushdown": {
+    "url": "https://ymove.app/api/free/3875dae4-14a6-4533-84d3-ef9acbadbaea",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Overhead Cable Rope Extension": {
+    "url": "https://ymove.app/api/free/a1c3384e-62db-4595-9b97-df2e7f131234",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Machine Bicep Curl": {
+    "url": "https://ymove.app/api/free/6622f4ed-5af3-4275-af0e-7dc23dd8ff78",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "High Cable Curl": {
+    "url": "https://ymove.app/api/free/770e5cb2-882b-413a-8071-941acd8e4064",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Leg Extension": {
+    "url": "https://ymove.app/api/free/af0c3d19-5ee2-4a19-8688-f8504bb33e3c",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Hack Squat": {
+    "url": "https://ymove.app/api/free/800cc264-d388-4200-8568-8f1df46e9be9",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Lying Leg Curl": {
+    "url": "https://ymove.app/api/free/ee452f3b-4d5f-4deb-995e-64dd2a23f453",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  },
+  "Cable Woodchop (High to Low)": {
+    "url": "https://ymove.app/api/free/3a47b35a-a5ee-4b0c-8780-ba368d122f10",
+    "source": {
+      "provider": "YMove",
+      "author": "Your Move B.V.",
+      "url": "https://ymove.app/free-exercise-videos",
+      "license": "Free commercial in-app use; no standalone redistribution",
+      "licenseUrl": "https://ymove.app/free-exercise-videos"
+    }
+  }
+}

@@ -1,4 +1,5 @@
 import importedExercises from "@/data/importedExercises.json";
+import freeExerciseDemos from "@/data/freeExerciseDemos.json";
 
 export type Difficulty = "beginner" | "intermediate" | "advanced" | "unrated";
 export type ExerciseType = "compound" | "isolation" | "cardio" | "mobility" | "unspecified";
@@ -39,7 +40,7 @@ export interface ExerciseEntry {
   notes: string;
   images?: string[];
   source?: ExerciseSource;
-  demo?: { url: string; durationSeconds: number; source: ExerciseSource };
+  demo?: { url: string; durationSeconds?: number; source: ExerciseSource };
 }
 
 export const EXERCISE_CATEGORIES = [
@@ -258,13 +259,49 @@ const exerciseKey = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "
 const imported = importedExercises as ExerciseEntry[];
 const byName = new Map(imported.map(e => [exerciseKey(e.name), e]));
 const curatedNames = new Set(curatedExercises.map(e => exerciseKey(e.name)));
+// Explicit variant matches, never a fuzzy name search: a front squat, RDL or
+// cable lateral raise must not inherit a different movement's demonstration.
+const freeDemoMatches: Record<string, keyof typeof freeExerciseDemos> = {
+  legs_bb_squat: "Barbell Back Squat",
+  chest_bb_press: "Barbell Bench Press",
+  back_deadlift_conv: "Barbell Deadlift",
+  sh_lateral: "Dumbbell Lateral Raise",
+  free_Side_Lateral_Raise: "Dumbbell Lateral Raise",
+  arm_hammer_curl: "Hammer Curls",
+  free_Hammer_Curls: "Hammer Curls",
+  legs_db_squat: "Dumbbell Goblet Squat",
+  wger_203: "Dumbbell Goblet Squat",
+  back_kb_swing: "Kettlebell swing",
+  glute_kb_swing: "Kettlebell swing",
+  "free_V-Bar_Pulldown": "Lat Pulldown with V-Grip",
+  free_Seated_Cable_Rows: "Seated Cable Row Neutral Grip",
+  chest_pec_deck: "Pec Deck Fly",
+  arm_tricep_pushdown: "Cable Tricep Pushdown",
+  free_Triceps_Pushdown: "Cable Tricep Pushdown",
+  free_Cable_Rope_Overhead_Triceps_Extension: "Overhead Cable Rope Extension",
+  free_Machine_Bicep_Curl: "Machine Bicep Curl",
+  free_High_Cable_Curls: "High Cable Curl",
+  legs_leg_ext: "Leg Extension",
+  free_Leg_Extensions: "Leg Extension",
+  legs_hack_squat: "Hack Squat",
+  free_Lying_Leg_Curls: "Lying Leg Curl",
+  core_woodchop: "Cable Woodchop (High to Low)",
+};
+const dedicatedMachines = new Set(["chest_pec_deck", "legs_leg_ext", "legs_hack_squat"]);
 export const allExercises: ExerciseEntry[] = [
   ...curatedExercises.map(e => {
     const match = byName.get(exerciseKey(e.name));
     return { ...e, images: match?.images, demo: match?.demo, source: match?.source };
   }),
   ...imported.filter(e => !curatedNames.has(exerciseKey(e.name))),
-];
+].map(e => ({
+  ...e,
+  // A dedicated leg-extension/hack-squat/pec-deck machine is not a cable rig.
+  equipment: dedicatedMachines.has(e.id) ? ["machine" as EquipmentType] : e.id === "legs_db_squat" ? ["dumbbells" as EquipmentType] : e.equipment,
+  notes: e.id === "legs_hack_squat" ? "Place shoulders under the pads and keep your back supported. Set the safety stops, lower with control and press through your feet without locking your knees." : e.notes,
+  // Keep existing licensed wger media and its attribution unchanged.
+  demo: e.demo ?? freeExerciseDemos[freeDemoMatches[e.id]],
+}));
 
 export const EQUIPMENT_OPTIONS = [...new Set(allExercises.flatMap(e => e.equipment))].sort();
 export const MUSCLE_OPTIONS = [...new Set(allExercises.map(e => e.primaryMuscle))].sort();
