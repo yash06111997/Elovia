@@ -18,19 +18,26 @@
 - Root regression tests: 27 passed.
 - API TypeScript and production build: passed during implementation.
 - iOS and Android Metro/Hermes exports: passed. These are JavaScript exports, **not signed IPA/APK builds or real-device testing**.
+- A fresh signed Android preview APK from feature commit `b03b810` subsequently finished on EAS. Build `8cd28021-9fe6-4d1b-a480-e8ffd6a910a4`; the artifact URL returned HTTP 200 (139,775,880 bytes). This is an internal test APK, not a production Play AAB or an App Store build.
+- Production recovery commit `d673ee3` passed GitHub CI against PostgreSQL 14, 16 and 18, including database-backed checks. The migration compatibility regression preserves rejection of nullable/unvalidated or unrelated missing constraints; no data reset or safety-check bypass was used.
 - Maestro flow updated for thirteen onboarding pages; not run on a device.
 - Real-device GPS/background recording, video codecs, purchases/restores, screen-reader and reduced-motion behaviour still need device testing.
 
 ## Dashboard work and blockers
 
-- Apple: created `Elovia Pro` subscription group and `elovia_pro_yearly` (one year). Saved US $29.99/year and India ₹1,499/year; other territories use Apple's generated equivalent tiers. Annual upfront availability selected for all current territories. This is a draft, not approved or purchasable. Monthly product and annual trial still need completion and verified purchase testing.
+- Apple: created `Elovia Pro` subscription group and `elovia_pro_yearly` (one year). Saved US $29.99/year and India ₹1,499/year; other territories use Apple's generated equivalent tiers. Annual upfront availability selected for all current territories. Saved and verified a free two-week introductory offer starting 5 October 2026 with no end date across 175 territories. This is a draft, not approved or purchasable. Monthly product and verified purchase testing remain unfinished.
 - RevenueCat: created an Elovia Pro native paywall draft on the existing default offering with dynamic prices, monthly no-trial copy, restore and continue-free controls. It remains **unpublished**; conditional trial rendering and real-device behaviour must be verified before turning on `elovia_native_paywall`.
 - Google: a payments profile now exists, but BillDesk cross-border verification is pending. Owner identity/device/phone verification and store publication requirements are not completed by source-code work. No financial-account opening, contract acceptance or KYC submission was performed.
-- Backend: the configured `https://elovia-production.up.railway.app/api/healthz` returned Railway HTTP 404, `Application not found`, on 5 October. The root URL also returned 404. Do not use these as a working merchant website or publish an app dependent on this backend until hosting is repaired or the correct domain is configured.
-- Old EAS Android preview builds show FINISHED, but the newest older artifact download followed redirects to HTTP 404. An expired APK URL is not a valid merchant-onboarding link.
+- Backend: configured API-only monorepo build/start commands on the existing Railway production service. Fixed legacy baseline adoption for PostgreSQL 18 metadata on production branch `feat/elovia-p0-integrity`, preserving its prior hardening. The tested recovery deployment now reports **Database migrations are current**, then stops at **RevenueCat configuration is invalid**. Railway has only `REVENUECAT_WEBHOOK_SECRET`; its server API key, privacy-hashing secret, entitlement/product mappings and environment/read mode variables are absent. Secure credential transfer requires owner approval. The public health URL still returns HTTP 404; the backend is **not restored yet**. Do not bypass the configuration guard or publish a backend-dependent app until repaired.
+- The new feature branch and production hardening branch have diverged. Consolidate both without losing either set of changes, then rebuild and test before store release. The new Android APK contains the feature branch, not the consolidated production hardening branch.
+- Old EAS Android artifact downloads returned HTTP 404. Use the fresh artifact below instead; BillDesk acceptance of a pre-release APK is not guaranteed.
 - Store screenshots, accurate privacy/data-safety disclosures, live support/privacy/terms pages, a tested signed build and review metadata are release prerequisites. No app-store submission or publication is claimed.
 
 ## Merchant onboarding
+
+Fresh Android test build: <https://expo.dev/accounts/yash06111997/projects/elovia-claude/builds/8cd28021-9fe6-4d1b-a480-e8ffd6a910a4>.
+Verified APK: <https://expo.dev/artifacts/eas/dT4p0DZRn-4FcRKImHxOzREu-HUZqscPqjEgbh5JH9g.apk>.
+Production CI: <https://github.com/yash06111997/Elovia/actions/runs/37279734088>.
 
 Google's primary guidance says BillDesk KYC is separate from Google's account verification and is required before new Indian merchants sell to users outside India: <https://support.google.com/paymentscenter/answer/7421525?hl=en-IN>.
 
