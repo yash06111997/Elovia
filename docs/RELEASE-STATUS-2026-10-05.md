@@ -14,7 +14,7 @@
 ## Verification
 
 - Mobile TypeScript: passed.
-- Consolidated mobile Jest: 86 tests, 26 suites passed, including store-identity race/restore tests. Account-switch server responses and prior-account subscription display are regression-tested.
+- Consolidated mobile Jest: 87 tests, 26 suites passed after the free-video addition, including explicit demo-variant/machine-equipment checks and store-identity race/restore tests. Account-switch server responses and prior-account subscription display are regression-tested. Mobile TypeScript passed.
 - Consolidated root regression tests: 294 passed, 103 database-backed tests skipped locally. Annual-only canonical/normalized trial regressions passed, including cancelled monthly trials, invalid duration, refunds and grace. GitHub CI must verify the consolidated commit against its PostgreSQL matrix.
 - Consolidated mobile TypeScript, workspace library type generation, API TypeScript and API production build: passed. API checking must follow workspace library type generation to avoid stale declarations.
 - Consolidated iOS and Android Metro/Hermes exports: passed separately with two bundler workers. These are JavaScript exports, **not signed IPA/APK builds or real-device testing**. A web-inclusive export failed at the native maps dependency; web release is outside this mobile-only product's scope.
