@@ -909,6 +909,9 @@ integrationTest(
   "trusted projection keeps Pro and Coaching independent and ignores stale byte-ordered tuples",
   async () => {
     const userId = `projector-user-${Date.now()}`;
+    // Compatibility projection intentionally evaluates the database's current
+    // clock. Keep this active-subscription fixture future-dated as CI ages.
+    const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
     await scopedPool.query(
       "INSERT INTO users (id, created_at) VALUES ($1,'2026-08-01T00:00:00Z')",
       [userId],
@@ -916,7 +919,7 @@ integrationTest(
     const advanced = await db.transaction((transaction) =>
       applyTrustedSnapshot(transaction, {
         userId,
-        snapshot: snapshot("2026-09-01T10:00:05.000Z", { coaching: true }),
+        snapshot: snapshot("2026-09-01T10:00:05.000Z", { coaching: true, expires }),
         config: processorConfig,
         operationId: "worker:sort_A000",
       }),
@@ -6694,6 +6697,7 @@ integrationTest(
         receivedAt,
         environment: "sandbox",
         metadata: { schemaVersion: 1, identityCount: 2 },
+        retentionUntil: new Date(Date.parse(receivedAt) + 30 * 24 * 60 * 60 * 1000).toISOString(),
         identityCount: 2,
         identityRequired: true,
         entitlementRequired: true,
