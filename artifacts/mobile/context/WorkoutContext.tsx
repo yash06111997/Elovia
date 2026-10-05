@@ -1,7 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { onDataRestored } from "@/lib/syncEvents";
 import { recommendTrainingAdjustment, type TrainingAdjustment, type WorkoutFeedback } from "@/lib/trainingAdaptation";
+import { summarizeSets, recordBaseline, detectRecords, type RecordAchievement, type RecordBaseline } from "@/lib/workoutAnalytics";
+import { findExercise } from "@/utils/exerciseDatabase";
+import { toLocalDateKey } from "@/lib/health/types";
 
 export type { TrainingAdjustment, WorkoutFeedback } from "@/lib/trainingAdaptation";
 
@@ -45,6 +48,7 @@ export interface ExerciseLog {
   sets: SetLog[];
   date: string;
   notes?: string;
+  primaryMuscle?: string;
 }
 
 export type SetType = "normal" | "warmup" | "dropset" | "failure";
@@ -63,11 +67,15 @@ export interface PersonalRecord {
   maxWeightKg: number;
   maxReps: number;
   bestVolume: number;
+  maxSets?: number;
+  maxTotalReps?: number;
+  maxTotalVolume?: number;
   lastPerformed: string;
 }
 
 export interface WorkoutSession {
   id: string;
+  startedAt?: number;
   date: string;
   workoutDayId: string;
   workoutDayName: string;
@@ -81,6 +89,9 @@ export interface WorkoutSession {
 export type ActivePlanType = "ai" | "custom";
 
 interface WorkoutContextType {
+  isLoaded: boolean;
+  liveRecords: RecordAchievement[];
+  dismissRecords: () => void;
   plan: WorkoutPlan | null;
   sessions: WorkoutSession[];
   personalRecords: PersonalRecord[];
@@ -114,6 +125,7 @@ interface WorkoutContextType {
 const WorkoutContext = createContext<WorkoutContextType | null>(null);
 
 export function WorkoutProvider({ children }: { children: React.ReactNode }) {
+  const [isLoaded, setIsLoaded] = useState(false);
   const [plan, setPlanState] = useState<WorkoutPlan | null>(null);
   const [sessions, setSessions] = useState<WorkoutSession[]>([]);
   const [personalRecords, setPersonalRecords] = useState<PersonalRecord[]>([]);
@@ -121,6 +133,23 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   const [customPlans, setCustomPlans] = useState<CustomWorkoutPlan[]>([]);
   const [activePlanType, setActivePlanType] = useState<ActivePlanType>("ai");
   const [activeCustomPlanId, setActiveCustomPlanId] = useState<string | null>(null);
+  const [liveRecords, setLiveRecords] = useState<RecordAchievement[]>([]);
+  const recordRef = useRef<{ sessionId: string; baseline: RecordBaseline } | null>(null);
+  const historicalRecords = useMemo(() => recordBaseline(sessions, personalRecords), [sessions, personalRecords]);
+
+  useEffect(() => {
+    if (!isLoaded || !activeSession) { recordRef.current = null; return; }
+    const historical = historicalRecords;
+    if (recordRef.current?.sessionId !== activeSession.id) {
+      // A restored draft has already been celebrated; do not replay it on launch.
+      recordRef.current = { sessionId: activeSession.id, baseline: detectRecords(activeSession, historical).baseline };
+      setLiveRecords([]);
+      return;
+    }
+    const result = detectRecords(activeSession, recordRef.current.baseline);
+    recordRef.current.baseline = result.baseline;
+    if (result.achievements.length) setLiveRecords(result.achievements);
+  }, [activeSession, isLoaded, historicalRecords]);
 
   const load = async () => {
     try {
@@ -140,7 +169,8 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
       if (cp) setCustomPlans(JSON.parse(cp));
       if (apt) setActivePlanType(JSON.parse(apt));
       if (acpid) setActiveCustomPlanId(JSON.parse(acpid));
-    } catch (e) {}
+    } catch (e) { console.warn("Unable to load workouts", e); }
+    finally { setIsLoaded(true); }
   };
 
   useEffect(() => {
@@ -161,7 +191,8 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   const startSession = useCallback((day: WorkoutDay) => {
     const session: WorkoutSession = {
       id: Date.now().toString(),
-      date: new Date().toISOString().split("T")[0],
+      startedAt: Date.now(),
+      date: toLocalDateKey(new Date()),
       workoutDayId: day.id,
       workoutDayName: day.dayName,
       exerciseLogs: [],
@@ -175,7 +206,8 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   const startFreeSession = useCallback((name?: string) => {
     const session: WorkoutSession = {
       id: Date.now().toString(),
-      date: new Date().toISOString().split("T")[0],
+      startedAt: Date.now(),
+      date: toLocalDateKey(new Date()),
       workoutDayId: "free",
       workoutDayName: name || "Free Workout",
       exerciseLogs: [],
@@ -195,6 +227,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
         exerciseName,
         sets: [],
         date: prev.date,
+        primaryMuscle: findExercise(id, exerciseName)?.primaryMuscle,
       };
       const updated = {
         ...prev,
@@ -286,6 +319,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
             exerciseName,
             sets: [set],
             date: prev.date,
+            primaryMuscle: findExercise(exerciseId, exerciseName)?.primaryMuscle,
           },
         ];
       }
@@ -307,14 +341,15 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
         adjustment,
       };
 
-      const newSessions = [...sessions, completed].slice(-200);
+      const newSessions = [...sessions, completed];
       setSessions(newSessions);
       AsyncStorage.setItem("@elovia_sessions", JSON.stringify(newSessions));
 
       const newPRs = [...personalRecords];
       completed.exerciseLogs.forEach((log) => {
+        const totals = summarizeSets(completed.exerciseLogs.filter(l => l.exerciseId === log.exerciseId).flatMap(l => l.sets));
         log.sets
-          .filter((s) => s.completed)
+          .filter((s) => s.completed && s.setType !== "warmup" && Number.isFinite(s.reps) && s.reps > 0 && Number.isFinite(s.weightKg) && s.weightKg >= 0)
           .forEach((s) => {
             const existing = newPRs.find((pr) => pr.exerciseId === log.exerciseId);
             const volume = s.reps * s.weightKg;
@@ -325,6 +360,9 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
                 maxWeightKg: s.weightKg,
                 maxReps: s.reps,
                 bestVolume: volume,
+                maxSets: totals.sets,
+                maxTotalReps: totals.reps,
+                maxTotalVolume: totals.volume,
                 lastPerformed: completed.date,
               });
             } else {
@@ -334,6 +372,9 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
                 maxWeightKg: Math.max(existing.maxWeightKg, s.weightKg),
                 maxReps: Math.max(existing.maxReps, s.reps),
                 bestVolume: Math.max(existing.bestVolume, volume),
+                maxSets: Math.max(existing.maxSets ?? 0, totals.sets),
+                maxTotalReps: Math.max(existing.maxTotalReps ?? 0, totals.reps),
+                maxTotalVolume: Math.max(existing.maxTotalVolume ?? 0, totals.volume),
                 lastPerformed: completed.date,
               };
             }
@@ -373,7 +414,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
 
   const getLastPerformance = useCallback(
     (exerciseId: string): { date: string; sets: SetLog[] } | null => {
-      const completedSessions = [...sessions].filter((s) => s.completed).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      const completedSessions = [...sessions].filter((s) => s.completed).sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id, undefined, { numeric: true }));
       for (const session of completedSessions) {
         const log = session.exerciseLogs.find((l) => l.exerciseId === exerciseId);
         if (log && log.sets.some((s) => s.completed)) {
@@ -385,7 +426,7 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
     [sessions],
   );
 
-  const todaySession = sessions.find((s) => s.date === new Date().toISOString().split("T")[0]) ?? null;
+  const todaySession = [...sessions].reverse().find((s) => s.date === toLocalDateKey(new Date())) ?? null;
 
   const getWeeklyCompletion = useCallback((): number => {
     const today = new Date();
@@ -463,6 +504,9 @@ export function WorkoutProvider({ children }: { children: React.ReactNode }) {
   return (
     <WorkoutContext.Provider
       value={{
+        isLoaded,
+        liveRecords,
+        dismissRecords: () => setLiveRecords([]),
         plan,
         sessions,
         personalRecords,

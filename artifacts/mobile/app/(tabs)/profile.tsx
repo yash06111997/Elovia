@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Alert, Modal, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Platform, Alert, Modal, ActivityIndicator, Linking } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -578,14 +578,14 @@ export default function ProfileScreen() {
             <Ionicons name="footsteps" size={18} color={Colors.accentGreen} />
             <View style={{ flex: 1 }}>
               <Text style={[styles.stepsValue, { color: theme.text }]}>{healthData.todaySteps.toLocaleString()} steps today</Text>
-              <Text style={[styles.stepsGoal, { color: theme.textSecondary }]}>Goal: 10,000 steps</Text>
+              <Text style={[styles.stepsGoal, { color: theme.textSecondary }]}>Goal: {(profile.dailyStepsGoal ?? 10000).toLocaleString()} steps</Text>
             </View>
             <View style={[styles.stepsProgress, { backgroundColor: Colors.dark.card }]}>
               <View
                 style={[
                   styles.stepsProgressFill,
                   {
-                    width: `${Math.min(100, ((healthData?.todaySteps ?? 0) / 10000) * 100)}%`,
+                    width: `${Math.min(100, ((healthData?.todaySteps ?? 0) / Math.max(1, profile.dailyStepsGoal ?? 10000)) * 100)}%`,
                     backgroundColor: Colors.accentGreen,
                   },
                 ]}
@@ -742,11 +742,11 @@ export default function ProfileScreen() {
             </TouchableOpacity>
           )}
 
-          {!isFree && !isTrialActive && (
+          {!isFree && (
             <TouchableOpacity
               style={[styles.loginBtn, { backgroundColor: Colors.primary }]}
               onPress={() => {
-                router.push("/paywall");
+                void Linking.openURL(Platform.OS === "ios" ? "https://apps.apple.com/account/subscriptions" : "https://play.google.com/store/account/subscriptions").catch(() => Alert.alert("Could not open store settings", "Open your app store and go to Subscriptions to manage or cancel Elovia."));
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
               }}
               activeOpacity={0.85}

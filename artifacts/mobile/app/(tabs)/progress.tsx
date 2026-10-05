@@ -17,6 +17,8 @@ import { MacroBar } from "@/components/MacroBar";
 import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
 import { PremiumLock } from "@/components/PremiumLock";
+import { MuscleProgress } from "@/components/MuscleProgress";
+import { summarizeSession } from "@/lib/workoutAnalytics";
 
 /**
  * Prop types derived from the context hooks rather than restated by hand.
@@ -44,11 +46,7 @@ export default function ProgressScreen() {
   const weeklyCalories = getWeeklyCalories();
   const weeklyCompletion = getWeeklyCompletion();
 
-  const totalVolume = sessions
-    .flatMap((s) => s.exerciseLogs)
-    .flatMap((l) => l.sets)
-    .filter((s) => s.completed)
-    .reduce((sum, s) => sum + s.reps * s.weightKg, 0);
+  const totalVolume = sessions.filter(s => s.completed).reduce((sum, s) => sum + summarizeSession(s).volume, 0);
 
   const completedSessions = sessions.filter((s) => s.completed).length;
 
@@ -86,7 +84,7 @@ export default function ProgressScreen() {
       </View>
 
       {activeTab === "strength" && (
-        <StrengthTab personalRecords={personalRecords} sessions={sessions} />
+        <View style={{ gap: 24 }}><MuscleProgress sessions={sessions} /><StrengthTab personalRecords={personalRecords} sessions={sessions} /></View>
       )}
       {activeTab === "nutrition" && (
         <PremiumLock feature="advanced_analytics">
@@ -131,7 +129,10 @@ function StrengthTab({ personalRecords, sessions }: {
           </View>
           <View style={{ alignItems: "flex-end" }}>
             <Text style={[styles.prWeight, { color: Colors.primary }]}>{pr.maxWeightKg} kg</Text>
-            <Text style={[styles.prReps, { color: theme.textSecondary }]}>× {pr.maxReps} reps</Text>
+            <Text style={[styles.prReps, { color: theme.textSecondary }]}>Rep record: {pr.maxReps}</Text>
+            <Text style={[styles.prReps, { color: theme.textSecondary }]}>Set volume: {pr.bestVolume} kg</Text>
+            <Text style={[styles.prReps, { color: theme.textSecondary }]}>{pr.maxSets ?? "—"} sets · {pr.maxTotalReps ?? "—"} total reps</Text>
+            <Text style={[styles.prReps, { color: theme.textSecondary }]}>Exercise volume: {pr.maxTotalVolume ?? "—"} kg</Text>
           </View>
         </View>
       ))}

@@ -15,7 +15,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { getPublicApiUrl } from "@/utils/api";
 import { trackEvent } from "@/lib/telemetry";
 
-const TOTAL_STEPS = 7;
+const TOTAL_STEPS = 13;
 
 /**
  * Shared by the onboarding steps.
@@ -67,6 +67,18 @@ export default function OnboardingScreen() {
     medicalNotes: "",
     sleepHours: 7,
     waterIntakeLiters: 2,
+    trainingExperienceMonths: 0,
+    preferredWorkoutDays: [],
+    preferredWorkoutTime: "Flexible",
+    priorityMuscles: [],
+    trainingBarriers: [],
+    goalMotivation: "",
+    mealsPerDay: 3,
+    cookingMinutes: 30,
+    nutritionBudget: "Flexible",
+    dailyStepsGoal: 8000,
+    stressLevel: "Moderate",
+    sleepSchedule: "",
   });
 
   const update = (key: keyof UserProfile, value: any) => {
@@ -127,13 +139,25 @@ export default function OnboardingScreen() {
       case 5:
         return <StepDiet form={form} update={update} />;
       case 6:
+        return <StepTrainingHistory form={form} update={update} />;
+      case 7:
+        return <StepSchedule form={form} update={update} />;
+      case 8:
+        return <StepPriorities form={form} update={update} />;
+      case 9:
+        return <StepConsistency form={form} update={update} />;
+      case 10:
+        return <StepFoodRoutine form={form} update={update} />;
+      case 11:
+        return <StepRecovery form={form} update={update} />;
+      case 12:
         return <StepHealth form={form} update={update} privacyAcknowledged={privacyAcknowledged} setPrivacyAcknowledged={setPrivacyAcknowledged} />;
       default:
         return null;
     }
   };
 
-  const stepTitles = ["Welcome", "About You", "Your Goals", "Workout Preferences", "Available Equipment", "Diet & Nutrition", "Health Habits"];
+  const stepTitles = ["Welcome", "About You", "Your Goals", "Workout Preferences", "Available Equipment", "Diet & Nutrition", "Training History", "Your Weekly Schedule", "Priority Muscles", "Build Your Consistency", "Your Food Routine", "Recovery & Movement", "Health Habits"];
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ y: 0, animated: false });
@@ -235,31 +259,6 @@ export default function OnboardingScreen() {
           )}
         </TouchableOpacity>
 
-        {/*
-          Steps 4-6 (workout, equipment, diet) collect preferences that every
-          field already has a working default for, and that the app asks again
-          at the point they are used: the meal generator re-prompts for diet
-          type, favourite foods and suggestions, seeded from the profile but
-          editable there. Asking cold, before the user has seen anything, is
-          the weaker of the two moments.
-
-          Skip jumps TO the final step rather than past it, because that step
-          carries the privacy acknowledgement. Skipping a preference is fine;
-          skipping consent is not.
-        */}
-        {step >= 3 && step < TOTAL_STEPS - 1 ? (
-          <TouchableOpacity
-            style={styles.skipBtn}
-            onPress={() => setStep(TOTAL_STEPS - 1)}
-            accessibilityRole="button"
-            accessibilityLabel="Skip the remaining preferences"
-            accessibilityHint="Uses sensible defaults. You can change these any time in your profile."
-          >
-            <Text style={[styles.skipText, { color: theme.textMuted }]}>
-              Skip — you can set these later
-            </Text>
-          </TouchableOpacity>
-        ) : null}
       </View>
     </View>
   );
@@ -556,6 +555,14 @@ function StepEquipment({ form, toggleEquipment }: Omit<StepProps, "update"> & { 
     { label: "Kettlebells", value: "kettlebells", icon: "ellipse-outline" },
     { label: "Squat Rack", value: "squat_rack", icon: "cube-outline" },
     { label: "Smith Machine", value: "smith_machine", icon: "grid-outline" },
+    { label: "Weight Machines", value: "machine", icon: "fitness-outline" },
+    { label: "Dip Bars", value: "dip_bars", icon: "fitness-outline" },
+    { label: "Box / Step", value: "box", icon: "cube-outline" },
+    { label: "Ab Wheel", value: "ab_wheel", icon: "ellipse-outline" },
+    { label: "EZ Bar", value: "ez_bar", icon: "barbell-outline" },
+    { label: "Stability Ball", value: "stability_ball", icon: "ellipse-outline" },
+    { label: "Medicine Ball", value: "medicine_ball", icon: "ellipse-outline" },
+    { label: "Foam Roller", value: "foam_roller", icon: "fitness-outline" },
     { label: "No Equipment", value: "no_equipment", icon: "body-outline" },
   ];
   const selected: Equipment[] = form.equipment ?? [];
@@ -738,6 +745,33 @@ function StepDiet({ form, update }: StepProps) {
   );
 }
 
+function MultiChoice({ label, options, values, onChange }: { label: string; options: string[]; values: string[]; onChange: (values: string[]) => void }) {
+  const { theme } = useTheme();
+  return <View style={{ gap: 12 }}><Text style={[styles.fieldLabel, { color: theme.textSecondary }]}>{label}</Text><View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{options.map(option => <TouchableOpacity key={option} accessibilityRole="checkbox" accessibilityLabel={option} accessibilityState={{ checked: values.includes(option) }} onPress={() => onChange(values.includes(option) ? values.filter(v => v !== option) : [...values, option])} style={{ minHeight: 48, justifyContent: "center", paddingHorizontal: 16, borderRadius: 12, backgroundColor: values.includes(option) ? Colors.primary + "25" : theme.card, borderWidth: 1, borderColor: values.includes(option) ? Colors.primary : theme.border }}><Text style={{ color: values.includes(option) ? Colors.primary : theme.text }}>{option}</Text></TouchableOpacity>)}</View></View>;
+}
+function StepTrainingHistory({ form, update }: StepProps) {
+  const { theme } = useTheme();
+  return <View style={styles.stepContent}><Text style={{ color: theme.textSecondary }}>Tell us about your starting point so your first plan fits your experience.</Text><NumberStepper label="Months of regular strength training" value={form.trainingExperienceMonths} min={0} max={240} step={3} onChange={v => update("trainingExperienceMonths", v)} /><LabelInput label="What makes this goal important to you? (optional)" value={form.goalMotivation} onChangeText={v => update("goalMotivation", v)} placeholder="e.g. Feel stronger, return to sport, build confidence" multiline /></View>;
+}
+function StepSchedule({ form, update }: StepProps) {
+  const { theme } = useTheme();
+  return <View style={styles.stepContent}><Text style={{ color: theme.textSecondary }}>Pick your preferred days, or leave them unselected for a flexible schedule.</Text><MultiChoice label="Preferred training days" options={["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]} values={form.preferredWorkoutDays ?? []} onChange={v => { update("preferredWorkoutDays", v); if (v.length) update("workoutDaysPerWeek", v.length); }} /><MultiChoice label="Preferred time (choose one)" options={["Morning", "Afternoon", "Evening", "Flexible"]} values={[form.preferredWorkoutTime ?? "Flexible"]} onChange={v => update("preferredWorkoutTime", v[v.length - 1] ?? "Flexible")} /></View>;
+}
+function StepPriorities({ form, update }: StepProps) {
+  const { theme } = useTheme();
+  return <View style={styles.stepContent}><Text style={{ color: theme.textSecondary }}>Choose muscles you want to prioritise. We’ll keep your programme balanced and place your priorities first.</Text><MultiChoice label="Priority muscle groups (optional)" options={["Chest", "Back", "Legs", "Shoulders", "Arms", "Core", "Glutes"]} values={form.priorityMuscles ?? []} onChange={v => update("priorityMuscles", v)} /></View>;
+}
+function StepConsistency({ form, update }: StepProps) {
+  const { theme } = useTheme();
+  return <View style={styles.stepContent}><Text style={{ color: theme.textSecondary }}>What tends to get in the way? Your plan preview will include a practical tip for each selected barrier.</Text><MultiChoice label="Common barriers (optional)" options={["Limited time", "Low motivation", "Uncertain technique", "Travel", "Recovery", "No equipment"]} values={form.trainingBarriers ?? []} onChange={v => update("trainingBarriers", v)} /></View>;
+}
+function StepFoodRoutine({ form, update }: StepProps) {
+  return <View style={styles.stepContent}><NumberStepper label="Meals per day" value={form.mealsPerDay} min={2} max={6} step={1} onChange={v => update("mealsPerDay", v)} /><NumberStepper label="Minutes available to prepare food" value={form.cookingMinutes} min={5} max={120} step={5} onChange={v => update("cookingMinutes", v)} /><MultiChoice label="Food budget" options={["Budget-friendly", "Flexible", "Prefer convenience"]} values={[form.nutritionBudget ?? "Flexible"]} onChange={v => update("nutritionBudget", v[v.length - 1] ?? "Flexible")} /></View>;
+}
+function StepRecovery({ form, update }: StepProps) {
+  const { theme } = useTheme();
+  return <View style={styles.stepContent}><Text style={{ color: theme.textSecondary }}>These are preferences, not medical targets. You can change your movement goal later.</Text><NumberStepper label="Preferred daily steps goal" value={form.dailyStepsGoal} min={1000} max={30000} step={500} onChange={v => update("dailyStepsGoal", v)} /><MultiChoice label="Usual stress level (optional)" options={["Low", "Moderate", "High", "Prefer not to say"]} values={[form.stressLevel ?? "Moderate"]} onChange={v => update("stressLevel", v[v.length - 1] ?? "Prefer not to say")} /><LabelInput label="Usual sleep schedule (optional)" value={form.sleepSchedule} onChangeText={v => update("sleepSchedule", v)} placeholder="e.g. 11 pm–7 am, rotating shifts" /></View>;
+}
 function StepHealth({ form, update, privacyAcknowledged, setPrivacyAcknowledged }: StepProps & { privacyAcknowledged: boolean; setPrivacyAcknowledged: (v: boolean) => void }) {
   const { isDark, theme } = useTheme();
   return (

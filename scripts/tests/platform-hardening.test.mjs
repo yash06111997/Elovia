@@ -27,7 +27,9 @@ test("mobile premium access comes from the authenticated server entitlement", as
 test("the paywall never creates or clears a client-side trial", async () => {
   const paywall = await source("artifacts/mobile/app/paywall.tsx");
 
-  assert.match(paywall, /await startTrial\(\)/);
+  assert.doesNotMatch(paywall, /await startTrial\(\)/);
+  assert.match(paywall, /await rc\.purchase\(selectedPackage\)/);
+  assert.match(paywall, /yearlyTrialEligible/);
   assert.doesNotMatch(paywall, /clearTrial/);
   assert.doesNotMatch(paywall, /trialUsed/);
   assert.match(paywall, /waitForServerAccess/);

@@ -21,6 +21,7 @@ export type Equipment =
   | "kettlebells"
   | "squat_rack"
   | "smith_machine"
+  | "machine" | "dip_bars" | "box" | "ab_wheel" | "ez_bar" | "stability_ball" | "medicine_ball" | "foam_roller"
   | "no_equipment";
 
 export type DietType = "balanced" | "keto" | "low_carb" | "high_protein" | "mediterranean" | "paleo" | "vegetarian_focused" | "custom";
@@ -50,6 +51,18 @@ export interface UserProfile {
   medicalNotes: string;
   sleepHours: number;
   waterIntakeLiters: number;
+  trainingExperienceMonths?: number;
+  preferredWorkoutDays?: string[];
+  preferredWorkoutTime?: string;
+  priorityMuscles?: string[];
+  trainingBarriers?: string[];
+  goalMotivation?: string;
+  mealsPerDay?: number;
+  cookingMinutes?: number;
+  nutritionBudget?: string;
+  dailyStepsGoal?: number;
+  stressLevel?: string;
+  sleepSchedule?: string;
 }
 
 export interface CustomMacros {

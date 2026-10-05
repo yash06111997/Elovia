@@ -1,6 +1,8 @@
-import React, { createContext, useContext, useEffect, useRef } from "react";
+import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
-import Purchases from "react-native-purchases";
+import Purchases, { type PurchasesPackage } from "react-native-purchases";
+import { purchasePolicyError } from "./subscriptionOffers";
+import { PRODUCT_IDS } from "@/constants/subscription";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Constants from "expo-constants";
 import { useAuth } from "./auth";
@@ -54,6 +56,7 @@ function useRevenueCatContext() {
   const queryClient = useQueryClient();
   const { user, isAuthenticated } = useAuth();
   const lastUserId = useRef<string | null>(null);
+  const [identityUserId, setIdentityUserId] = useState<string | null>(null);
 
   useEffect(() => {
     async function syncIdentity() {
@@ -61,10 +64,12 @@ function useRevenueCatContext() {
         if (isAuthenticated && user?.id && user.id !== lastUserId.current) {
           await Purchases.logIn(user.id);
           lastUserId.current = user.id;
+          setIdentityUserId(user.id);
           queryClient.invalidateQueries({ queryKey: ["revenuecat"] });
         } else if (!isAuthenticated && lastUserId.current) {
           await Purchases.logOut();
           lastUserId.current = null;
+          setIdentityUserId(null);
           queryClient.invalidateQueries({ queryKey: ["revenuecat"] });
         }
       } catch (e) {
@@ -93,8 +98,19 @@ function useRevenueCatContext() {
   });
 
   const purchaseMutation = useMutation({
-    mutationFn: async (packageToPurchase: any) => {
-      const { customerInfo } = await Purchases.purchasePackage(packageToPurchase);
+    mutationFn: async (packageToPurchase: PurchasesPackage) => {
+      if (!isAuthenticated || !user?.id) throw new Error("Sign in before subscribing.");
+      // Await the store identity to ensure its webhook maps to this Firebase user.
+      if (lastUserId.current !== user.id) {
+        await Purchases.logIn(user.id);
+        lastUserId.current = user.id;
+        setIdentityUserId(user.id);
+      }
+      const error = purchasePolicyError(packageToPurchase, Platform.OS);
+      if (error) throw new Error(error);
+      const basePlan = Platform.OS === "android" && packageToPurchase.product.identifier.split(":")[0] === PRODUCT_IDS.monthly
+        ? packageToPurchase.product.subscriptionOptions?.find(option => option.isBasePlan && !option.freePhase) : undefined;
+      const { customerInfo } = basePlan ? await Purchases.purchaseSubscriptionOption(basePlan) : await Purchases.purchasePackage(packageToPurchase);
       return customerInfo;
     },
     onSuccess: () => {
@@ -115,6 +131,7 @@ function useRevenueCatContext() {
     customerInfoQuery.data?.entitlements.active?.[REVENUECAT_ENTITLEMENT_IDENTIFIER] !== undefined;
 
   return {
+    isIdentityReady: isAuthenticated && identityUserId === user?.id,
     customerInfo: customerInfoQuery.data,
     offerings: offeringsQuery.data,
     isSubscribed,

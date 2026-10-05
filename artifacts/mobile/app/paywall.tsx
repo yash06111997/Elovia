@@ -13,13 +13,17 @@ import { useRevenueCat } from "@/lib/revenuecat";
 import { useAuth } from "@/lib/auth";
 import { PREMIUM_FEATURES, PAYWALL_COPY, FAQ_ITEMS } from "@/constants/subscription";
 import { trackEvent } from "@/lib/telemetry";
+import RevenueCatUI from "react-native-purchases-ui";
+import Purchases, { INTRO_ELIGIBILITY_STATUS } from "react-native-purchases";
+import { freeTrialDays, purchasePolicyError } from "@/lib/subscriptionOffers";
+import { monthlyEquivalent, annualSavings } from "@/lib/localizedPricing";
 
 type PlanKey = "yearly" | "monthly" | "lifetime";
 
 export default function PaywallScreen() {
   const { isDark, theme } = useTheme();
   const insets = useSafeAreaInsets();
-  const { startTrial, refreshEntitlement, isTrialActive } = useSubscription();
+  const { refreshEntitlement } = useSubscription();
   const { isAuthenticated, login } = useAuth();
   const rc = useRevenueCat();
   const params = useLocalSearchParams<{ postOnboarding?: string }>();
@@ -28,6 +32,8 @@ export default function PaywallScreen() {
   const [selectedPlan, setSelectedPlan] = useState<PlanKey>("yearly");
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null);
   const [confirmVisible, setConfirmVisible] = useState(false);
+  const [yearlyTrialEligible, setYearlyTrialEligible] = useState(false);
+  const [useNativePaywall, setUseNativePaywall] = useState(true);
 
   useEffect(() => {
     void trackEvent("paywall_viewed", {
@@ -61,13 +67,21 @@ export default function PaywallScreen() {
 
   const yearlyMonthlyFormatted = (() => {
     if (!yearlyPkg || !monthlyRaw) return "";
-    const perMonth = yearlyRaw / 12;
-    const sym = yearlyPkg.product.priceString?.replace(/[\d.,\s]/g, "").trim() || "";
-    return `${sym}${perMonth.toFixed(2)}/mo`;
+    return `${monthlyEquivalent(yearlyRaw, yearlyPkg.product.currencyCode)}/mo`;
   })();
-  const savingsPercent = monthlyRaw > 0 ? Math.round((1 - yearlyRaw / (monthlyRaw * 12)) * 100) : 0;
+  const savingsPercent = annualSavings(monthlyRaw, yearlyRaw, monthlyPkg?.product.currencyCode ?? "", yearlyPkg?.product.currencyCode ?? "");
 
   const selectedPackage = selectedPlan === "yearly" ? yearlyPkg : selectedPlan === "lifetime" ? lifetimePkg : monthlyPkg;
+  useEffect(() => {
+    let active = true;
+    setYearlyTrialEligible(false);
+    if (!yearlyPkg || freeTrialDays(yearlyPkg, Platform.OS) !== 14) return;
+    if (Platform.OS === "android") { setYearlyTrialEligible(true); return; }
+    if (Platform.OS === "ios") void Purchases.checkTrialOrIntroductoryPriceEligibility([yearlyPkg.product.identifier]).then(result => {
+      if (active) setYearlyTrialEligible(result[yearlyPkg.product.identifier]?.status === INTRO_ELIGIBILITY_STATUS.INTRO_ELIGIBILITY_STATUS_ELIGIBLE);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [yearlyPkg, isAuthenticated]);
 
   const waitForServerAccess = async () => {
     for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -76,16 +90,6 @@ export default function PaywallScreen() {
       if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 750));
     }
     return false;
-  };
-
-  const handleStartTrial = async () => {
-    await startTrial();
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    if (isPostOnboarding) {
-      router.replace("/(tabs)");
-    } else {
-      router.back();
-    }
   };
 
   const handleContinueFree = () => {
@@ -124,6 +128,7 @@ export default function PaywallScreen() {
     } catch (e: any) {
       if (!e?.userCancelled) {
         console.log("Purchase error:", e);
+        Alert.alert("Purchase could not be completed", e?.message ?? "Please try again. You can also restore an existing purchase.");
       }
     }
   };
@@ -140,10 +145,35 @@ export default function PaywallScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
       console.log("Restore error:", e);
+      Alert.alert("Could not restore purchases", "Please check your connection and try again.");
     }
   };
 
-  const showTrialButton = isTrialActive;
+  const showTrialButton = selectedPlan === "yearly" && yearlyTrialEligible;
+  const purchaseError = selectedPackage ? purchasePolicyError(selectedPackage, Platform.OS) : null;
+
+  // Publish a RevenueCat Paywall on this offering and set this metadata flag.
+  // The local paywall remains usable while the remote design is being configured.
+  if (isAuthenticated && rc.isIdentityReady && useNativePaywall && currentOffering?.metadata.elovia_native_paywall === true && Platform.OS !== "web") {
+    const syncNativePurchase = async () => {
+      void rc.refetchCustomerInfo();
+      if (await waitForServerAccess()) handleContinueFree();
+      else Alert.alert("Purchase received", "Your access is still syncing. Restore purchases in a moment; you will not be charged again.");
+    };
+    return <View style={{ flex: 1, backgroundColor: theme.background }}>
+      <RevenueCatUI.Paywall style={{ flex: 1 }} options={{ offering: currentOffering, displayCloseButton: !isPostOnboarding }} onDismiss={handleContinueFree}
+        onPurchaseCompleted={() => void syncNativePurchase()} onRestoreCompleted={() => void syncNativePurchase()}
+        onPurchaseError={({ error }) => { setUseNativePaywall(false); Alert.alert("Purchase could not be completed", error.message); }}
+        onRestoreError={({ error }) => Alert.alert("Could not restore purchases", error.message)}
+        onPurchasePackageInitiated={({ packageBeingPurchased, resume }) => {
+          const error = purchasePolicyError(packageBeingPurchased, Platform.OS);
+          const monthlyAndroidTrial = Platform.OS === "android" && packageBeingPurchased.packageType === "MONTHLY" && !!packageBeingPurchased.product.defaultOption?.freePhase;
+          if (error || monthlyAndroidTrial) { resume(false); setUseNativePaywall(false); Alert.alert("Choose a plan", error ?? "Monthly subscriptions have no trial. Please select the monthly plan below."); }
+          else resume(true);
+        }} />
+      <TouchableOpacity accessibilityRole="button" style={{ minHeight: 48, padding: 16, paddingBottom: insets.bottom + 16, alignItems: "center" }} onPress={handleContinueFree}><Text style={{ color: theme.text }}>Continue with Free</Text></TouchableOpacity>
+    </View>;
+  }
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
@@ -185,7 +215,7 @@ export default function PaywallScreen() {
             <TouchableOpacity
               style={[
                 styles.planCard,
-                {
+  {
                   backgroundColor: selectedPlan === "yearly" ? Colors.primary + "12" : theme.card,
                   borderColor: selectedPlan === "yearly" ? Colors.primary : theme.border,
                   borderWidth: selectedPlan === "yearly" ? 2 : 1,
@@ -216,6 +246,7 @@ export default function PaywallScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.planName, { color: theme.text }]}>Yearly Premium</Text>
                   <Text style={[styles.planPrice, { color: theme.textSecondary }]}>{yearlyPrice}</Text>
+                  <Text style={[styles.planSaving, { color: theme.textSecondary }]}>{yearlyTrialEligible ? `14 days free, then ${yearlyPrice}/year` : "Yearly billing · trial eligibility confirmed by the store"}</Text>
                   <Text style={[styles.planSaving, { color: Colors.accentGreen }]}>
                     {yearlyMonthlyFormatted} · Save {savingsPercent}%
                   </Text>
@@ -256,6 +287,7 @@ export default function PaywallScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.planName, { color: theme.text }]}>Monthly Premium</Text>
                   <Text style={[styles.planPrice, { color: theme.textSecondary }]}>{monthlyPrice}</Text>
+                  <Text style={[styles.planSaving, { color: theme.textSecondary }]}>Billed monthly · no free trial</Text>
                 </View>
               </View>
             </TouchableOpacity>
@@ -323,7 +355,7 @@ export default function PaywallScreen() {
                   },
                 ]}
               >
-                Loading plans...
+                Plans are unavailable. Check your connection and try again.
               </Text>
             </View>
           )}
@@ -333,11 +365,6 @@ export default function PaywallScreen() {
           <TouchableOpacity style={[styles.ctaPrimary, { backgroundColor: Colors.primary }]} onPress={login} activeOpacity={0.85}>
             <Ionicons name="log-in-outline" size={20} color="#000" />
             <Text style={styles.ctaPrimaryText}>Sign in to Start Trial or Subscribe</Text>
-          </TouchableOpacity>
-        ) : showTrialButton ? (
-          <TouchableOpacity style={[styles.ctaPrimary, { backgroundColor: Colors.primary }]} onPress={handleStartTrial} activeOpacity={0.85}>
-            <Ionicons name="sparkles" size={20} color="#000" />
-            <Text style={styles.ctaPrimaryText}>{PAYWALL_COPY.ctaPrimary}</Text>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
@@ -350,20 +377,21 @@ export default function PaywallScreen() {
             ]}
             onPress={handlePurchase}
             activeOpacity={0.85}
-            disabled={rc.isPurchasing || !selectedPackage}
+            disabled={rc.isPurchasing || !selectedPackage || !!purchaseError}
           >
             {rc.isPurchasing ? (
               <ActivityIndicator size="small" color="#000" />
             ) : (
               <>
                 <Ionicons name="diamond" size={20} color="#000" />
-                <Text style={styles.ctaPrimaryText}>{selectedPlan === "lifetime" ? "Buy Lifetime Access" : "Subscribe Now"}</Text>
+                <Text style={styles.ctaPrimaryText}>{showTrialButton ? PAYWALL_COPY.ctaPrimary : selectedPlan === "lifetime" ? "Buy Lifetime Access" : "Subscribe Now"}</Text>
               </>
             )}
           </TouchableOpacity>
         )}
 
-        {showTrialButton && <Text style={[styles.trialNote, { color: theme.textSecondary }]}>{PAYWALL_COPY.trialNote}</Text>}
+        <Text style={[styles.trialNote, { color: theme.textSecondary }]}>{purchaseError ?? (showTrialButton ? `14 days free, then ${yearlyPrice}/year, automatically renewed until cancelled. Cancel in store settings before the trial ends to avoid the yearly charge.` : selectedPlan === "monthly" ? `No free trial. ${monthlyPrice ?? "The store price"} is charged monthly, starting now.` : "Trial eligibility and the final billing terms are confirmed by your app store before purchase.")}</Text>
+        <Text style={[styles.trialNote, { color: theme.textSecondary }]}>Prices and currency come from your app-store country. The store confirms local taxes and the final charge before purchase.</Text>
 
         <TouchableOpacity style={[styles.ctaSecondary, { borderColor: theme.border }]} onPress={handleContinueFree} activeOpacity={0.7}>
           <Text style={[styles.ctaSecondaryText, { color: theme.textSecondary }]}>{isPostOnboarding ? "Continue with Free" : PAYWALL_COPY.ctaSecondary}</Text>
@@ -435,7 +463,7 @@ export default function PaywallScreen() {
             { name: "AI workout plans", free: false, premium: true },
             { name: "AI meal plans", free: false, premium: true },
             { name: "Advanced analytics", free: false, premium: true },
-            { name: "PR tracking & alerts", free: false, premium: true },
+            { name: "PR tracking & alerts", free: true, premium: true },
             { name: "Health insights", free: false, premium: true },
             { name: "Adaptive plans", free: false, premium: true },
           ].map((row, i) => (
@@ -477,6 +505,8 @@ export default function PaywallScreen() {
             <Text style={[styles.modalBody, { color: theme.textSecondary }]}>
               {selectedPlan === "lifetime"
                 ? `You are about to purchase Lifetime Premium for ${lifetimePrice ?? "the listed price"}.`
+                : showTrialButton
+                  ? `14 days free, then ${yearlyPrice}/year. The yearly subscription renews automatically unless cancelled in store settings.`
                 : selectedPlan === "yearly"
                   ? `You are about to subscribe to Yearly Premium for ${yearlyPrice ?? "the listed price"}.`
                   : `You are about to subscribe to Monthly Premium for ${monthlyPrice ?? "the listed price"}.`}

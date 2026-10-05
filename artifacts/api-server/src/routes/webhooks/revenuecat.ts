@@ -122,7 +122,7 @@ router.post("/webhooks/revenuecat", async (req: Request, res: Response) => {
         revenuecatUserId: event.original_app_user_id ?? userId,
         entitlementActive,
         entitlementId: Array.isArray(event.entitlement_ids)
-          ? event.entitlement_ids[0] ?? null
+          ? event.entitlement_ids.includes("Elovia Coaching") ? "Elovia Coaching" : event.entitlement_ids[0] ?? null
           : event.entitlement_id ?? null,
         status: statusForEvent(type, isTrial),
         tier: tierForProduct(productId),
@@ -142,7 +142,10 @@ router.post("/webhooks/revenuecat", async (req: Request, res: Response) => {
           tier: tierForProduct(productId),
           productId,
           store: event.store ?? null,
-          ...(isTrial ? { trialEndsAt: expiresAt } : {}),
+          trialEndsAt: isTrial ? expiresAt : null,
+          entitlementId: Array.isArray(event.entitlement_ids)
+            ? event.entitlement_ids.includes("Elovia Coaching") ? "Elovia Coaching" : event.entitlement_ids[0] ?? null
+            : event.entitlement_id ?? null,
           currentPeriodEndsAt: expiresAt,
           lastEvent: event,
           lastEventAt: new Date(),

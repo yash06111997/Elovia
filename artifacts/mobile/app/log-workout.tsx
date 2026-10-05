@@ -7,8 +7,13 @@ import { router, useLocalSearchParams } from "expo-router";
 import { useWorkout, SetType, type WorkoutFeedback } from "@/context/WorkoutContext";
 import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
-import { allExercises, ExerciseEntry } from "@/utils/exerciseDatabase";
+import { allExercises, ExerciseEntry, findExercise } from "@/utils/exerciseDatabase";
+import { ExerciseLibraryScreen } from "@/screens/ExerciseLibraryScreen";
+import { ExerciseDemo } from "@/components/ExerciseDemo";
+import { useApp } from "@/context/AppContext";
+import { LiveRecordCelebration } from "@/components/PRCelebration";
 import { trackEvent } from "@/lib/telemetry";
+import { useWorkoutClock } from "@/hooks/useWorkoutClock";
 
 const SET_TYPE_LABELS: Record<SetType, { label: string; color: string; short: string }> = {
   normal: { label: "Normal", color: Colors.primary, short: "" },
@@ -19,12 +24,14 @@ const SET_TYPE_LABELS: Record<SetType, { label: string; color: string; short: st
 
 export default function LogWorkoutScreen() {
   const { isDark, theme } = useTheme();
+  const { state: appState } = useApp();
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{
     checkIn?: string;
     elapsedSeconds?: string;
   }>();
   const {
+    isLoaded,
     activeSession,
     startFreeSession,
     addExerciseToSession,
@@ -39,10 +46,10 @@ export default function LogWorkoutScreen() {
   } = useWorkout();
 
   const initialSeconds = Number.parseInt(params.elapsedSeconds ?? "0", 10);
-  const [timer, setTimer] = useState(Number.isFinite(initialSeconds) ? initialSeconds : 0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timer = useWorkoutClock(activeSession, Number.isFinite(initialSeconds) ? initialSeconds : 0);
   const [showExerciseSearch, setShowExerciseSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [showLibrary, setShowLibrary] = useState(false);
   const [expandedExercise, setExpandedExercise] = useState<number | null>(null);
   const [feedbackVisible, setFeedbackVisible] = useState(false);
   const [effort, setEffort] = useState(7);
@@ -52,15 +59,12 @@ export default function LogWorkoutScreen() {
   const scrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
+    if (!isLoaded) return;
     if (!activeSession) {
       startFreeSession();
     }
-    timerRef.current = setInterval(() => setTimer((t) => t + 1), 1000);
     if (params.checkIn === "1" && activeSession) setFeedbackVisible(true);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, []);
+  }, [isLoaded]);
 
   const formatTime = (secs: number) => {
     const h = Math.floor(secs / 3600);
@@ -78,6 +82,7 @@ export default function LogWorkoutScreen() {
   const handleAddExercise = (entry: ExerciseEntry) => {
     addExerciseToSession(entry.name, entry.id);
     setShowExerciseSearch(false);
+    setShowLibrary(false);
     setSearchQuery("");
     const newIndex = activeSession?.exerciseLogs.length ?? 0;
     setExpandedExercise(newIndex);
@@ -232,7 +237,7 @@ export default function LogWorkoutScreen() {
                 onSubmitEditing={handleAddCustomExercise}
               />
             </View>
-
+            <TouchableOpacity onPress={() => setShowLibrary(true)} accessibilityRole="button" style={{ minHeight: 48, justifyContent: "center" }}><Text style={{ color: Colors.primary }}>Browse all {allExercises.length} exercises · filter muscle & equipment</Text></TouchableOpacity>
             {searchQuery.length > 0 && (
               <TouchableOpacity style={[styles.customExerciseBtn, { borderColor: Colors.primary + "40" }]} onPress={handleAddCustomExercise}>
                 <Ionicons name="add-circle" size={20} color={Colors.primary} />
@@ -313,6 +318,8 @@ export default function LogWorkoutScreen() {
           </View>
         </View>
       </Modal>
+      <ExerciseLibraryScreen visible={showLibrary} onClose={() => setShowLibrary(false)} selectionMode onSelectExercise={handleAddExercise} userEquipment={appState.profile?.equipment ?? []} />
+      <LiveRecordCelebration />
     </KeyboardAvoidingView>
   );
 }
@@ -407,10 +414,10 @@ function ExerciseLogCard({
   const totalVolume = log.sets.filter((s: any) => s.completed).reduce((sum: number, s: any) => sum + s.weightKg * s.reps, 0);
 
   const handleAddSet = () => {
-    const weight = parseFloat(weightInput) || 0;
-    const reps = parseInt(repsInput) || 0;
-    if (reps === 0) {
-      Alert.alert("Enter Reps", "Please enter the number of reps.");
+    const weight = weightInput.trim() ? Number(weightInput) : 0;
+    const reps = Number(repsInput);
+    if (!Number.isFinite(weight) || weight < 0 || !Number.isInteger(reps) || reps <= 0) {
+      Alert.alert("Check your set", "Enter a positive whole number of reps and a weight of zero or more.");
       return;
     }
     onAddSet({
@@ -447,11 +454,12 @@ function ExerciseLogCard({
 
       {isExpanded && (
         <View style={styles.exerciseBody}>
+          {findExercise(log.exerciseId, log.exerciseName) && <ExerciseDemo exercise={findExercise(log.exerciseId, log.exerciseName)!} />}
           {personalRecord && (
             <View style={[styles.prBadge, { backgroundColor: Colors.accentYellow + "15" }]}>
               <Ionicons name="trophy" size={14} color={Colors.accentYellow} />
               <Text style={[styles.prText, { color: Colors.accentYellow }]}>
-                PR: {personalRecord.maxWeightKg}kg × {personalRecord.maxReps}
+                Weight PR: {personalRecord.maxWeightKg}kg · Rep PR: {personalRecord.maxReps}
               </Text>
             </View>
           )}

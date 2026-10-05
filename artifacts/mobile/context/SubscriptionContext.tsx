@@ -13,7 +13,6 @@ interface SubscriptionContextValue {
   daysRemaining: number;
   trialEndDate: string | null;
   canAccess: (feature: PremiumFeatureKey) => boolean;
-  startTrial: () => Promise<void>;
   refreshEntitlement: () => Promise<EntitlementStatus | null>;
   upgradePlan: (platform: SubscriptionPlatform, period: "monthly" | "yearly") => void;
   restorePurchases: () => Promise<void>;
@@ -47,7 +46,6 @@ const SubscriptionContext = createContext<SubscriptionContextValue>({
   daysRemaining: 0,
   trialEndDate: null,
   canAccess: () => false,
-  startTrial: async () => {},
   refreshEntitlement: async () => null,
   upgradePlan: () => {},
   restorePurchases: async () => {},
@@ -158,12 +156,6 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
 
   const canAccess = useCallback((_feature: PremiumFeatureKey) => entitlement?.hasProAccess === true, [entitlement?.hasProAccess]);
 
-  const startTrial = useCallback(async () => {
-    // The server derives a single trial window from the account creation date.
-    // This refresh acknowledges that trial; it never creates mutable local access.
-    await refreshEntitlement();
-  }, [refreshEntitlement]);
-
   const restorePurchases = useCallback(async () => {
     await rc.restore();
     await refreshEntitlement();
@@ -183,7 +175,6 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
         daysRemaining,
         trialEndDate,
         canAccess,
-        startTrial,
         refreshEntitlement,
         upgradePlan,
         restorePurchases,

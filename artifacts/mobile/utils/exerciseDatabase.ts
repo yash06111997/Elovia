@@ -1,5 +1,7 @@
-export type Difficulty = "beginner" | "intermediate" | "advanced";
-export type ExerciseType = "compound" | "isolation" | "cardio";
+import importedExercises from "@/data/importedExercises.json";
+
+export type Difficulty = "beginner" | "intermediate" | "advanced" | "unrated";
+export type ExerciseType = "compound" | "isolation" | "cardio" | "mobility" | "unspecified";
 export type EquipmentType =
   | "none"
   | "dumbbells"
@@ -15,7 +17,11 @@ export type EquipmentType =
   | "smith_machine"
   | "dip_bars"
   | "box"
-  | "ab_wheel";
+  | "ab_wheel" | "machine" | "ez_bar" | "stability_ball" | "medicine_ball" | "foam_roller" | "other";
+
+export interface ExerciseSource {
+  provider: string; url: string; license: string; licenseUrl: string; author: string;
+}
 
 export interface ExerciseEntry {
   id: string;
@@ -31,6 +37,9 @@ export interface ExerciseEntry {
   reps: string;
   restSeconds: number;
   notes: string;
+  images?: string[];
+  source?: ExerciseSource;
+  demo?: { url: string; durationSeconds: number; source: ExerciseSource };
 }
 
 export const EXERCISE_CATEGORIES = [
@@ -42,16 +51,17 @@ export const EXERCISE_CATEGORIES = [
   "Core",
   "Glutes",
   "Cardio",
+  "Mobility",
 ];
 
-export const allExercises: ExerciseEntry[] = [
+const curatedExercises: ExerciseEntry[] = [
   // ═══════════════════════════════════════════════════════════════════════════
   // CHEST (~22 exercises)
   // ═══════════════════════════════════════════════════════════════════════════
   { id: "chest_pushup", name: "Push-Up", category: "Chest", muscleGroup: "Chest", primaryMuscle: "Pectorals", secondaryMuscles: ["Triceps", "Front Delts"], equipment: ["none"], difficulty: "beginner", type: "compound", sets: 3, reps: "10-15", restSeconds: 60, notes: "Keep core tight, elbows at 45° to torso" },
   { id: "chest_wide_pushup", name: "Wide-Grip Push-Up", category: "Chest", muscleGroup: "Outer Chest", primaryMuscle: "Outer Pectorals", secondaryMuscles: ["Triceps"], equipment: ["none"], difficulty: "beginner", type: "compound", sets: 3, reps: "10-15", restSeconds: 60, notes: "Hands wider than shoulder-width for outer chest emphasis" },
   { id: "chest_diamond_pushup", name: "Diamond Push-Up", category: "Chest", muscleGroup: "Inner Chest", primaryMuscle: "Inner Pectorals", secondaryMuscles: ["Triceps"], equipment: ["none"], difficulty: "intermediate", type: "compound", sets: 3, reps: "8-12", restSeconds: 60, notes: "Hands form diamond shape, great for inner chest and triceps" },
-  { id: "chest_incline_pushup", name: "Incline Push-Up", category: "Chest", muscleGroup: "Lower Chest", primaryMuscle: "Lower Pectorals", secondaryMuscles: ["Triceps"], equipment: ["bench", "box"], difficulty: "beginner", type: "compound", sets: 3, reps: "12-15", restSeconds: 60, notes: "Feet elevated for lower chest emphasis" },
+  { id: "chest_incline_pushup", name: "Incline Push-Up", category: "Chest", muscleGroup: "Chest", primaryMuscle: "Pectorals", secondaryMuscles: ["Triceps"], equipment: ["bench"], difficulty: "beginner", type: "compound", sets: 3, reps: "12-15", restSeconds: 60, notes: "Hands on a stable raised bench, feet on the floor. Keep your body in a straight line and lower your chest towards the bench." },
   { id: "chest_decline_pushup", name: "Decline Push-Up", category: "Chest", muscleGroup: "Upper Chest", primaryMuscle: "Upper Pectorals", secondaryMuscles: ["Front Delts"], equipment: ["bench", "box"], difficulty: "intermediate", type: "compound", sets: 3, reps: "10-12", restSeconds: 60, notes: "Hands on floor, feet on bench — targets upper chest" },
   { id: "chest_clap_pushup", name: "Clap Push-Up", category: "Chest", muscleGroup: "Chest", primaryMuscle: "Pectorals", secondaryMuscles: ["Triceps", "Front Delts"], equipment: ["none"], difficulty: "advanced", type: "compound", sets: 3, reps: "6-10", restSeconds: 75, notes: "Explosive push, clap at top, land softly" },
   { id: "chest_db_press", name: "Dumbbell Bench Press", category: "Chest", muscleGroup: "Chest", primaryMuscle: "Pectorals", secondaryMuscles: ["Triceps", "Front Delts"], equipment: ["dumbbells", "bench"], difficulty: "beginner", type: "compound", sets: 4, reps: "8-12", restSeconds: 90, notes: "Plant feet firmly, control the descent" },
@@ -244,6 +254,41 @@ export const allExercises: ExerciseEntry[] = [
   { id: "cardio_skaters", name: "Skater Jumps", category: "Cardio", muscleGroup: "Full Body", primaryMuscle: "Glutes", secondaryMuscles: ["Quads", "Core"], equipment: ["none"], difficulty: "intermediate", type: "cardio", sets: 3, reps: "10/side", restSeconds: 45, notes: "Lateral jump from one leg to the other, like skating" },
 ];
 
+const exerciseKey = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
+const imported = importedExercises as ExerciseEntry[];
+const byName = new Map(imported.map(e => [exerciseKey(e.name), e]));
+const curatedNames = new Set(curatedExercises.map(e => exerciseKey(e.name)));
+export const allExercises: ExerciseEntry[] = [
+  ...curatedExercises.map(e => {
+    const match = byName.get(exerciseKey(e.name));
+    return { ...e, images: match?.images, demo: match?.demo, source: match?.source };
+  }),
+  ...imported.filter(e => !curatedNames.has(exerciseKey(e.name))),
+];
+
+export const EQUIPMENT_OPTIONS = [...new Set(allExercises.flatMap(e => e.equipment))].sort();
+export const MUSCLE_OPTIONS = [...new Set(allExercises.map(e => e.primaryMuscle))].sort();
+export function findExercise(id: string, name?: string): ExerciseEntry | undefined {
+  return allExercises.find(e => e.id === id) ?? (name ? allExercises.find(e => exerciseKey(e.name) === exerciseKey(name)) : undefined);
+}
+
+export function browseExercises({ query = "", category = "All", muscle = "All", equipment = "All", sort = "name", ownedEquipment }: {
+  query?: string; category?: string; muscle?: string; equipment?: string; sort?: "name" | "muscle" | "equipment"; ownedEquipment?: string[];
+} = {}): ExerciseEntry[] {
+  const q = query.trim().toLowerCase();
+  const owned = new Set(["none", ...(ownedEquipment ?? []).map(e => e === "no_equipment" ? "none" : e)]);
+  return allExercises.filter(e =>
+    (category === "All" || e.category === category) &&
+    (muscle === "All" || e.primaryMuscle === muscle || e.secondaryMuscles.includes(muscle)) &&
+    (equipment === "All" || e.equipment.includes(equipment as EquipmentType)) &&
+    (!ownedEquipment || e.equipment.every(eq => owned.has(eq))) &&
+    (!q || [e.name, e.category, e.primaryMuscle, ...e.secondaryMuscles, ...e.equipment].join(" ").toLowerCase().replace(/_/g, " ").includes(q))
+  ).sort((a, b) => {
+    const key = (e: ExerciseEntry) => sort === "muscle" ? e.primaryMuscle : sort === "equipment" ? e.equipment.join(", ") : e.name;
+    return key(a).localeCompare(key(b)) || a.name.localeCompare(b.name);
+  });
+}
+
 export function getExercisesByCategory(cat: string): ExerciseEntry[] {
   return allExercises.filter((e) => e.category === cat);
 }
@@ -261,7 +306,7 @@ export function filterByEquipment(exercises: ExerciseEntry[], equipment: Equipme
   if (!equipment.length) return exercises;
   const set = new Set(equipment);
   set.add("none");
-  return exercises.filter((e) => e.equipment.some((eq) => set.has(eq)));
+  return exercises.filter((e) => e.equipment.every((eq) => set.has(eq)));
 }
 
 export function filterByDifficulty(exercises: ExerciseEntry[], difficulty: Difficulty): ExerciseEntry[] {

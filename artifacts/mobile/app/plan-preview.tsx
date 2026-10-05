@@ -14,12 +14,14 @@ import { useNutrition } from "@/context/NutritionContext";
 import { useWorkout } from "@/context/WorkoutContext";
 import { useTheme } from "@/hooks/useTheme";
 import { trackEvent } from "@/lib/telemetry";
+import { useApp } from "@/context/AppContext";
 
 export default function PlanPreviewScreen() {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const { plan } = useWorkout();
   const { mealPlan } = useNutrition();
+  const { state: { profile } } = useApp();
 
   useEffect(() => {
     void trackEvent("plan_preview_viewed", { source: "onboarding" });
@@ -47,10 +49,16 @@ export default function PlanPreviewScreen() {
           Your plan is ready
         </Text>
         <Text style={[styles.subtitle, { color: theme.textSecondary }]}>
-          Here is a real preview built from all seven onboarding steps. Your
+          Here is a preview built from your onboarding preferences. Your
           full workout and nutrition tools remain available in the app.
         </Text>
 
+        <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <Text style={[styles.cardTitle, { color: theme.text }]}>Made around your routine</Text>
+          <Text style={[styles.meta, { color: theme.textSecondary }]}>{profile?.preferredWorkoutTime ?? "Flexible"} training · {profile?.workoutDurationMins} min sessions · {profile?.dailyStepsGoal?.toLocaleString() ?? "8,000"} preferred steps/day</Text>
+          <Text style={[styles.meta, { color: theme.textSecondary }]}>{profile?.mealsPerDay ?? 3} meals/day · {profile?.cookingMinutes ?? 30} min food preparation · {profile?.nutritionBudget ?? "Flexible"} budget</Text>
+          {(profile?.trainingBarriers ?? []).map(barrier => <Text key={barrier} style={[styles.meta, { color: theme.textSecondary }]}>{({ "Limited time": "Busy day? Start with the first two exercises, then add the rest if time allows.", "Low motivation": "Set a manageable weekly commitment and use your workout history to see consistency.", "Uncertain technique": "Open an exercise guide before your first set; start with a comfortable load.", Travel: "Use the equipment filter to find movements available where you’re staying.", Recovery: "Log your post-workout readiness so future adjustments reflect how you feel.", "No equipment": "Use the bodyweight filter to find movements you can do anywhere." } as Record<string, string>)[barrier]}</Text>)}
+        </View>
         <View
           style={[
             styles.card,

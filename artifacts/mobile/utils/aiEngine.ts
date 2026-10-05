@@ -17,35 +17,10 @@ function entryToExercise(e: ExerciseEntry): Exercise {
   };
 }
 
-function canUseEquipment(e: ExerciseEntry, equipment: Equipment[]): boolean {
-  const has = (eq: string) => equipment.includes(eq as Equipment);
-  const hasGym = has("barbell") || has("cable_machine") || has("squat_rack") || has("smith_machine");
-  const hasDumbbells = has("dumbbells") || has("kettlebells");
-  const noEquip = has("no_equipment");
-
-  if (e.equipment.includes("none")) return true;
-
-  if (noEquip) {
-    return e.equipment.includes("none");
-  }
-
-  return e.equipment.some((eq) => {
-    if (eq === "none") return true;
-    if (eq === "barbell") return has("barbell");
-    if (eq === "bench") return has("bench") || hasGym;
-    if (eq === "dumbbells") return hasDumbbells;
-    if (eq === "kettlebells") return has("kettlebells") || hasDumbbells;
-    if (eq === "pull_up_bar") return has("pull_up_bar") || hasGym;
-    if (eq === "cable_machine") return has("cable_machine") || has("squat_rack") || has("smith_machine");
-    if (eq === "squat_rack") return has("squat_rack") || has("smith_machine");
-    if (eq === "resistance_bands") return has("resistance_bands") || has("cable_machine") || hasGym;
-    if (eq === "treadmill") return has("treadmill");
-    if (eq === "cycle") return has("cycle");
-    if (eq === "dip_bars") return has("pull_up_bar") || hasGym;
-    if (eq === "box") return has("bench") || hasGym;
-    if (eq === "ab_wheel") return false;
-    return false;
-  });
+export function canUseEquipment(e: ExerciseEntry, equipment: Equipment[]): boolean {
+  const owned = new Set<string>(["none", ...equipment]);
+  // A rack is not a cable machine, and kettlebells are not dumbbells.
+  return e.equipment.every(eq => owned.has(eq));
 }
 
 const CATEGORY_KEYS: Record<string, string[]> = {
@@ -69,6 +44,8 @@ function getExercisesForCategory(
   const pool = allExercises.filter(
     (e) =>
       cats.includes(e.category) &&
+      e.type !== "mobility" &&
+      e.difficulty !== "unrated" &&
       canUseEquipment(e, equipment) &&
       (fitnessLevel === "beginner"
         ? e.difficulty !== "advanced"
@@ -86,6 +63,7 @@ function getExercisesForCategory(
 }
 
 const workoutSplits: Record<number, { dayName: string; muscles: string[] }[]> = {
+  1: [{ dayName: "Full Body", muscles: ["chest", "back", "legs", "core"] }],
   2: [
     { dayName: "Upper Body", muscles: ["chest", "back", "shoulders", "arms"] },
     { dayName: "Lower Body", muscles: ["legs", "glutes", "core"] },
@@ -116,11 +94,20 @@ const workoutSplits: Record<number, { dayName: string; muscles: string[] }[]> = 
     { dayName: "Legs & Glutes", muscles: ["legs", "glutes"] },
     { dayName: "Core & Cardio", muscles: ["core", "cardio"] },
   ],
+  7: [
+    { dayName: "Push", muscles: ["chest", "shoulders", "arms"] },
+    { dayName: "Pull", muscles: ["back", "arms"] },
+    { dayName: "Legs", muscles: ["legs", "glutes"] },
+    { dayName: "Core & Easy Cardio", muscles: ["core", "cardio"] },
+    { dayName: "Upper Body", muscles: ["chest", "back"] },
+    { dayName: "Lower Body", muscles: ["legs", "glutes"] },
+    { dayName: "Recovery", muscles: [] },
+  ],
 };
 
 export function generateWorkoutPlan(profile: UserProfile): WorkoutPlan {
   const days = profile.workoutDaysPerWeek;
-  const closestSplit = [2, 3, 4, 5, 6].reduce((prev, curr) =>
+  const closestSplit = [1, 2, 3, 4, 5, 6, 7].reduce((prev, curr) =>
     Math.abs(curr - days) < Math.abs(prev - days) ? curr : prev
   );
   const split = workoutSplits[closestSplit] ?? workoutSplits[3];
@@ -131,9 +118,15 @@ export function generateWorkoutPlan(profile: UserProfile): WorkoutPlan {
       const count = day.muscles.length === 1 ? 5 : day.muscles.length === 2 ? 3 : 2;
       exercises.push(...getExercisesForCategory(muscle, profile.equipment, count, profile.fitnessLevel));
     });
+    const priorities = profile.priorityMuscles ?? [];
+    exercises.sort((a, b) => {
+      const category = (ex: Exercise) => allExercises.find(e => e.id === ex.id)?.category ?? "";
+      const compound = (ex: Exercise) => allExercises.find(e => e.id === ex.id)?.type === "compound";
+      return Number(compound(b)) - Number(compound(a)) || Number(priorities.includes(category(b))) - Number(priorities.includes(category(a)));
+    });
     return {
       id: `day_${i}`,
-      dayName: day.dayName,
+      dayName: profile.preferredWorkoutDays?.[i] ? `${profile.preferredWorkoutDays[i]} · ${day.dayName}` : day.dayName,
       muscleGroups: day.muscles,
       exercises: exercises.slice(0, 8),
     };

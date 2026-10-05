@@ -26,6 +26,8 @@ import {
   type AccountDataExport,
 } from "@/utils/api";
 import { trackEvent } from "@/lib/telemetry";
+import { useWorkout } from "@/context/WorkoutContext";
+import { workoutsToCsv } from "@/lib/workoutExport";
 
 async function shareJson(data: AccountDataExport | Record<string, unknown>) {
   const json = JSON.stringify(data, null, 2);
@@ -53,8 +55,21 @@ export default function PrivacyDataScreen() {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const { isAuthenticated, logout } = useAuth();
+  const { sessions } = useWorkout();
   const [isExporting, setIsExporting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  const handleWorkoutExport = async () => {
+    setIsExporting(true);
+    try {
+      if (!FileSystem.cacheDirectory) throw new Error("Temporary file storage is unavailable.");
+      const fileUri = `${FileSystem.cacheDirectory}elovia-workouts-${new Date().toISOString().slice(0, 10)}.csv`;
+      await FileSystem.writeAsStringAsync(fileUri, workoutsToCsv(sessions), { encoding: FileSystem.EncodingType.UTF8 });
+      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(fileUri, { mimeType: "text/csv", UTI: "public.comma-separated-values-text", dialogTitle: "Export workout history" });
+      else await Share.share({ title: "Elovia workouts", url: fileUri });
+    } catch (error) { Alert.alert("Export failed", error instanceof Error ? error.message : "Please try again."); }
+    finally { setIsExporting(false); }
+  };
 
   const handleExport = async () => {
     setIsExporting(true);
@@ -229,6 +244,12 @@ export default function PrivacyDataScreen() {
         )}
         <Text style={styles.actionText}>Export My Data</Text>
       </TouchableOpacity>
+
+      <TouchableOpacity accessibilityRole="button" accessibilityLabel="Export workout history as CSV" style={[styles.action, { backgroundColor: Colors.primary }]} onPress={handleWorkoutExport} disabled={isExporting || isDeleting}>
+        <Ionicons name="barbell-outline" size={20} color="#000" />
+        <Text style={styles.actionText}>Export workouts (CSV)</Text>
+      </TouchableOpacity>
+      <Text style={[styles.footnote, { color: theme.textMuted }]}>Includes completed workouts saved on this device, even offline. All weights are in kilograms; warm-up sets are labeled separately.</Text>
 
       <TouchableOpacity
         accessibilityRole="button"

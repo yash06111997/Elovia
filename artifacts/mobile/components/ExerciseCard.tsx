@@ -7,11 +7,12 @@ import {
   StyleSheet,
   TouchableOpacity,
   TextInput,
-  Animated,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { Exercise, SetLog, PersonalRecord } from "@/context/WorkoutContext";
+import { Exercise, SetLog, PersonalRecord, useWorkout } from "@/context/WorkoutContext";
+import { ExerciseDemo } from "@/components/ExerciseDemo";
+import { findExercise } from "@/utils/exerciseDatabase";
 
 interface ExerciseHistory {
   date: string;
@@ -24,7 +25,6 @@ interface Props {
   personalRecord?: PersonalRecord | null;
   isActive?: boolean;
   lastPerformance?: ExerciseHistory | null;
-  onNewPR?: (exerciseName: string, weight: number, reps: number) => void;
 }
 
 export function ExerciseCard({
@@ -33,13 +33,11 @@ export function ExerciseCard({
   personalRecord,
   isActive = false,
   lastPerformance,
-  onNewPR,
 }: Props) {
   const { isDark } = useTheme();
+  const { activeSession } = useWorkout();
   const [expanded, setExpanded] = useState(false);
   const [activeTab, setActiveTab] = useState<"log" | "history">("log");
-  const [showPRFlash, setShowPRFlash] = useState(false);
-  const [prAnim] = useState(new Animated.Value(0));
   const [sets, setSets] = useState<SetLog[]>(
     Array.from({ length: exercise.sets }, (_, i) => ({
       setNumber: i + 1,
@@ -57,45 +55,30 @@ export function ExerciseCard({
   const surfaceBg = Colors.dark.surface;
 
   const completedSets = sets.filter((s) => s.completed).length;
-
-  const flashPR = () => {
-    setShowPRFlash(true);
-    Animated.sequence([
-      Animated.timing(prAnim, { toValue: 1, duration: 300, useNativeDriver: true }),
-      Animated.delay(1500),
-      Animated.timing(prAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
-    ]).start(() => setShowPRFlash(false));
-  };
+  useEffect(() => {
+    if (!isActive) return;
+    const saved = activeSession?.exerciseLogs.find(log => log.exerciseId === exercise.id)?.sets ?? [];
+    setSets(Array.from({ length: Math.max(exercise.sets, saved.length) }, (_, i) => saved.find(s => s.setNumber === i + 1) ?? { setNumber: i + 1, reps: 0, weightKg: 0, completed: false }));
+  }, [activeSession?.id, exercise.id, exercise.sets, isActive]);
 
   const toggleSet = (idx: number) => {
     if (!isActive) return;
+    if (!sets[idx].completed && (!Number.isInteger(sets[idx].reps) || sets[idx].reps <= 0 || !Number.isFinite(sets[idx].weightKg) || sets[idx].weightKg < 0)) return;
     const updated = sets.map((s, i) =>
       i === idx ? { ...s, completed: !s.completed } : s
     );
     setSets(updated);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-    if (!sets[idx].completed && onLogSet) {
+    if (onLogSet) {
       const completedSet = updated[idx];
       onLogSet(completedSet);
-
-      if (personalRecord && completedSet.weightKg > 0) {
-        if (completedSet.weightKg > personalRecord.maxWeightKg ||
-            (completedSet.weightKg === personalRecord.maxWeightKg && completedSet.reps > personalRecord.maxReps)) {
-          flashPR();
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          onNewPR?.(exercise.name, completedSet.weightKg, completedSet.reps);
-        }
-      } else if (!personalRecord && completedSet.weightKg > 0) {
-        flashPR();
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        onNewPR?.(exercise.name, completedSet.weightKg, completedSet.reps);
-      }
     }
   };
 
   const updateSet = (idx: number, field: "reps" | "weightKg", value: string) => {
     const num = parseFloat(value) || 0;
+    if (sets[idx].completed && onLogSet) onLogSet({ ...sets[idx], [field]: num });
     setSets((prev) =>
       prev.map((s, i) => (i === idx ? { ...s, [field]: num } : s))
     );
@@ -113,14 +96,6 @@ export function ExerciseCard({
         completedSets === exercise.sets && isActive && styles.cardComplete,
       ]}
     >
-      {showPRFlash && (
-        <Animated.View style={[styles.prFlash, { opacity: prAnim }]}>
-          <Ionicons name="trophy" size={20} color={Colors.accentYellow} />
-          <Text style={styles.prFlashText}>NEW PR!</Text>
-          <Ionicons name="trophy" size={20} color={Colors.accentYellow} />
-        </Animated.View>
-      )}
-
       <TouchableOpacity
         style={styles.header}
         onPress={() => setExpanded(!expanded)}
@@ -162,6 +137,7 @@ export function ExerciseCard({
 
       {expanded && (
         <View style={styles.details}>
+          {findExercise(exercise.id, exercise.name) && <ExerciseDemo exercise={findExercise(exercise.id, exercise.name)!} />}
           {exercise.notes ? (
             <View style={[styles.notesBox, { backgroundColor: inputBg }]}>
               <Ionicons name="information-circle" size={14} color={Colors.primary} />
@@ -181,7 +157,7 @@ export function ExerciseCard({
                       <Text style={[styles.perfLabel, { color: Colors.accentYellow }]}>Best</Text>
                     </View>
                     <Text style={[styles.perfValue, { color: textColor }]}>
-                      {personalRecord.maxWeightKg}kg × {personalRecord.maxReps}
+                      Weight: {personalRecord.maxWeightKg}kg · Reps: {personalRecord.maxReps}
                     </Text>
                     <Text style={[styles.perfSub, { color: mutedColor }]}>
                       Vol: {personalRecord.bestVolume > 1000 ? `${(personalRecord.bestVolume / 1000).toFixed(1)}k` : personalRecord.bestVolume}kg
@@ -195,7 +171,7 @@ export function ExerciseCard({
                       <Text style={[styles.perfLabel, { color: Colors.primary }]}>Last</Text>
                     </View>
                     <Text style={[styles.perfValue, { color: textColor }]}>
-                      {lastBestWeight}kg × {lastBestReps}
+                      Weight: {lastBestWeight}kg · Reps: {lastBestReps}
                     </Text>
                     <Text style={[styles.perfSub, { color: mutedColor }]}>
                       Vol: {lastTotalVolume > 1000 ? `${(lastTotalVolume / 1000).toFixed(1)}k` : lastTotalVolume}kg

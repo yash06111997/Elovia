@@ -45,7 +45,7 @@ test("release safeguards include CI, database readiness, and Railway readiness c
   assert.match(handover, /elovia-production\.up\.railway\.app/);
 });
 
-test("Maestro covers the seven-step onboarding preview and workout feedback", async () => {
+test("Maestro covers the thirteen-step onboarding preview and workout feedback", async () => {
   const onboarding = await source("e2e/maestro/onboarding-preview.yaml");
   const workout = await source("e2e/maestro/workout-feedback.yaml");
   const readme = await source("e2e/README.md");

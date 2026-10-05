@@ -1,4 +1,4 @@
-export const TRIAL_DURATION_DAYS = 15;
+export const TRIAL_DURATION_DAYS = 14;
 
 export type PlanType = "free" | "trial" | "premium";
 export type SubscriptionStatus = "free" | "in_trial" | "active" | "expired" | "cancelled";
@@ -135,14 +135,14 @@ export const FEATURE_LOCK_MESSAGES: Record<PremiumFeatureKey, string> = {
 };
 
 export const PAYWALL_COPY = {
-  headline: "Try Everything Free for 15 Days",
+  headline: "Build Your Momentum with Pro",
   subheadline: "Unlock the tools that turn consistency into real results.",
-  trialNote: "No payment now. Full Premium access for 15 days.",
-  ctaPrimary: "Start Free Trial",
+  trialNote: "Eligible yearly subscribers get 14 days free, then the yearly price shown. Monthly subscriptions start immediately with no free trial.",
+  ctaPrimary: "Start 14-Day Yearly Trial",
   ctaSecondary: "Continue with Free",
   ctaRestore: "Restore Purchases",
   trustItems: [
-    "No payment required during trial",
+    "14-day trial on eligible yearly subscriptions",
     "Cancel anytime",
     "Your progress stays saved",
     "Built for your goals",
@@ -163,8 +163,8 @@ export const FAQ_ITEMS = [
     answer: "Yes. You can cancel your subscription at any time from your device's app store settings. You'll keep access until the end of your billing period.",
   },
   {
-    question: "What happens after the 15-day trial?",
-    answer: "After your trial, you'll move to the Free plan. You can upgrade to Premium anytime to unlock all features again.",
+    question: "Which plan includes a free trial?",
+    answer: "Eligible new yearly subscribers receive a 14-day store trial. The annual subscription renews at the yearly price shown when the trial ends unless cancelled in your store settings. Monthly and lifetime plans have no free trial. Your store account determines eligibility.",
   },
   {
     question: "Will I lose my progress if I stay on Free?",

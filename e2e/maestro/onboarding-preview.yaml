@@ -1,5 +1,5 @@
 appId: com.elovia.app
-name: Seven-step onboarding and plan preview
+name: Thirteen-step onboarding and plan preview
 ---
 - launchApp:
     clearState: true
@@ -9,8 +9,14 @@ name: Seven-step onboarding and plan preview
 - tapOn: Continue to Workout Preferences
 - tapOn: Continue to Available Equipment
 - tapOn: Continue to Diet & Nutrition
+- tapOn: Continue to Training History
+- tapOn: Continue to Your Weekly Schedule
+- tapOn: Continue to Priority Muscles
+- tapOn: Continue to Build Your Consistency
+- tapOn: Continue to Your Food Routine
+- tapOn: Continue to Recovery & Movement
 - tapOn: Continue to Health Habits
-- assertVisible: 7/7
+- assertVisible: 13/13
 - tapOn: I understand how Elovia uses my fitness and health information
 - tapOn: Create my plan
 - assertVisible: Your plan is ready

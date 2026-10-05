@@ -15,8 +15,10 @@ import { handleAiError } from "@/utils/aiErrors";
 import { Colors } from "@/constants/colors";
 import { OptionCard, PremiumBadge } from "@/components/ui";
 import { ExerciseLibraryScreen } from "@/screens/ExerciseLibraryScreen";
+import { LiveRecordCelebration } from "@/components/PRCelebration";
 import { CustomPlanBuilderScreen } from "@/screens/CustomPlanBuilderScreen";
 import { useTheme } from "@/hooks/useTheme";
+import { useWorkoutClock } from "@/hooks/useWorkoutClock";
 
 type ViewMode = "plan" | "history";
 
@@ -45,8 +47,7 @@ export default function WorkoutsScreen() {
   const { canAccess } = useSubscription();
 
   const [selectedDay, setSelectedDay] = useState<WorkoutDay | null>(null);
-  const [sessionTimer, setSessionTimer] = useState(0);
-  const [timerInterval, setTimerInterval] = useState<ReturnType<typeof setInterval> | null>(null);
+  const sessionTimer = useWorkoutClock(activeSession);
   const [aiModalVisible, setAiModalVisible] = useState(false);
   const [aiPlanType, setAiPlanType] = useState<"daily" | "scheduled">("daily");
   const [aiLoading, setAiLoading] = useState(false);
@@ -70,13 +71,10 @@ export default function WorkoutsScreen() {
   const handleStartWorkout = (day: WorkoutDay) => {
     startSession(day);
     setSelectedDay(day);
-    const interval = setInterval(() => setSessionTimer((t) => t + 1), 1000);
-    setTimerInterval(interval);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
   const handleFinishWorkout = () => {
-    if (timerInterval) clearInterval(timerInterval);
     router.push({
       pathname: "/log-workout",
       params: { checkIn: "1", elapsedSeconds: String(sessionTimer) },
@@ -515,9 +513,6 @@ export default function WorkoutsScreen() {
                         personalRecord={getPersonalRecord(ex.id)}
                         lastPerformance={getLastPerformance(ex.id)}
                         isActive={activeSession?.workoutDayId === day.id}
-                        onNewPR={(name, weight, reps) => {
-                          Alert.alert("New PR!", `${name}: ${weight}kg × ${reps} reps`);
-                        }}
                       />
                     ))}
                   </View>
@@ -786,6 +781,7 @@ export default function WorkoutsScreen() {
       />
 
       <ExerciseLibraryScreen visible={showLibrary} onClose={() => setShowLibrary(false)} userEquipment={appState.profile?.equipment ?? []} />
+      <LiveRecordCelebration />
 
       <CustomPlanBuilderScreen
         visible={showPlanBuilder}

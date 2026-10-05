@@ -16,7 +16,9 @@ import {
   allExercises,
   EXERCISE_CATEGORIES,
   ExerciseEntry,
+  browseExercises, EQUIPMENT_OPTIONS, MUSCLE_OPTIONS,
 } from "@/utils/exerciseDatabase";
+import { ExerciseDemo } from "@/components/ExerciseDemo";
 import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
 
@@ -32,12 +34,15 @@ const DIFFICULTY_COLORS: Record<string, string> = {
   beginner: "#00E676",
   intermediate: "#FFD600",
   advanced: "#FF5252",
+  unrated: "#A3A3B8",
 };
 
 const TYPE_COLORS: Record<string, string> = {
   compound: "#00D4FF",
   isolation: "#A78BFA",
   cardio: "#FF9800",
+  mobility: "#00D4FF",
+  unspecified: "#A3A3B8",
 };
 
 export function ExerciseLibraryScreen({
@@ -54,37 +59,13 @@ export function ExerciseLibraryScreen({
   const [searchQuery, setSearchQuery] = useState("");
   const [filterEquipment, setFilterEquipment] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [muscle, setMuscle] = useState("All");
+  const [equipment, setEquipment] = useState("All");
+  const [sort, setSort] = useState<"name" | "muscle" | "equipment">("name");
 
   const categories = ["All", ...EXERCISE_CATEGORIES];
 
-  const filtered = useMemo(() => {
-    let list = allExercises;
-
-    if (selectedCategory !== "All") {
-      list = list.filter((e) => e.category === selectedCategory);
-    }
-
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      list = list.filter(
-        (e) =>
-          e.name.toLowerCase().includes(q) ||
-          e.muscleGroup.toLowerCase().includes(q) ||
-          e.primaryMuscle.toLowerCase().includes(q) ||
-          e.category.toLowerCase().includes(q)
-      );
-    }
-
-    if (filterEquipment && userEquipment.length > 0) {
-      list = list.filter((e) =>
-        e.equipment.some(
-          (eq) => eq === "none" || userEquipment.includes(eq)
-        )
-      );
-    }
-
-    return list;
-  }, [selectedCategory, searchQuery, filterEquipment, userEquipment]);
+  const filtered = useMemo(() => browseExercises({ query: searchQuery, category: selectedCategory, muscle, equipment, sort, ownedEquipment: filterEquipment ? userEquipment : undefined }), [selectedCategory, searchQuery, muscle, equipment, sort, filterEquipment, userEquipment]);
 
   const renderExercise = ({ item }: { item: ExerciseEntry }) => {
     const isExpanded = expandedId === item.id;
@@ -92,13 +73,12 @@ export function ExerciseLibraryScreen({
       <TouchableOpacity
         style={[styles.exerciseCard, { backgroundColor: theme.card, borderColor: theme.border }]}
         onPress={() => {
-          if (selectionMode && onSelectExercise) {
-            onSelectExercise(item);
-          } else {
-            setExpandedId(isExpanded ? null : item.id);
-          }
+          setExpandedId(isExpanded ? null : item.id);
         }}
         activeOpacity={0.8}
+        accessibilityRole="button"
+        accessibilityLabel={`${item.name}, ${item.primaryMuscle}, ${item.equipment.join(", ").replace(/_/g, " ")}`}
+        accessibilityState={{ expanded: isExpanded }}
       >
         <View style={styles.cardHeader}>
           <View style={styles.cardLeft}>
@@ -122,9 +102,9 @@ export function ExerciseLibraryScreen({
           </View>
           <View style={styles.cardRight}>
             {selectionMode ? (
-              <View style={[styles.addBtn, { backgroundColor: Colors.primary }]}>
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Add ${item.name}`} onPress={event => { event.stopPropagation(); onSelectExercise?.(item); }} style={[styles.addBtn, { backgroundColor: Colors.primary, minWidth: 48, minHeight: 48 }]}>
                 <Ionicons name="add" size={18} color="#000" />
-              </View>
+              </TouchableOpacity>
             ) : (
               <Ionicons
                 name={isExpanded ? "chevron-up" : "chevron-down"}
@@ -137,6 +117,7 @@ export function ExerciseLibraryScreen({
 
         {isExpanded && (
           <View style={[styles.details, { borderTopColor: theme.border }]}>
+            <ExerciseDemo exercise={item} />
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
                 <Text style={[styles.statLabel, { color: theme.textMuted }]}>SETS</Text>
@@ -172,7 +153,7 @@ export function ExerciseLibraryScreen({
       <View style={[styles.container, { backgroundColor: theme.background }]}>
         {/* Header */}
         <View style={[styles.header, { paddingTop: Platform.OS === "ios" ? insets.top + 4 : 16, borderBottomColor: theme.border }]}>
-          <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Close exercise library" onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="close" size={24} color={theme.text} />
           </TouchableOpacity>
           <Text style={[styles.headerTitle, { color: theme.text }]}>
@@ -193,7 +174,7 @@ export function ExerciseLibraryScreen({
             returnKeyType="search"
           />
           {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery("")}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="Clear exercise search" onPress={() => setSearchQuery("")}>
               <Ionicons name="close-circle" size={18} color={theme.textMuted} />
             </TouchableOpacity>
           )}
@@ -239,6 +220,9 @@ export function ExerciseLibraryScreen({
         </View>
 
         {/* Count */}
+        <FilterRow label="Muscle" options={["All", ...MUSCLE_OPTIONS]} selected={muscle} onSelect={setMuscle} />
+        <FilterRow label="Equipment" options={["All", ...EQUIPMENT_OPTIONS]} selected={equipment} onSelect={setEquipment} />
+        <FilterRow label="Sort by" options={["name", "muscle", "equipment"]} selected={sort} onSelect={value => setSort(value as typeof sort)} />
         <Text style={[styles.countText, { color: theme.textMuted }]}>
           {filtered.length} exercise{filtered.length !== 1 ? "s" : ""}
         </Text>
@@ -251,10 +235,19 @@ export function ExerciseLibraryScreen({
           contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 20 }]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          extraData={expandedId}
+          ListEmptyComponent={<Text style={{ color: theme.textSecondary, padding: 20 }}>No matches. Change a muscle or equipment filter.</Text>}
         />
       </View>
     </Modal>
   );
+}
+
+function FilterRow({ label, options, selected, onSelect }: { label: string; options: string[]; selected: string; onSelect: (value: string) => void }) {
+  const { theme } = useTheme();
+  return <View style={{ marginTop: 8 }}><Text style={{ color: theme.textSecondary, marginHorizontal: 16, fontSize: 12 }}>{label}</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, gap: 8 }}>
+    {options.map(option => <TouchableOpacity key={option} onPress={() => onSelect(option)} accessibilityRole="button" accessibilityLabel={`${label}: ${option.replace(/_/g, " ")}`} accessibilityState={{ selected: selected === option }} style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: 12, borderRadius: 12, backgroundColor: selected === option ? Colors.primary + "25" : theme.card }}><Text style={{ color: selected === option ? Colors.primary : theme.textSecondary }}>{option.replace(/_/g, " ")}</Text></TouchableOpacity>)}
+  </ScrollView></View>;
 }
 
 const styles = StyleSheet.create({

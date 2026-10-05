@@ -12,12 +12,15 @@ async function source(relativePath) {
   }
 }
 
-test("onboarding keeps all seven steps, records privacy acknowledgement, and previews generated value", async () => {
+test("onboarding expands to thirteen steps, records privacy acknowledgement, and previews generated value", async () => {
   const onboarding = await source("artifacts/mobile/app/onboarding/index.tsx");
   const preview = await source("artifacts/mobile/app/plan-preview.tsx");
   const rootLayout = await source("artifacts/mobile/app/_layout.tsx");
 
-  assert.match(onboarding, /const TOTAL_STEPS = 7/);
+  assert.match(onboarding, /const TOTAL_STEPS = 13/);
+  assert.match(onboarding, /StepTrainingHistory/);
+  assert.match(onboarding, /StepRecovery/);
+  assert.doesNotMatch(onboarding, /setStep\(TOTAL_STEPS - 1\)/);
   assert.match(onboarding, /privacyAcknowledged/);
   assert.match(onboarding, /pathname: "\/plan-preview"/);
   assert.match(preview, /Your plan is ready/);
