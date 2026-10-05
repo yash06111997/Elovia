@@ -1,5 +1,13 @@
 # Elovia delivery and release status — 5 October 2026
 
+## First iOS release setup update
+
+- Verified Apple app `6761459117` and RevenueCat iOS app both use `app.replit.elovia`; aligned the iOS source with that existing record. Android remains `com.elovia.app`. Pinned EAS production iOS submission to Apple app ID `6761459117`.
+- Saved and verified Apple subtitle, Health & Fitness category, version description, promotional text, keywords and manual release. Saved subscription-group English (US) localization and annual review notes/benefit description.
+- Both existing RevenueCat Apple keys show Valid credentials. Applied Apple production/sandbox notification URLs through the existing integration and verified the URLs in Apple App Information; actual event delivery is not yet tested. Verified default offering monthly/annual iOS package mappings.
+- Same-service-level monthly/yearly grouping still needs correction; attempted reordering did not save. The remote paywall remains unpublished and is not enabled by offering metadata. No new Apple key, signed IPA, TestFlight release, review submission or App Store publication is claimed.
+- Owner has not yet selected a public support/safety inbox or authorized a moderator account. Backend restoration remains blocked on those choices. Signing/2FA, banking/tax/legal declarations, real screenshots, privacy/age-rating review and device purchase/restore QA remain release gates. See `FIRST-IOS-RELEASE.md` for exact steps and identifiers.
+
 ## Implemented in source
 
 - 1,832 exercise entries after merging 166 curated entries with two imported sources; preserved curated exercise IDs. Combined muscle/equipment search and sorting, and equipment-constrained browsing.

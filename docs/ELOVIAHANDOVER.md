@@ -45,7 +45,7 @@ a full migration to independent hosting.
 | Hosting | Railway (EU West): app service + Postgres with attached volume |
 | Builds | EAS Build, project `@yash06111997/elovia-claude` |
 
-- Bundle ID (both platforms): `com.elovia.app`
+- Android package: `com.elovia.app`. iOS bundle: `app.replit.elovia`, matching the existing App Store Connect app (Apple ID `6761459117`) and RevenueCat iOS configuration verified on 5 October 2026.
 - Backend: `https://elovia-production.up.railway.app`
 - Repo: `github.com/yash06111997/Elovia`, branch `feat/comprehensive-fitness-platform`
 - Scope: **49 commits, 88 files, +16,618 / −611 lines** relative to `main`
