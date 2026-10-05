@@ -1,4 +1,8 @@
-type Listener = () => void;
+type Listener = () => unknown | Promise<unknown>;
+
+export type DataRestoreReloadOutcome =
+  | { status: "reloaded" }
+  | { status: "failed"; failures: number };
 
 const restoreListeners: Listener[] = [];
 
@@ -10,6 +14,12 @@ export function onDataRestored(listener: Listener): () => void {
   };
 }
 
-export function emitDataRestored(): void {
-  restoreListeners.forEach((l) => l());
+export async function emitDataRestored(): Promise<DataRestoreReloadOutcome> {
+  const settled = await Promise.allSettled(
+    [...restoreListeners].map((listener) => Promise.resolve().then(listener)),
+  );
+  const failures = settled.filter(
+    (result) => result.status === "rejected",
+  ).length;
+  return failures > 0 ? { status: "failed", failures } : { status: "reloaded" };
 }

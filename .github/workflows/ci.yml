@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feat/comprehensive-fitness-platform]
+    branches: [main, "feat/**"]
   pull_request:
 
 permissions:
@@ -10,17 +10,39 @@ permissions:
 
 jobs:
   verify:
+    name: Verify (PostgreSQL ${{ matrix.postgres }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [14, 16, 18]
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/elovia_test
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: elovia_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d elovia_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
       - run: corepack enable
+      - run: corepack prepare pnpm@10.33.0 --activate
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+      - run: pnpm --filter @workspace/mobile test --runInBand
       - run: pnpm typecheck
       - run: pnpm --filter @workspace/mobile typecheck
       - run: pnpm --filter @workspace/api-server typecheck

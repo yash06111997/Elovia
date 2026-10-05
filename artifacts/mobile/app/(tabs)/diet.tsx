@@ -31,6 +31,7 @@ import type { FoodItem } from "@/utils/foodDatabase";
 import { handleAiError } from "@/utils/aiErrors";
 import type { DietType } from "@/context/AppContext";
 import { useTheme } from "@/hooks/useTheme";
+import { toLocalDateKey } from "@/lib/localDate";
 
 type Tab = "plan" | "log";
 
@@ -89,7 +90,7 @@ export default function DietScreen() {
 
   const handleLogMeal = (meal: Meal) => {
     logFood({
-      date: new Date().toISOString().split("T")[0],
+      date: toLocalDateKey(new Date()),
       mealId: meal.id,
       name: meal.name,
       calories: meal.calories,
@@ -151,7 +152,7 @@ export default function DietScreen() {
 
   const handleQuickLog = () => {
     logFood({
-      date: new Date().toISOString().split("T")[0],
+      date: toLocalDateKey(new Date()),
       name: quickLog.name || "Custom Food",
       calories: parseFloat(quickLog.calories) || 0,
       protein: parseFloat(quickLog.protein) || 0,
@@ -167,7 +168,7 @@ export default function DietScreen() {
 
   const handleFoodSelect = (food: FoodItem, servings: number) => {
     logFood({
-      date: new Date().toISOString().split("T")[0],
+      date: toLocalDateKey(new Date()),
       name: food.name,
       calories: Math.round(food.calories * servings),
       protein: Math.round(food.protein * servings),
@@ -195,7 +196,7 @@ export default function DietScreen() {
       const analysis = await recognizeFood(result.assets[0].base64);
       analysis.foods.forEach((food) => {
         logFood({
-          date: new Date().toISOString().split("T")[0],
+          date: toLocalDateKey(new Date()),
           name: food.name,
           calories: food.calories,
           protein: food.protein,

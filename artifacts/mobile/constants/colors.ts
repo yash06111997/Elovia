@@ -17,6 +17,7 @@ export const Colors = {
   accentGreen: "#00E676",
   accentYellow: "#FFD600",
   accentRed: "#FF3D71",
+  accentAi: "#A78BFA",
 
   dark: {
     background: "#0A0A0F",

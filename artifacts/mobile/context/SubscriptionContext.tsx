@@ -1,9 +1,8 @@
-import React, { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { type PlanType, type PremiumFeatureKey, type SubscriptionPlatform, type SubscriptionStatus } from "@/constants/subscription";
 import { useAuth } from "@/lib/auth";
 import { useRevenueCat } from "@/lib/revenuecat";
-import { onDataRestored } from "@/lib/syncEvents";
 import { ApiError, fetchEntitlement, type EntitlementStatus } from "@/utils/api";
 
 interface SubscriptionContextValue {
@@ -89,21 +88,27 @@ function toState(entitlement: EntitlementStatus): SubscriptionContextValue["stat
 export function SubscriptionProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated, isLoading: isAuthLoading, user } = useAuth();
   const rc = useRevenueCat();
-  const [entitlement, setEntitlement] = useState<EntitlementStatus | null>(null);
+  const userId = isAuthenticated ? user?.id ?? null : null;
+  const currentUserId = useRef(userId);
+  currentUserId.current = userId;
+  const [snapshot, setSnapshot] = useState<{ userId: string; value: EntitlementStatus } | null>(null);
+  const entitlement = snapshot?.userId === userId ? snapshot?.value ?? null : null;
   const [isLoaded, setIsLoaded] = useState(false);
 
   const refreshEntitlement = useCallback(async () => {
-    if (!isAuthenticated) {
-      setEntitlement(null);
+    if (!userId) {
+      setSnapshot(null);
       setIsLoaded(!isAuthLoading);
       return null;
     }
 
     try {
       const next = await fetchEntitlement();
-      setEntitlement(next);
+      if (currentUserId.current !== userId) return null;
+      setSnapshot(next ? { userId, value: next } : null);
       return next;
     } catch (error) {
+      if (currentUserId.current !== userId) return null;
       // Being offline says nothing about what the user has paid for. Clearing
       // the entitlement here would downgrade a Pro subscriber to free the
       // moment they walk into a basement gym, and then show them a paywall for
@@ -120,19 +125,17 @@ export function SubscriptionProvider({ children }: { children: ReactNode }) {
       }
 
       console.warn("Unable to refresh subscription entitlement", error);
-      setEntitlement(null);
+      setSnapshot(null);
       return null;
     } finally {
-      setIsLoaded(true);
+      if (currentUserId.current === userId) setIsLoaded(true);
     }
-  }, [isAuthenticated, isAuthLoading]);
+  }, [userId, isAuthLoading]);
 
   useEffect(() => {
     setIsLoaded(false);
     void refreshEntitlement();
   }, [refreshEntitlement, user?.id]);
-
-  useEffect(() => onDataRestored(() => void refreshEntitlement()), [refreshEntitlement]);
 
   useEffect(() => {
     const onAppStateChange = (nextState: AppStateStatus) => {

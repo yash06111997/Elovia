@@ -1,5 +1,24 @@
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  captureAccountStorageSession,
+  readStableBackgroundAccountValue,
+  readStableBackgroundAccountValueWithOwner,
+} from "./accountSyncStorage";
+import {
+  PendingArrivalStore,
+  type PendingArrival,
+  type PendingArrivalReadResult,
+} from "./pendingArrival";
+import { runGeofenceReconciliation } from "./geofenceReconciliation";
+import { emitPendingArrivalRecorded } from "./pendingArrivalSignal";
+import {
+  captureNativeLifecycleFence,
+  isNativeLifecycleFenceCurrent,
+  type NativeLifecycleFence,
+} from "./nativeLifecycleCleanup";
+
+export type { PendingArrival } from "./pendingArrival";
 
 /**
  * Place-based triggers ("you arrived at the gym").
@@ -36,7 +55,24 @@ export interface SavedPlace {
 }
 
 const PLACES_KEY = "@elovia_places";
-const PENDING_KEY = "@elovia_geofence_pending";
+const pendingArrivals = new PendingArrivalStore(AsyncStorage);
+let geofenceOperation: Promise<void> = Promise.resolve();
+
+async function serializeGeofenceOperation<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = geofenceOperation;
+  let release!: () => void;
+  geofenceOperation = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
 
 /** Below this, GPS drift alone will trip the fence repeatedly. */
 export const MIN_RADIUS_M = 100;
@@ -65,67 +101,128 @@ function loadTaskManager(): TaskManagerModule | null {
   }
 }
 
-export async function loadPlaces(): Promise<SavedPlace[]> {
+function parsePlaces(raw: string | null): SavedPlace[] {
+  if (!raw) return [];
   try {
-    const raw = await AsyncStorage.getItem(PLACES_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((value): value is Record<string, unknown> => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          return false;
+        }
+        const candidate = value as Record<string, unknown>;
+        return (
+          typeof candidate.id === "string" &&
+          candidate.id.length > 0 &&
+          candidate.id.length <= 256 &&
+          typeof candidate.name === "string" &&
+          candidate.name.length > 0 &&
+          candidate.name.length <= 200 &&
+          typeof candidate.kind === "string" &&
+          Number.isFinite(candidate.latitude) &&
+          Number(candidate.latitude) >= -90 &&
+          Number(candidate.latitude) <= 90 &&
+          Number.isFinite(candidate.longitude) &&
+          Number(candidate.longitude) >= -180 &&
+          Number(candidate.longitude) <= 180 &&
+          Number.isFinite(candidate.radius) &&
+          typeof candidate.notifyOnArrive === "boolean" &&
+          typeof candidate.autoStartWorkout === "boolean" &&
+          typeof candidate.enabled === "boolean"
+        );
+      })
+      .slice(0, MAX_PLACES)
+      .map((candidate) => ({
+        id: candidate.id as string,
+        name: candidate.name as string,
+        kind: candidate.kind as string,
+        latitude: Number(candidate.latitude),
+        longitude: Number(candidate.longitude),
+        radius: Math.max(
+          MIN_RADIUS_M,
+          Math.min(10_000, Number(candidate.radius)),
+        ),
+        notifyOnArrive: candidate.notifyOnArrive as boolean,
+        autoStartWorkout: candidate.autoStartWorkout as boolean,
+        enabled: candidate.enabled as boolean,
+      }));
   } catch {
     return [];
   }
 }
 
-export async function savePlaces(places: SavedPlace[]): Promise<void> {
+export async function loadPlaces(): Promise<SavedPlace[]> {
   try {
-    await AsyncStorage.setItem(PLACES_KEY, JSON.stringify(places.slice(0, MAX_PLACES)));
+    return parsePlaces(
+      await captureAccountStorageSession().getItem(PLACES_KEY),
+    );
   } catch {
-    // Non-fatal.
+    return [];
   }
+}
+
+/** Headless task read that returns no places unless sync ownership is stable. */
+export async function loadPlacesForBackgroundTask(): Promise<SavedPlace[]> {
+  return parsePlaces(await readStableBackgroundAccountValue(PLACES_KEY));
+}
+
+export async function loadPlacesForBackgroundTaskContext(): Promise<{
+  ownerUserId: string | null;
+  places: SavedPlace[];
+} | null> {
+  const stable = await readStableBackgroundAccountValueWithOwner(PLACES_KEY);
+  if (!stable) return null;
+  return {
+    ownerUserId: stable.ownerUserId,
+    places: parsePlaces(stable.value),
+  };
+}
+
+export async function savePlaces(places: SavedPlace[]): Promise<void> {
+  const accountStorage = captureAccountStorageSession();
+  await accountStorage.setItem(
+    PLACES_KEY,
+    JSON.stringify(places.slice(0, MAX_PLACES)),
+  );
 }
 
 /**
  * A crossing recorded by the background task, for the app to act on when it
  * next opens. The background task cannot navigate the UI, so it leaves a note.
  */
-export interface PendingArrival {
-  placeId: string;
-  placeName: string;
-  autoStartWorkout: boolean;
-  at: string;
+export async function readPendingArrival(
+  userId: string,
+): Promise<PendingArrivalReadResult> {
+  return pendingArrivals.readForUser(userId);
 }
 
-export async function readPendingArrival(): Promise<PendingArrival | null> {
-  try {
-    const raw = await AsyncStorage.getItem(PENDING_KEY);
-    if (!raw) return null;
-
-    const parsed = JSON.parse(raw) as PendingArrival;
-
-    // Stale arrivals are worse than none: being asked to start a gym session
-    // three hours after leaving is pure noise.
-    if (Date.now() - new Date(parsed.at).getTime() > 30 * 60 * 1000) {
-      await AsyncStorage.removeItem(PENDING_KEY);
-      return null;
-    }
-
-    return parsed;
-  } catch {
-    return null;
-  }
+export async function acknowledgePendingArrival(
+  userId: string,
+  leaseId: string,
+): Promise<PendingArrival | null> {
+  return pendingArrivals.acknowledge(userId, leaseId);
 }
 
-export async function clearPendingArrival(): Promise<void> {
-  await AsyncStorage.removeItem(PENDING_KEY).catch(() => undefined);
+export async function releasePendingArrival(
+  userId: string,
+  leaseId: string,
+): Promise<boolean> {
+  return pendingArrivals.release(userId, leaseId);
 }
 
-export async function recordPendingArrival(arrival: PendingArrival): Promise<void> {
-  await AsyncStorage.setItem(PENDING_KEY, JSON.stringify(arrival)).catch(() => undefined);
+export async function recordPendingArrival(
+  arrival: PendingArrival,
+): Promise<boolean> {
+  const recorded = await pendingArrivals.record(arrival);
+  if (recorded) emitPendingArrivalRecorded(arrival.ownerUserId);
+  return recorded;
 }
 
 export type PermissionOutcome =
   | "granted"
   | "foreground_only"
+  | "blocked"
   | "denied"
   | "unsupported";
 
@@ -141,10 +238,13 @@ export async function requestGeofencePermissions(): Promise<PermissionOutcome> {
 
   try {
     const foreground = await Location.requestForegroundPermissionsAsync();
-    if (foreground.status !== "granted") return "denied";
+    if (foreground.status !== "granted") {
+      return foreground.canAskAgain === false ? "blocked" : "denied";
+    }
 
     const background = await Location.requestBackgroundPermissionsAsync();
-    return background.status === "granted" ? "granted" : "foreground_only";
+    if (background.status === "granted") return "granted";
+    return background.canAskAgain === false ? "blocked" : "foreground_only";
   } catch {
     return "denied";
   }
@@ -167,51 +267,130 @@ export async function hasBackgroundPermission(): Promise<boolean> {
  * Region monitoring is all-or-nothing per task, so the whole set is replaced
  * rather than diffed. Cheap, and it cannot drift out of sync with storage.
  */
-export async function syncGeofences(): Promise<boolean> {
+export async function reconcileGeofences(
+  expectedUserId?: string | null,
+  initiatingFence?: NativeLifecycleFence,
+): Promise<boolean> {
   const Location = loadLocation();
   const TaskManager = loadTaskManager();
   if (!Location || !TaskManager || Platform.OS === "web") return false;
 
-  try {
-    const isRegistered = await TaskManager.isTaskRegisteredAsync(GEOFENCE_TASK);
-    if (isRegistered) {
-      await Location.stopGeofencingAsync(GEOFENCE_TASK).catch(() => undefined);
+  return serializeGeofenceOperation(async () => {
+    try {
+      const accountStorage = captureAccountStorageSession();
+      if (
+        expectedUserId !== undefined &&
+        accountStorage.ownerToken.uid !== expectedUserId
+      ) {
+        return false;
+      }
+      const lifecycleFence =
+        initiatingFence ??
+        captureNativeLifecycleFence(accountStorage.ownerToken.uid);
+      if (!lifecycleFence || !isNativeLifecycleFenceCurrent(lifecycleFence)) {
+        return false;
+      }
+      const places = parsePlaces(await accountStorage.getItem(PLACES_KEY))
+        .filter((place) => place.enabled)
+        .slice(0, MAX_PLACES);
+      if (
+        !(await accountStorage.isCurrent()) ||
+        !isNativeLifecycleFenceCurrent(lifecycleFence)
+      ) {
+        return false;
+      }
+
+      const outcome = await runGeofenceReconciliation({
+        isCurrent: async () =>
+          (await accountStorage.isCurrent()) &&
+          isNativeLifecycleFenceCurrent(lifecycleFence),
+        async stop() {
+          if (!(await stopGeofencesVerifiedNative(Location, TaskManager))) {
+            throw new Error("Geofence stop could not be verified.");
+          }
+        },
+        hasEnabledPlaces: places.length > 0,
+        permissionGranted: hasBackgroundPermission,
+        async start() {
+          await Location.startGeofencingAsync(
+            GEOFENCE_TASK,
+            places.map((place) => ({
+              identifier: place.id,
+              latitude: place.latitude,
+              longitude: place.longitude,
+              radius: Math.max(MIN_RADIUS_M, place.radius),
+              notifyOnEnter: true,
+              notifyOnExit: true,
+            })),
+          );
+        },
+      });
+      return outcome !== "stale";
+    } catch {
+      return false;
     }
+  });
+}
 
-    const places = (await loadPlaces()).filter((p) => p.enabled);
-    if (places.length === 0) return true;
-
-    if (!(await hasBackgroundPermission())) return false;
-
-    await Location.startGeofencingAsync(
-      GEOFENCE_TASK,
-      places.slice(0, MAX_PLACES).map((place) => ({
-        identifier: place.id,
-        latitude: place.latitude,
-        longitude: place.longitude,
-        radius: Math.max(MIN_RADIUS_M, place.radius),
-        notifyOnEnter: true,
-        notifyOnExit: true,
-      })),
+export async function syncGeofences(): Promise<boolean> {
+  try {
+    const accountStorage = captureAccountStorageSession();
+    const lifecycleFence = captureNativeLifecycleFence(
+      accountStorage.ownerToken.uid,
     );
-
-    return true;
+    if (!lifecycleFence) return false;
+    return reconcileGeofences(accountStorage.ownerToken.uid, lifecycleFence);
   } catch {
     return false;
   }
 }
 
-export async function stopAllGeofences(): Promise<void> {
+async function isGeofenceRegistrationActive(
+  Location: LocationModule,
+  TaskManager: TaskManagerModule,
+): Promise<boolean | null> {
+  try {
+    const taskRegistered =
+      await TaskManager.isTaskRegisteredAsync(GEOFENCE_TASK);
+    const locationStarted =
+      typeof Location.hasStartedGeofencingAsync === "function"
+        ? await Location.hasStartedGeofencingAsync(GEOFENCE_TASK)
+        : taskRegistered;
+    return taskRegistered || locationStarted;
+  } catch {
+    return null;
+  }
+}
+
+async function stopGeofencesVerifiedNative(
+  Location: LocationModule,
+  TaskManager: TaskManagerModule,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const active = await isGeofenceRegistrationActive(Location, TaskManager);
+    if (active === false) return true;
+    if (active === null) return false;
+    try {
+      await Location.stopGeofencingAsync(GEOFENCE_TASK);
+    } catch {
+      // Verification is authoritative; retry only while native state remains.
+    }
+  }
+  return (await isGeofenceRegistrationActive(Location, TaskManager)) === false;
+}
+
+export async function stopAllGeofences(): Promise<boolean> {
   const Location = loadLocation();
   const TaskManager = loadTaskManager();
-  if (!Location || !TaskManager) return;
+  if (Platform.OS === "web") return true;
+  if (!Location || !TaskManager) return false;
 
   try {
-    if (await TaskManager.isTaskRegisteredAsync(GEOFENCE_TASK)) {
-      await Location.stopGeofencingAsync(GEOFENCE_TASK);
-    }
+    return await serializeGeofenceOperation(() =>
+      stopGeofencesVerifiedNative(Location, TaskManager),
+    );
   } catch {
-    // Already stopped.
+    return false;
   }
 }
 

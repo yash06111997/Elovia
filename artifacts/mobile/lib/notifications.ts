@@ -1,5 +1,26 @@
 import { Platform } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { captureAccountStorageSession } from "./accountSyncStorage";
+import { shouldPresentNotification } from "./notificationPresentation";
+import { ELOVIA_REMINDER_ACCOUNT_KEY } from "./pushCleanup";
+import { runReminderReconciliation } from "./reminderReconciliation";
+import {
+  captureNativeLifecycleFence,
+  isNativeLifecycleFenceCurrent,
+  type NativeLifecycleFence,
+} from "./nativeLifecycleCleanup";
+import {
+  buildReminderSchedule,
+  DEFAULT_REMINDERS,
+  ELOVIA_REMINDER_OWNER,
+  isEloviaReminderNotification,
+  localDateKey,
+  normalizeReminderPreferences,
+  type ReminderPreferences,
+  type ReminderTrigger,
+} from "./reminderSchedule";
+
+export type { ReminderPreferences } from "./reminderSchedule";
+export { DEFAULT_REMINDERS } from "./reminderSchedule";
 
 /**
  * Local notification scheduling.
@@ -31,58 +52,42 @@ function loadNotifications(): NotificationsModule | null {
   return cached;
 }
 
-export interface ReminderPreferences {
-  enabled: boolean;
-  /** Daily workout nudge, "HH:mm" 24h local. */
-  workoutTime: string;
-  workoutEnabled: boolean;
-  /** Water reminders every N hours between wakingStart and wakingEnd. */
-  hydrationEnabled: boolean;
-  hydrationIntervalHours: number;
-  wakingStartHour: number;
-  wakingEndHour: number;
-  /** Evening nudge, only fires if nothing was logged that day. */
-  streakGuardEnabled: boolean;
-  streakGuardHour: number;
-  /** Weekly summary. 0 = Sunday. */
-  weeklyDigestEnabled: boolean;
-  weeklyDigestDay: number;
-  weeklyDigestHour: number;
-}
-
-export const DEFAULT_REMINDERS: ReminderPreferences = {
-  enabled: false,
-  workoutTime: "18:00",
-  workoutEnabled: true,
-  hydrationEnabled: true,
-  hydrationIntervalHours: 3,
-  wakingStartHour: 8,
-  wakingEndHour: 21,
-  streakGuardEnabled: true,
-  streakGuardHour: 20,
-  weeklyDigestEnabled: true,
-  weeklyDigestDay: 0,
-  weeklyDigestHour: 9,
-};
-
 const PREFS_KEY = "@elovia_reminder_prefs";
+let reminderOperation: Promise<void> = Promise.resolve();
+
+async function serializeReminderOperation<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = reminderOperation;
+  let release!: () => void;
+  reminderOperation = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
 
 export async function loadReminderPreferences(): Promise<ReminderPreferences> {
   try {
-    const raw = await AsyncStorage.getItem(PREFS_KEY);
-    if (!raw) return DEFAULT_REMINDERS;
-    return { ...DEFAULT_REMINDERS, ...JSON.parse(raw) };
+    const raw = await captureAccountStorageSession().getItem(PREFS_KEY);
+    if (!raw) return normalizeReminderPreferences(DEFAULT_REMINDERS);
+    return normalizeReminderPreferences(JSON.parse(raw));
   } catch {
-    return DEFAULT_REMINDERS;
+    return normalizeReminderPreferences(DEFAULT_REMINDERS);
   }
 }
 
-export async function saveReminderPreferences(prefs: ReminderPreferences): Promise<void> {
-  try {
-    await AsyncStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
-  } catch {
-    // A failed preference write is not worth interrupting the user over.
-  }
+export async function saveReminderPreferences(
+  prefs: ReminderPreferences,
+): Promise<void> {
+  await captureAccountStorageSession().setItem(
+    PREFS_KEY,
+    JSON.stringify(normalizeReminderPreferences(prefs)),
+  );
 }
 
 export function isNotificationsAvailable(): boolean {
@@ -95,12 +100,17 @@ export function configureNotificationHandler(): void {
   if (!N) return;
   try {
     N.setNotificationHandler({
-      handleNotification: async () => ({
-        shouldShowBanner: true,
-        shouldShowList: true,
-        shouldPlaySound: false,
-        shouldSetBadge: false,
-      }),
+      handleNotification: async (notification) => {
+        const present = await shouldPresentNotification(
+          notification.request.content.data,
+        );
+        return {
+          shouldShowBanner: present,
+          shouldShowList: present,
+          shouldPlaySound: false,
+          shouldSetBadge: false,
+        };
+      },
     });
   } catch {
     // Older/newer signature mismatch should never crash startup.
@@ -138,125 +148,261 @@ async function ensureAndroidChannel(N: NotificationsModule): Promise<void> {
   }
 }
 
-function parseTime(value: string): { hour: number; minute: number } {
-  const [h, m] = value.split(":");
-  const hour = Number(h);
-  const minute = Number(m);
+function toNativeTrigger(
+  N: NotificationsModule,
+  trigger: ReminderTrigger,
+): import("expo-notifications").SchedulableNotificationTriggerInput {
+  if (trigger.kind === "date") {
+    return {
+      type: N.SchedulableTriggerInputTypes.DATE,
+      date: trigger.at,
+      channelId: "reminders",
+    };
+  }
+  if (trigger.kind === "weekly") {
+    return {
+      type: N.SchedulableTriggerInputTypes.WEEKLY,
+      weekday: trigger.weekday,
+      hour: trigger.hour,
+      minute: trigger.minute,
+      channelId: "reminders",
+    };
+  }
   return {
-    hour: Number.isFinite(hour) ? Math.min(23, Math.max(0, hour)) : 18,
-    minute: Number.isFinite(minute) ? Math.min(59, Math.max(0, minute)) : 0,
+    type: N.SchedulableTriggerInputTypes.DAILY,
+    hour: trigger.hour,
+    minute: trigger.minute,
+    channelId: "reminders",
   };
 }
 
-const WORKOUT_COPY = [
-  { title: "Time to train", body: "Your session is waiting. Even a short one counts." },
-  { title: "Session time", body: "Twenty minutes now beats a perfect workout you skip." },
-  { title: "Ready when you are", body: "Open Elovia and knock today's session out." },
-];
+type ScheduledNotification = Awaited<
+  ReturnType<NotificationsModule["getAllScheduledNotificationsAsync"]>
+>[number];
 
-const HYDRATION_COPY = [
-  { title: "Water break", body: "A glass now keeps you on track for today's goal." },
-  { title: "Hydrate", body: "Quick one - drink some water and log it." },
-];
+function toRestorableTrigger(
+  N: NotificationsModule,
+  trigger: ScheduledNotification["trigger"],
+): import("expo-notifications").NotificationTriggerInput | null {
+  if (!trigger || typeof trigger !== "object") return null;
+  const value = trigger as unknown as Record<string, unknown>;
+  const channelId =
+    typeof value.channelId === "string" ? value.channelId : "reminders";
+  const boundedInteger = (
+    candidate: unknown,
+    minimum: number,
+    maximum: number,
+  ) =>
+    typeof candidate === "number" &&
+    Number.isInteger(candidate) &&
+    candidate >= minimum &&
+    candidate <= maximum
+      ? candidate
+      : null;
+  if (value.type === "date") {
+    const date = value.date ?? value.timestamp;
+    return (typeof date === "number" && Number.isFinite(date)) ||
+      (date instanceof Date && Number.isFinite(date.getTime()))
+      ? { type: N.SchedulableTriggerInputTypes.DATE, date, channelId }
+      : null;
+  }
+  if (value.type === "daily") {
+    const hour = boundedInteger(value.hour, 0, 23);
+    const minute = boundedInteger(value.minute, 0, 59);
+    if (hour === null || minute === null) return null;
+    return {
+      type: N.SchedulableTriggerInputTypes.DAILY,
+      hour,
+      minute,
+      channelId,
+    };
+  }
+  if (value.type === "weekly") {
+    const weekday = boundedInteger(value.weekday, 1, 7);
+    const hour = boundedInteger(value.hour, 0, 23);
+    const minute = boundedInteger(value.minute, 0, 59);
+    if (weekday === null || hour === null || minute === null) return null;
+    return {
+      type: N.SchedulableTriggerInputTypes.WEEKLY,
+      weekday,
+      hour,
+      minute,
+      channelId,
+    };
+  }
+  return null;
+}
 
-function pick<T>(list: T[]): T {
-  return list[Math.floor(Math.random() * list.length)];
+async function cancelOwnedReminders(N: NotificationsModule): Promise<boolean> {
+  for (let pass = 0; pass < 2; pass += 1) {
+    const scheduled = await N.getAllScheduledNotificationsAsync();
+    const owned = scheduled.filter(isEloviaReminderNotification);
+    if (owned.length === 0) return true;
+    for (const notification of owned) {
+      try {
+        await N.cancelScheduledNotificationAsync(notification.identifier);
+      } catch {
+        // Verification below is authoritative: native calls can reject after
+        // completing, while resolved cancellation can also be delayed.
+      }
+    }
+  }
+  const remaining = await N.getAllScheduledNotificationsAsync();
+  return !remaining.some(isEloviaReminderNotification);
 }
 
 /**
  * Rebuild the full notification schedule from preferences.
  *
- * Cancels everything first and re-creates. Reconciling individual triggers
- * would be more efficient but far easier to get wrong, and the resulting
- * duplicate-reminder bug is exactly the kind that makes people uninstall.
+ * Cancels only notifications tagged as Elovia reminders, then re-creates the
+ * desired owned set. Other scheduled notifications are never touched.
  */
-export async function rescheduleAllReminders(prefs: ReminderPreferences): Promise<boolean> {
+export async function rescheduleAllReminders(
+  prefs: ReminderPreferences,
+): Promise<boolean> {
   const N = loadNotifications();
   if (!N || Platform.OS === "web") return false;
 
   try {
-    await N.cancelAllScheduledNotificationsAsync();
-
-    if (!prefs.enabled) return true;
-
-    const granted = await requestNotificationPermission();
-    if (!granted) return false;
-
-    await ensureAndroidChannel(N);
-
-    const daily = N.SchedulableTriggerInputTypes.DAILY;
-    const weekly = N.SchedulableTriggerInputTypes.WEEKLY;
-
-    if (prefs.workoutEnabled) {
-      const { hour, minute } = parseTime(prefs.workoutTime);
-      const copy = pick(WORKOUT_COPY);
-      await N.scheduleNotificationAsync({
-        content: { ...copy, data: { kind: "workout" } },
-        trigger: { type: daily, hour, minute, channelId: "reminders" },
-      });
+    const accountStorage = captureAccountStorageSession();
+    const lifecycleFence = captureNativeLifecycleFence(
+      accountStorage.ownerToken.uid,
+    );
+    if (!lifecycleFence) return false;
+    const normalized = normalizeReminderPreferences(prefs);
+    await accountStorage.setItem(PREFS_KEY, JSON.stringify(normalized));
+    if (!isNativeLifecycleFenceCurrent(lifecycleFence)) return false;
+    if (normalized.enabled && !(await requestNotificationPermission())) {
+      return false;
     }
-
-    if (prefs.hydrationEnabled) {
-      // Discrete daily triggers across waking hours. A repeating interval
-      // trigger would fire overnight, which is the fastest way to get
-      // notifications disabled entirely.
-      const step = Math.max(1, Math.min(6, prefs.hydrationIntervalHours));
-      for (let hour = prefs.wakingStartHour; hour <= prefs.wakingEndHour; hour += step) {
-        const copy = pick(HYDRATION_COPY);
-        await N.scheduleNotificationAsync({
-          content: { ...copy, data: { kind: "hydration" } },
-          trigger: { type: daily, hour, minute: 0, channelId: "reminders" },
-        });
-      }
+    if (
+      !(await accountStorage.isCurrent()) ||
+      !isNativeLifecycleFenceCurrent(lifecycleFence)
+    ) {
+      return false;
     }
-
-    if (prefs.streakGuardEnabled) {
-      await N.scheduleNotificationAsync({
-        content: {
-          title: "Keep your streak",
-          body: "You have not logged anything today. A quick entry keeps it alive.",
-          data: { kind: "streak" },
-        },
-        trigger: {
-          type: daily,
-          hour: Math.min(23, Math.max(0, prefs.streakGuardHour)),
-          minute: 0,
-          channelId: "reminders",
-        },
-      });
-    }
-
-    if (prefs.weeklyDigestEnabled) {
-      await N.scheduleNotificationAsync({
-        content: {
-          title: "Your week in review",
-          body: "See how your training and nutrition went this week.",
-          data: { kind: "digest" },
-        },
-        trigger: {
-          type: weekly,
-          // expo-notifications weekday is 1-7 with 1 = Sunday.
-          weekday: Math.min(7, Math.max(1, prefs.weeklyDigestDay + 1)),
-          hour: prefs.weeklyDigestHour,
-          minute: 0,
-          channelId: "reminders",
-        },
-      });
-    }
-
-    return true;
+    return reconcileReminderSchedule({
+      expectedUserId: accountStorage.ownerToken.uid,
+      preferences: normalized,
+      lifecycleFence,
+    });
   } catch {
     return false;
   }
 }
 
-export async function cancelAllReminders(): Promise<void> {
+export interface ReconcileReminderScheduleOptions {
+  /** The authenticated owner that initiated this lifecycle run. */
+  expectedUserId?: string | null;
+  preferences?: ReminderPreferences;
+  /** Preserve the initiating generation across an explicit settings flow. */
+  lifecycleFence?: NativeLifecycleFence;
+}
+
+/** Rebuild enabled reminders without ever prompting for optional permission. */
+export async function reconcileReminderSchedule(
+  options: ReconcileReminderScheduleOptions = {},
+): Promise<boolean> {
   const N = loadNotifications();
-  if (!N) return;
+  if (!N || Platform.OS === "web") return false;
+
+  return serializeReminderOperation(async () => {
+    try {
+      const accountStorage = captureAccountStorageSession();
+      if (
+        options.expectedUserId !== undefined &&
+        accountStorage.ownerToken.uid !== options.expectedUserId
+      ) {
+        return false;
+      }
+      const lifecycleFence =
+        options.lifecycleFence ??
+        captureNativeLifecycleFence(accountStorage.ownerToken.uid);
+      if (!lifecycleFence || !isNativeLifecycleFenceCurrent(lifecycleFence)) {
+        return false;
+      }
+      const stored = options.preferences
+        ? null
+        : await accountStorage.getItem(PREFS_KEY);
+      const prefs = normalizeReminderPreferences(
+        options.preferences ??
+          (stored ? JSON.parse(stored) : DEFAULT_REMINDERS),
+      );
+      const schedule = prefs.enabled ? buildReminderSchedule(prefs) : [];
+      if (
+        !(await accountStorage.isCurrent()) ||
+        !isNativeLifecycleFenceCurrent(lifecycleFence)
+      ) {
+        return false;
+      }
+      if (schedule.length > 0) {
+        await ensureAndroidChannel(N);
+      }
+      if (!isNativeLifecycleFenceCurrent(lifecycleFence)) return false;
+
+      const outcome = await runReminderReconciliation({
+        isCurrent: async () =>
+          (await accountStorage.isCurrent()) &&
+          isNativeLifecycleFenceCurrent(lifecycleFence),
+        async listOwned() {
+          const scheduled = await N.getAllScheduledNotificationsAsync();
+          return scheduled.filter(isEloviaReminderNotification);
+        },
+        identifier: (notification) => notification.identifier,
+        canRestore: (notification) =>
+          toRestorableTrigger(N, notification.trigger) !== null,
+        cancel: (identifier) => N.cancelScheduledNotificationAsync(identifier),
+        async permissionGranted() {
+          return (await N.getPermissionsAsync()).granted;
+        },
+        scheduleCount: schedule.length,
+        async schedule(index) {
+          const item = schedule[index];
+          if (!item) throw new Error("Reminder schedule changed unexpectedly.");
+          return N.scheduleNotificationAsync({
+            content: {
+              title: item.title,
+              body: item.body,
+              data: {
+                eloviaOwner: ELOVIA_REMINDER_OWNER,
+                [ELOVIA_REMINDER_ACCOUNT_KEY]:
+                  accountStorage.ownerToken.uid ?? "system:guest",
+                kind: item.kind,
+              },
+            },
+            trigger: toNativeTrigger(N, item.trigger),
+          });
+        },
+        async restore(notification) {
+          const trigger = toRestorableTrigger(N, notification.trigger);
+          if (!trigger) throw new Error("Reminder trigger cannot be restored.");
+          return N.scheduleNotificationAsync({
+            identifier: notification.identifier,
+            content: {
+              title: notification.content.title,
+              body: notification.content.body,
+              data: notification.content.data,
+              sound: notification.content.sound ?? false,
+            },
+            trigger,
+          });
+        },
+      });
+      return outcome === "reconciled" || outcome === "permission-denied";
+    } catch {
+      return false;
+    }
+  });
+}
+
+export async function cancelAllReminders(): Promise<boolean> {
+  const N = loadNotifications();
+  if (Platform.OS === "web") return true;
+  if (!N) return false;
   try {
-    await N.cancelAllScheduledNotificationsAsync();
+    return await serializeReminderOperation(() => cancelOwnedReminders(N));
   } catch {
-    // Nothing scheduled, or the module is unavailable.
+    return false;
   }
 }
 
@@ -266,7 +412,7 @@ export async function countScheduledReminders(): Promise<number> {
   if (!N) return 0;
   try {
     const scheduled = await N.getAllScheduledNotificationsAsync();
-    return scheduled.length;
+    return scheduled.filter(isEloviaReminderNotification).length;
   } catch {
     return 0;
   }
@@ -279,16 +425,33 @@ export async function countScheduledReminders(): Promise<number> {
  * have not logged anything - the single most irritating possible reminder.
  */
 export async function suppressTodayStreakReminder(): Promise<void> {
-  const N = loadNotifications();
-  if (!N) return;
   try {
-    const scheduled = await N.getAllScheduledNotificationsAsync();
-    const streakOnes = scheduled.filter(
-      (s) => (s.content?.data as { kind?: string } | undefined)?.kind === "streak",
+    const accountStorage = captureAccountStorageSession();
+    const lifecycleFence = captureNativeLifecycleFence(
+      accountStorage.ownerToken.uid,
     );
-    for (const item of streakOnes) {
-      await N.cancelScheduledNotificationAsync(item.identifier);
+    if (!lifecycleFence) return;
+    const stored = await accountStorage.getItem(PREFS_KEY);
+    if (!isNativeLifecycleFenceCurrent(lifecycleFence)) return;
+    const prefs = normalizeReminderPreferences(
+      stored ? JSON.parse(stored) : DEFAULT_REMINDERS,
+    );
+    const suppressed = normalizeReminderPreferences({
+      ...prefs,
+      streakSuppressedOn: localDateKey(new Date()),
+    });
+    await accountStorage.setItem(PREFS_KEY, JSON.stringify(suppressed));
+    if (
+      !(await accountStorage.isCurrent()) ||
+      !isNativeLifecycleFenceCurrent(lifecycleFence)
+    ) {
+      return;
     }
+    await reconcileReminderSchedule({
+      expectedUserId: accountStorage.ownerToken.uid,
+      preferences: suppressed,
+      lifecycleFence,
+    });
   } catch {
     // Best effort.
   }

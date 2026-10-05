@@ -1,28 +1,67 @@
 import { Router, type IRouter, type Request, type Response } from "express";
+import { randomUUID } from "node:crypto";
 import {
   activityCommentsTable,
   aiUsageTable,
+  aiRequestsTable,
+  aiAttemptsTable,
   challengeParticipantsTable,
   challengesTable,
   coachingSessionsTable,
   coachProfilesTable,
+  communityMembershipsTable,
+  contentReportsTable,
   friendshipsTable,
   kudosTable,
   pushTokensTable,
+  revenuecatCustomerStateTable,
+  revenuecatEventSubjectsTable,
+  revenuecatWebhookEventsTable,
   sharedActivitiesTable,
   socialProfilesTable,
-  subscriptionsTable,
+  subscriptionEntitlementsTable,
   supplementsTable,
   userDataTable,
   usersTable,
   db,
 } from "@workspace/db";
-import { eq, or } from "drizzle-orm";
+import { eq, or, getTableColumns } from "drizzle-orm";
 import { requireAuth } from "../middlewares/aiGate";
 import { deleteFirebaseUser } from "../lib/auth";
 import { resolveEntitlement } from "../lib/entitlements";
+import {
+  findAccountDeletionTombstone,
+  findAccountDeletionTombstoneByRequest,
+  finalizeAccountDeletion,
+  tombstoneAndDeleteAccountData,
+} from "../lib/accountDeletion";
+import { runAccountDeletionWorkflow } from "../lib/accountDeletionWorkflow";
+import { rateLimit } from "../lib/rateLimit";
+import { buildRevenueCatPrivacyExport } from "../lib/revenuecatPresentation";
 
 const router: IRouter = Router();
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return entities[character];
+  });
+}
+
+function safetyContactMarkup(): string {
+  const configured = process.env.SAFETY_CONTACT_EMAIL?.trim() ?? "";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(configured)) {
+    return "the safety contact published on Elovia's app-store listing";
+  }
+  const email = escapeHtml(configured);
+  return `<a href="mailto:${email}">${email}</a>`;
+}
 
 const page = (title: string, body: string, script = "") => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -38,7 +77,7 @@ router.get("/legal/privacy", (_req: Request, res: Response) => {
       "Privacy Notice",
       `
     <p>Elovia uses the information you provide to personalise fitness, nutrition, recovery and coaching features.</p>
-    <section><h2>Data we process</h2><p>Account details; profile and goal information; workouts, meals, measurements, habits and health-source data you choose to connect; supplement and medication entries; location during a run or for places you create; subscription status; AI requests and usage counts; coaching bookings; and content you deliberately share with friends.</p></section>
+    <section><h2>Data we process</h2><p>Account details; profile and goal information; workouts, meals, measurements, habits and health-source data you choose to connect; supplement and medication entries; location during a run or for places you create; subscription status; AI requests and usage counts; coaching bookings; content you deliberately share with friends; and a limited snapshot of reported content and report context when you use Community safety tools.</p></section>
     <section><h2>How it is used</h2><p>We use this data to operate and secure the app, sync your account, generate requested recommendations, enforce plan limits, deliver reminders, support coaching and show opted-in social activity. Elovia is a fitness tool, not a medical device, and its guidance does not replace a qualified clinician.</p></section>
     <section><h2>Services and sharing</h2><p>Data is processed by infrastructure and feature providers needed to run Elovia, including Firebase for identity, RevenueCat and the app stores for purchases, hosting and database providers, notification delivery, maps or device health services you enable, and AI providers for requests you initiate. We do not sell health data. Social data is shared only when you choose to share it.</p></section>
     <section><h2>Your controls</h2><p>You can disconnect health access in device settings, turn off social discovery, export your data, and permanently delete your Elovia account from Profile → Privacy &amp; Data. You can also use the <a href="./account-deletion">external deletion page</a>.</p></section>
@@ -58,6 +97,23 @@ router.get("/legal/terms", (_req: Request, res: Response) => {
     <section><h2>Accounts and subscriptions</h2><p>You are responsible for your account and device access. Paid plans are billed and managed by the applicable app store under the price, renewal and cancellation terms shown before purchase. Deleting an account does not automatically cancel an app-store subscription; manage that subscription in your store settings.</p></section>
     <section><h2>Acceptable use</h2><p>Do not misuse the service, attempt to bypass access controls, scrape other users, upload unlawful content, or use social and coaching features to harass others.</p></section>
     <section><h2>Availability</h2><p>Features may change and integrations can be unavailable. To the extent permitted by law, Elovia is provided without a promise that every recommendation or service will always be accurate or uninterrupted.</p></section>
+  `,
+    ),
+  );
+});
+
+router.get("/legal/community-standards", (_req: Request, res: Response) => {
+  const safetyContact = safetyContactMarkup();
+  res.type("html").send(
+    page(
+      "Community Standards",
+      `
+    <p>Elovia Community is for adults aged 18 or older. Participation requires a separate, versioned acceptance of these standards.</p>
+    <section><h2>Respect people and their privacy</h2><p>Do not harass, threaten, shame, discriminate against, impersonate or exploit another person. Do not publish anyone's private contact, health, identity or location information. Keep phone numbers, email addresses and external links out of Community posts.</p></section>
+    <section><h2>Keep content safe</h2><p>Do not post hateful, sexual, violent, fraudulent or illegal content; self-harm encouragement; scams; dangerous challenges; or advice presented as medical diagnosis or treatment. Elovia may limit or remove content and accounts when needed to protect users.</p></section>
+    <section><h2>Report and block</h2><p>Use “Report” to send a post, account or AI response privately to the safety queue. Use “Block athlete” separately to immediately hide that person and their Community activity from your view. Reports may include a limited snapshot of the reported content so reviewers can investigate it.</p></section>
+    <section><h2>Review and urgent concerns</h2><p>Urgent safety reports are prioritised for review. Elovia is not an emergency service. If someone may be in immediate danger, contact local emergency services or an appropriate crisis service. For Community safety questions, contact ${safetyContact}.</p></section>
+    <section><h2>Appeals and changes</h2><p>Contact the safety address if you believe an action was mistaken. When these standards materially change, Community access requires acceptance of the new version before social data is shown again.</p></section>
   `,
     ),
   );
@@ -96,8 +152,13 @@ router.get("/legal/account-deletion", (_req: Request, res: Response) => {
       if (!confirm('Permanently delete your Elovia account and app data?')) return;
       remove.disabled = true; status.textContent = 'Deleting…';
       const response = await fetch('/api/account', { method: 'DELETE', headers: { Authorization: 'Bearer ' + token } });
-      status.textContent = response.ok ? 'Your Elovia account and app data have been deleted.' : 'Deletion did not complete. Please try again or use the support contact on Elovia’s app-store listing.';
-      if (!response.ok) remove.disabled = false;
+      const result = await response.json().catch(() => ({}));
+      status.textContent = result.deleted
+        ? 'Your Elovia account and app data have been deleted.'
+        : result.finalizing
+          ? 'Your app data was removed and identity deletion is finalizing. It is safe to close this window.'
+          : 'Deletion did not start. Please try again or use the support contact on Elovia’s app-store listing.';
+      if (!response.ok && !result.finalizing) remove.disabled = false;
     };
   })();
   </script>`,
@@ -115,11 +176,17 @@ router.get(
       const [
         account,
         appData,
-        subscriptions,
+        normalizedEntitlements,
+        revenueCatEvents,
+        revenueCatReconciliation,
         aiUsage,
+        aiRequests,
+        aiAttempts,
         pushDevices,
         supplements,
         socialProfile,
+        communityMembership,
+        submittedReports,
         friendships,
         sharedActivities,
         kudos,
@@ -134,9 +201,57 @@ router.get(
         db.select().from(userDataTable).where(eq(userDataTable.userId, userId)),
         db
           .select()
-          .from(subscriptionsTable)
-          .where(eq(subscriptionsTable.userId, userId)),
+          .from(subscriptionEntitlementsTable)
+          .where(eq(subscriptionEntitlementsTable.userId, userId)),
+        db
+          .select({
+            eventId: revenuecatWebhookEventsTable.eventId,
+            type: revenuecatWebhookEventsTable.type,
+            eventAt: revenuecatWebhookEventsTable.eventAt,
+            receivedAt: revenuecatWebhookEventsTable.receivedAt,
+            environment: revenuecatWebhookEventsTable.environment,
+            disposition: revenuecatWebhookEventsTable.disposition,
+            metadata: revenuecatWebhookEventsTable.metadata,
+            identityCount: revenuecatWebhookEventsTable.identityCount,
+            retainedIdentityCount:
+              revenuecatWebhookEventsTable.retainedIdentityCount,
+            prunedIdentityCount:
+              revenuecatWebhookEventsTable.prunedIdentityCount,
+            identityRequired: revenuecatWebhookEventsTable.identityRequired,
+            identityAppliedAt: revenuecatWebhookEventsTable.identityAppliedAt,
+            entitlementRequired:
+              revenuecatWebhookEventsTable.entitlementRequired,
+            entitlementAppliedAt:
+              revenuecatWebhookEventsTable.entitlementAppliedAt,
+            processedAt: revenuecatWebhookEventsTable.processedAt,
+            roleMask: revenuecatEventSubjectsTable.roleMask,
+          })
+          .from(revenuecatEventSubjectsTable)
+          .innerJoin(
+            revenuecatWebhookEventsTable,
+            eq(
+              revenuecatWebhookEventsTable.eventId,
+              revenuecatEventSubjectsTable.eventId,
+            ),
+          )
+          .where(eq(revenuecatEventSubjectsTable.localUserId, userId)),
+        db
+          .select()
+          .from(revenuecatCustomerStateTable)
+          .where(eq(revenuecatCustomerStateTable.userId, userId)),
         db.select().from(aiUsageTable).where(eq(aiUsageTable.userId, userId)),
+        db
+          .select()
+          .from(aiRequestsTable)
+          .where(eq(aiRequestsTable.userId, userId)),
+        db
+          .select(getTableColumns(aiAttemptsTable))
+          .from(aiAttemptsTable)
+          .innerJoin(
+            aiRequestsTable,
+            eq(aiRequestsTable.id, aiAttemptsTable.requestId),
+          )
+          .where(eq(aiRequestsTable.userId, userId)),
         db
           .select()
           .from(pushTokensTable)
@@ -149,6 +264,27 @@ router.get(
           .select()
           .from(socialProfilesTable)
           .where(eq(socialProfilesTable.userId, userId)),
+        db
+          .select()
+          .from(communityMembershipsTable)
+          .where(eq(communityMembershipsTable.userId, userId)),
+        db
+          .select({
+            id: contentReportsTable.id,
+            targetType: contentReportsTable.targetType,
+            targetId: contentReportsTable.targetId,
+            subjectUserId: contentReportsTable.subjectUserId,
+            reason: contentReportsTable.reason,
+            details: contentReportsTable.details,
+            status: contentReportsTable.status,
+            priority: contentReportsTable.priority,
+            reviewDueAt: contentReportsTable.reviewDueAt,
+            resolvedAt: contentReportsTable.resolvedAt,
+            createdAt: contentReportsTable.createdAt,
+            updatedAt: contentReportsTable.updatedAt,
+          })
+          .from(contentReportsTable)
+          .where(eq(contentReportsTable.reporterUserId, userId)),
         db
           .select()
           .from(friendshipsTable)
@@ -191,17 +327,27 @@ router.get(
         resolveEntitlement(userId),
       ]);
 
+      const revenueCatBilling = buildRevenueCatPrivacyExport({
+        entitlements: normalizedEntitlements,
+        events: revenueCatEvents,
+        reconciliation: revenueCatReconciliation[0] ?? null,
+      });
       const exportData = {
         exportedAt: new Date().toISOString(),
         account: account[0] ?? null,
         appData: appData[0] ?? null,
         entitlement,
-        subscriptions,
+        subscriptions: revenueCatBilling.entitlements,
+        revenueCatBilling,
         aiUsage,
+        aiRequests,
+        aiAttempts,
         pushDevices,
         supplements,
         social: {
           profile: socialProfile[0] ?? null,
+          communityMembership: communityMembership[0] ?? null,
+          reports: submittedReports,
           friendships,
           sharedActivities,
           kudos,
@@ -223,22 +369,115 @@ router.get(
       );
       res.type("application/json").send(JSON.stringify(exportData, null, 2));
     } catch (error) {
-      req.log.error({ error }, "Privacy export failed");
+      req.log.error(
+        { errorType: error instanceof Error ? error.name : "UnknownError" },
+        "Privacy export failed",
+      );
       res.status(500).json({ error: "Could not export account data" });
     }
   },
 );
 
+function deletionStatusResponse(
+  tombstone: Awaited<ReturnType<typeof findAccountDeletionTombstone>>,
+  requestId: string | null,
+) {
+  return {
+    started: tombstone !== null,
+    finalized: tombstone?.status === "finalized",
+    finalizing: tombstone?.status === "identity_pending",
+    requestIdMatches:
+      requestId === null || tombstone === null
+        ? null
+        : tombstone.requestId === requestId,
+  };
+}
+
+router.get(
+  "/account/deletion-status",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const requestId = req.get("X-Elovia-Deletion-Request-ID")?.trim() ?? null;
+    res.setHeader("Cache-Control", "no-store");
+    const tombstone = await findAccountDeletionTombstone(req.user!.id);
+    res.status(200).json(deletionStatusResponse(tombstone, requestId));
+  },
+);
+
+// A high-entropy request ID acts as a recovery capability after Firebase has
+// already removed the local identity. The response reveals only whether this
+// exact UID/request pair crossed the permanent server tombstone boundary.
+router.post(
+  "/account/deletion-status",
+  rateLimit({
+    windowMs: 60_000,
+    max: 30,
+    keyPrefix: "account-deletion-status",
+  }),
+  async (req: Request, res: Response) => {
+    const userId =
+      typeof req.body?.userId === "string" ? req.body.userId.trim() : "";
+    const requestId =
+      typeof req.body?.requestId === "string" ? req.body.requestId.trim() : "";
+    if (
+      userId.length < 1 ||
+      userId.length > 256 ||
+      !/^[A-Za-z0-9_-]{8,128}$/.test(requestId)
+    ) {
+      res.status(400).json({ error: "Invalid deletion recovery request" });
+      return;
+    }
+    res.setHeader("Cache-Control", "no-store");
+    const tombstone = await findAccountDeletionTombstoneByRequest(
+      userId,
+      requestId,
+    );
+    res.status(200).json(deletionStatusResponse(tombstone, requestId));
+  },
+);
+
 router.delete("/account", requireAuth, async (req: Request, res: Response) => {
   const userId = req.user!.id;
+  const suppliedRequestId = req.get("X-Elovia-Deletion-Request-ID")?.trim();
+  const requestId =
+    suppliedRequestId && /^[A-Za-z0-9_-]{8,128}$/.test(suppliedRequestId)
+      ? suppliedRequestId
+      : randomUUID();
   try {
     res.setHeader("Cache-Control", "no-store");
-    await db.delete(usersTable).where(eq(usersTable.id, userId));
-    await deleteFirebaseUser(userId);
-    res.status(200).json({ deleted: true });
+    const outcome = await runAccountDeletionWorkflow({
+      async tombstoneAndDeleteData() {
+        await tombstoneAndDeleteAccountData(userId, requestId);
+      },
+      deleteIdentity: () => deleteFirebaseUser(userId),
+      markFinalized: () => finalizeAccountDeletion(userId),
+    });
+    if (outcome.status === "finalized") {
+      res.status(200).json({ deleted: true, finalizing: false });
+      return;
+    }
+
+    req.log.error(
+      {
+        errorType:
+          outcome.error instanceof Error ? outcome.error.name : "UnknownError",
+      },
+      "Account identity deletion remains pending",
+    );
+    res.status(202).json({
+      deleted: false,
+      finalizing: true,
+      code: "account_deletion_finalizing",
+    });
   } catch (error) {
-    req.log.error({ error, userId }, "Account deletion failed");
-    res.status(500).json({ error: "Account deletion did not complete" });
+    req.log.error(
+      { errorType: error instanceof Error ? error.name : "UnknownError" },
+      "Account deletion transaction failed",
+    );
+    res.status(500).json({
+      error: "Account deletion did not start",
+      code: "account_deletion_failed",
+    });
   }
 });
 

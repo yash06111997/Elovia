@@ -1,9 +1,16 @@
-import { Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold, useFonts } from "@expo-google-fonts/inter";
+import {
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+  useFonts,
+} from "@expo-google-fonts/inter";
 import * as Font from "expo-font";
 import "../global.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
+import { StatusBar } from "expo-status-bar";
 import React, { useEffect, useState } from "react";
 import { Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -13,6 +20,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AutoSync } from "@/components/AutoSync";
+import { NativeLifecycleCoordinator } from "@/components/NativeLifecycleCoordinator";
 import { AuthProvider } from "@/lib/auth";
 import { initializeRevenueCat, RevenueCatProvider } from "@/lib/revenuecat";
 import { AppProvider } from "@/context/AppContext";
@@ -24,8 +32,11 @@ import { WellnessProvider } from "@/context/WellnessContext";
 import { configureNotificationHandler } from "@/lib/notifications";
 import { migrateStorageNamespace } from "@/lib/storageMigration";
 import { reportClientError } from "@/lib/telemetry";
+import { Colors } from "@/constants/colors";
 // Side-effect import: registers the background geofence task.
 import "@/lib/geofenceTask";
+// Side-effect import: registers the background run recorder before React mounts.
+import "@/lib/runLocationTask";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -43,9 +54,21 @@ const queryClient = new QueryClient();
 
 function RootLayoutNav() {
   return (
-    <Stack screenOptions={{ headerShown: false }}>
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        headerStyle: { backgroundColor: Colors.dark.background },
+        headerTintColor: Colors.dark.text,
+        headerTitleStyle: { fontFamily: "Inter_600SemiBold" },
+        headerShadowVisible: false,
+        contentStyle: { backgroundColor: Colors.dark.background },
+      }}
+    >
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="onboarding/index" options={{ headerShown: false, presentation: "fullScreenModal" }} />
+      <Stack.Screen
+        name="onboarding/index"
+        options={{ headerShown: false, presentation: "fullScreenModal" }}
+      />
       <Stack.Screen
         name="plan-preview"
         options={{
@@ -54,19 +77,62 @@ function RootLayoutNav() {
           gestureEnabled: false,
         }}
       />
-      <Stack.Screen name="paywall" options={{ headerShown: false, presentation: "fullScreenModal" }} />
-      <Stack.Screen name="privacy-data" options={{ headerShown: true, title: "Privacy & Data" }} />
-      <Stack.Screen name="log-workout" options={{ headerShown: false, presentation: "fullScreenModal" }} />
-      <Stack.Screen name="plans" options={{ headerShown: true, title: "Training Programmes" }} />
-      <Stack.Screen name="hydration" options={{ headerShown: true, title: "Hydration" }} />
-      <Stack.Screen name="supplements" options={{ headerShown: true, title: "Supplements" }} />
-      <Stack.Screen name="coach" options={{ headerShown: true, title: "Coach" }} />
-      <Stack.Screen name="run" options={{ headerShown: true, title: "Record Activity" }} />
-      <Stack.Screen name="places" options={{ headerShown: true, title: "My Places" }} />
-      <Stack.Screen name="achievements" options={{ headerShown: true, title: "Achievements" }} />
-      <Stack.Screen name="scan" options={{ headerShown: true, title: "Scan barcode" }} />
-      <Stack.Screen name="social" options={{ headerShown: true, title: "Community" }} />
-      <Stack.Screen name="coaching" options={{ headerShown: true, title: "Coaching" }} />
+      <Stack.Screen
+        name="paywall"
+        options={{ headerShown: false, presentation: "fullScreenModal" }}
+      />
+      <Stack.Screen
+        name="profile-details"
+        options={{ headerShown: true, title: "Profile & Settings" }}
+      />
+      <Stack.Screen
+        name="privacy-data"
+        options={{ headerShown: true, title: "Privacy & Data" }}
+      />
+      <Stack.Screen
+        name="log-workout"
+        options={{ headerShown: false, presentation: "fullScreenModal" }}
+      />
+      <Stack.Screen
+        name="plans"
+        options={{ headerShown: true, title: "Training Programmes" }}
+      />
+      <Stack.Screen
+        name="hydration"
+        options={{ headerShown: true, title: "Hydration" }}
+      />
+      <Stack.Screen
+        name="supplements"
+        options={{ headerShown: true, title: "Supplements" }}
+      />
+      <Stack.Screen
+        name="coach"
+        options={{ headerShown: true, title: "Coach" }}
+      />
+      <Stack.Screen
+        name="run"
+        options={{ headerShown: true, title: "Record Activity" }}
+      />
+      <Stack.Screen
+        name="places"
+        options={{ headerShown: true, title: "My Places" }}
+      />
+      <Stack.Screen
+        name="achievements"
+        options={{ headerShown: true, title: "Achievements" }}
+      />
+      <Stack.Screen
+        name="scan"
+        options={{ headerShown: true, title: "Scan barcode" }}
+      />
+      <Stack.Screen
+        name="social"
+        options={{ headerShown: true, title: "Community" }}
+      />
+      <Stack.Screen
+        name="coaching"
+        options={{ headerShown: true, title: "Coaching" }}
+      />
     </Stack>
   );
 }
@@ -84,7 +150,9 @@ export default function RootLayout() {
 
   useEffect(() => {
     migrateStorageNamespace(AsyncStorage)
-      .catch((error) => console.warn("Storage namespace migration failed", error))
+      .catch((error) =>
+        console.warn("Storage namespace migration failed", error),
+      )
       .finally(() => setStorageReady(true));
   }, []);
 
@@ -112,7 +180,8 @@ export default function RootLayout() {
     }
   }, [fontsLoaded, fontError, iconFontsLoaded, storageReady]);
 
-  if ((!fontsLoaded && !fontError) || !iconFontsLoaded || !storageReady) return null;
+  if ((!fontsLoaded && !fontError) || !iconFontsLoaded || !storageReady)
+    return null;
 
   return (
     <SafeAreaProvider>
@@ -127,8 +196,13 @@ export default function RootLayout() {
                       <HealthProvider>
                         <WellnessProvider>
                           <AutoSync />
+                          <NativeLifecycleCoordinator />
                           <GestureHandlerRootView>
                             <KeyboardProvider>
+                              <StatusBar
+                                style="light"
+                                backgroundColor={Colors.dark.background}
+                              />
                               <RootLayoutNav />
                             </KeyboardProvider>
                           </GestureHandlerRootView>

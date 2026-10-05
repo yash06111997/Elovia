@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-function luminance(hex) {
+function luminance(hex, label) {
+  assert.equal(
+    typeof hex,
+    "string",
+    `${label} must be an opaque #RRGGBB color; received ${JSON.stringify(hex)}`,
+  );
+  assert.match(
+    hex,
+    /^#[0-9a-f]{6}$/i,
+    `${label} must be an opaque #RRGGBB color; received ${JSON.stringify(hex)}`,
+  );
   const channels = hex
     .slice(1)
     .match(/.{2}/g)
@@ -12,23 +22,48 @@ function luminance(hex) {
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
 }
 
-function contrast(first, second) {
-  const [bright, dark] = [luminance(first), luminance(second)].sort(
-    (a, b) => b - a,
-  );
+function contrast(first, second, firstLabel, secondLabel) {
+  const [bright, dark] = [
+    luminance(first, firstLabel),
+    luminance(second, secondLabel),
+  ].sort((a, b) => b - a);
   return (bright + 0.05) / (dark + 0.05);
 }
 
 test("secondary and muted text colors meet WCAG AA on app backgrounds", async () => {
   const { Colors } = await import("../../artifacts/mobile/constants/colors.ts");
-  // The palette is dark-only by design (see constants/colors.ts); guard every
-  // scheme that exists without pretending a deleted light scheme is still here.
-  const palettes = [Colors.dark, Colors.light].filter(Boolean);
-  assert.ok(palettes.length > 0, "at least one palette must exist");
-  for (const palette of palettes) {
-    for (const textColor of [palette.textSecondary, palette.textMuted]) {
-      assert.ok(contrast(textColor, palette.background) >= 4.5);
-      assert.ok(contrast(textColor, palette.card) >= 4.5);
+  const palettes = Object.entries(Colors).filter(
+    ([, value]) =>
+      value &&
+      typeof value === "object" &&
+      typeof value.background === "string" &&
+      typeof value.card === "string",
+  );
+
+  assert.ok(palettes.length > 0, "at least one app palette must be defined");
+  for (const [paletteName, palette] of palettes) {
+    const textTokens = [
+      ["textSecondary", palette.textSecondary],
+      ["textMuted", palette.textMuted],
+    ];
+    const surfaces = [
+      ["background", palette.background],
+      ["card", palette.card],
+    ];
+
+    for (const [tokenName, textColor] of textTokens) {
+      for (const [surfaceName, surfaceColor] of surfaces) {
+        const ratio = contrast(
+          textColor,
+          surfaceColor,
+          `${paletteName}.${tokenName}`,
+          `${paletteName}.${surfaceName}`,
+        );
+        assert.ok(
+          ratio >= 4.5,
+          `${paletteName}.${tokenName} on ${surfaceName} has contrast ${ratio.toFixed(2)}; required threshold is 4.5`,
+        );
+      }
     }
   }
 });

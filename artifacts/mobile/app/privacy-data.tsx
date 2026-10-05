@@ -28,13 +28,14 @@ import {
 import { trackEvent } from "@/lib/telemetry";
 import { useWorkout } from "@/context/WorkoutContext";
 import { workoutsToCsv } from "@/lib/workoutExport";
+import { toLocalDateKey } from "@/lib/localDate";
 
 async function shareJson(data: AccountDataExport | Record<string, unknown>) {
   const json = JSON.stringify(data, null, 2);
   if (!FileSystem.cacheDirectory) {
     throw new Error("Temporary file storage is unavailable on this device.");
   }
-  const fileUri = `${FileSystem.cacheDirectory}elovia-data-${new Date().toISOString().slice(0, 10)}.json`;
+  const fileUri = `${FileSystem.cacheDirectory}elovia-data-${toLocalDateKey(new Date())}.json`;
   await FileSystem.writeAsStringAsync(fileUri, json, {
     encoding: FileSystem.EncodingType.UTF8,
   });
@@ -63,7 +64,7 @@ export default function PrivacyDataScreen() {
     setIsExporting(true);
     try {
       if (!FileSystem.cacheDirectory) throw new Error("Temporary file storage is unavailable.");
-      const fileUri = `${FileSystem.cacheDirectory}elovia-workouts-${new Date().toISOString().slice(0, 10)}.csv`;
+      const fileUri = `${FileSystem.cacheDirectory}elovia-workouts-${toLocalDateKey(new Date())}.csv`;
       await FileSystem.writeAsStringAsync(fileUri, workoutsToCsv(sessions), { encoding: FileSystem.EncodingType.UTF8 });
       if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(fileUri, { mimeType: "text/csv", UTI: "public.comma-separated-values-text", dialogTitle: "Export workout history" });
       else await Share.share({ title: "Elovia workouts", url: fileUri });
@@ -101,12 +102,37 @@ export default function PrivacyDataScreen() {
   const permanentlyDelete = async () => {
     setIsDeleting(true);
     try {
-      if (isAuthenticated) await deleteMyAccount();
+      const deletingAccount = isAuthenticated;
+      if (deletingAccount) {
+        const logoutOutcome = await logout({
+          operation: "account_deletion",
+          beforeSignOut: ({ requestId }) => deleteMyAccount(requestId),
+        });
+        if (logoutOutcome.status === "finalizing") {
+          Alert.alert("Deletion is finalizing", logoutOutcome.message);
+          if (logoutOutcome.localSignOutComplete) {
+            void trackEvent("account_deletion_finalizing", {
+              source: "account",
+            });
+            router.replace("/onboarding");
+          }
+          return;
+        }
+        if (
+          logoutOutcome.status !== "signed_out" ||
+          logoutOutcome.operation !== "account_deletion"
+        ) {
+          throw new Error(
+            logoutOutcome.status === "blocked"
+              ? logoutOutcome.message
+              : "Account deletion did not complete. Please try again.",
+          );
+        }
+      }
       void trackEvent("account_deleted", {
-        source: isAuthenticated ? "account" : "device",
+        source: deletingAccount ? "account" : "device",
       });
-      if (isAuthenticated) await logout();
-      await AsyncStorage.clear();
+      if (!deletingAccount) await AsyncStorage.clear();
       Alert.alert(
         "Account deleted",
         "Your Elovia account and app data have been deleted.",

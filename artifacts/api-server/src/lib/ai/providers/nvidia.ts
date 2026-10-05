@@ -19,7 +19,8 @@ import {
  * because these models can't do it and the food-recognition accuracy is what
  * users actually judge.
  */
-const NIM_BASE_URL = process.env.NVIDIA_NIM_BASE_URL ?? "https://integrate.api.nvidia.com/v1";
+const NIM_BASE_URL =
+  process.env.NVIDIA_NIM_BASE_URL ?? "https://integrate.api.nvidia.com/v1";
 /**
  * NVIDIA retires hosted models on a published end-of-life date, after which the
  * endpoint returns 410 Gone rather than degrading — meta/llama-3.3-70b-instruct
@@ -32,7 +33,8 @@ const NIM_BASE_URL = process.env.NVIDIA_NIM_BASE_URL ?? "https://integrate.api.n
  * for a plan-shaped schema.
  */
 export const STRUCTURED_MODEL =
-  process.env.NVIDIA_NIM_STRUCTURED_MODEL ?? "nvidia/nemotron-3-super-120b-a12b";
+  process.env.NVIDIA_NIM_STRUCTURED_MODEL ??
+  "nvidia/nemotron-3-super-120b-a12b";
 export const CHAT_MODEL =
   process.env.NVIDIA_NIM_CHAT_MODEL ?? "nvidia/nemotron-3-super-120b-a12b";
 
@@ -74,7 +76,10 @@ export class NvidiaProvider implements AiProvider {
     ];
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 60_000);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      opts.timeoutMs ?? 60_000,
+    );
 
     try {
       const response = await fetch(`${NIM_BASE_URL}/chat/completions`, {
@@ -103,22 +108,21 @@ export class NvidiaProvider implements AiProvider {
         throw new ProviderError(
           this.name,
           `NVIDIA NIM returned ${response.status}: ${body.slice(0, 200)}`,
-          { retryable: response.status === 429 || response.status >= 500, status: response.status },
+          {
+            retryable: response.status === 429 || response.status >= 500,
+            status: response.status,
+          },
         );
       }
 
       const payload = (await response.json()) as NimChatResponse;
       const text: string = payload?.choices?.[0]?.message?.content ?? "";
 
-      if (!text) {
-        throw new ProviderError(this.name, "NVIDIA NIM returned an empty completion");
-      }
-
       return {
         text,
         usage: {
-          inputTokens: payload?.usage?.prompt_tokens ?? 0,
-          outputTokens: payload?.usage?.completion_tokens ?? 0,
+          inputTokens: payload?.usage?.prompt_tokens ?? NaN,
+          outputTokens: payload?.usage?.completion_tokens ?? NaN,
         },
         provider: this.name,
         model,
@@ -129,7 +133,10 @@ export class NvidiaProvider implements AiProvider {
       if (err?.name === "AbortError") {
         throw new ProviderError(this.name, "NVIDIA NIM request timed out");
       }
-      throw new ProviderError(this.name, err?.message ?? "NVIDIA NIM request failed");
+      throw new ProviderError(
+        this.name,
+        err?.message ?? "NVIDIA NIM request failed",
+      );
     } finally {
       clearTimeout(timeout);
     }

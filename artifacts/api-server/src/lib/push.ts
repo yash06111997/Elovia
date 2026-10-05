@@ -70,11 +70,18 @@ export async function registerPushToken(params: {
     });
 }
 
-export async function unregisterPushToken(token: string): Promise<void> {
-  await db
+export async function unregisterPushToken(
+  userId: string,
+  token: string,
+): Promise<boolean> {
+  const affected = await db
     .update(pushTokensTable)
     .set({ enabled: false, updatedAt: new Date() })
-    .where(eq(pushTokensTable.token, token));
+    .where(
+      and(eq(pushTokensTable.userId, userId), eq(pushTokensTable.token, token)),
+    )
+    .returning({ id: pushTokensTable.id });
+  return affected.length > 0;
 }
 
 /** Live tokens for a user: enabled and not marked dead by Expo. */
@@ -106,7 +113,14 @@ export async function sendPushToUser(
 ): Promise<{ sent: number; failed: number }> {
   const tokens = await activeTokensFor(userId);
   if (tokens.length === 0) return { sent: 0, failed: 0 };
-  return sendPushToTokens(tokens, message);
+  return sendPushToTokens(tokens, {
+    ...message,
+    data: {
+      ...(message.data ?? {}),
+      eloviaPush: 1,
+      eloviaPushOwnerUserId: userId,
+    },
+  });
 }
 
 export async function sendPushToTokens(
@@ -167,7 +181,11 @@ export async function sendPushToTokens(
         if (reason === "DeviceNotRegistered") {
           await db
             .update(pushTokensTable)
-            .set({ invalidatedAt: new Date(), lastError: reason, enabled: false })
+            .set({
+              invalidatedAt: new Date(),
+              lastError: reason,
+              enabled: false,
+            })
             .where(eq(pushTokensTable.token, token))
             .catch(() => undefined);
         } else {
@@ -196,7 +214,8 @@ export async function sendPushToTokens(
 export function isValidExpoPushToken(token: unknown): token is string {
   return (
     typeof token === "string" &&
-    (token.startsWith("ExponentPushToken[") || token.startsWith("ExpoPushToken[")) &&
+    (token.startsWith("ExponentPushToken[") ||
+      token.startsWith("ExpoPushToken[")) &&
     token.endsWith("]") &&
     token.length < 200
   );

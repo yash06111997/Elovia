@@ -7,7 +7,9 @@ export type TelemetryEvent =
   | "paywall_viewed"
   | "workout_feedback_submitted"
   | "client_error"
+  | "cloud_sync_failed"
   | "account_exported"
+  | "account_deletion_finalizing"
   | "account_deleted";
 
 type SafeProperty = string | number | boolean;

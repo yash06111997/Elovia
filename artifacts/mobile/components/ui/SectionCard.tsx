@@ -1,6 +1,6 @@
 import React from "react";
 import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
-import { Space, Radius } from "@/constants/design";
+import { Space, Radius, MIN_TOUCH } from "@/constants/design";
 import { Colors } from "@/constants/colors";
 import { useTheme } from "@/hooks/useTheme";
 
@@ -27,7 +27,12 @@ export function SectionCard({ title, subtitle, onEdit, children }: SectionCardPr
       <View style={styles.headerRow}>
         <Text style={[styles.title, { color: theme.text }]}>{title}</Text>
         {onEdit ? (
-          <TouchableOpacity onPress={onEdit} hitSlop={10}>
+          <TouchableOpacity
+            onPress={onEdit}
+            style={styles.editButton}
+            accessibilityRole="button"
+            accessibilityLabel={`Edit ${title}`}
+          >
             <Text style={[styles.edit, { color: Colors.primary }]}>Edit</Text>
           </TouchableOpacity>
         ) : subtitle ? (
@@ -49,5 +54,12 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   subtitle: { fontSize: 11, fontFamily: "Inter_400Regular" },
+  editButton: {
+    minWidth: MIN_TOUCH,
+    minHeight: MIN_TOUCH,
+    alignItems: "flex-end",
+    justifyContent: "center",
+    marginVertical: -Space.md,
+  },
   edit: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
 });

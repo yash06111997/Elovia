@@ -1,85 +1,195 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { useAuth } from "@/lib/auth";
-import { backupToCloud, restoreFromCloud, migrateLegacyFirebaseData } from "@/lib/cloudSync";
+import {
+  backupToCloud,
+  beginCloudSyncSession,
+  endCloudSyncSession,
+  getCurrentCloudSyncUserId,
+  isCloudSyncConflictBlocked,
+  isCloudSyncSessionCurrent,
+  migrateLegacyFirebaseData,
+  prepareLocalSyncOwner,
+  restoreFromCloud,
+  type CloudSyncSessionToken,
+} from "@/lib/cloudSync";
+import {
+  canSettleAfterLegacyCommit,
+  canUploadAfterRestore,
+} from "@/lib/cloudSyncContract";
 import { emitDataRestored } from "@/lib/syncEvents";
+import { trackEvent } from "@/lib/telemetry";
+import {
+  isAccountDeletionFinalizing,
+  subscribeAccountDeletionFinalizing,
+} from "@/lib/accountDeletionRecovery";
 
 const AUTO_BACKUP_INTERVAL = 5 * 60 * 1000;
 const MIN_BACKUP_GAP = 30 * 1000;
 
+function reportAutomaticSyncFailure(
+  direction: "backup" | "restore",
+  status: "conflict" | "offline" | "server",
+): void {
+  void trackEvent("cloud_sync_failed", { direction, status });
+}
+
 /**
- * Background cloud sync.
- *
- * Ordering on sign-in matters and is the whole point of the guards below:
- *
- *   1. Restore from the API (Postgres).
- *   2. If the server has nothing, try a one-time migration from the legacy
- *      Realtime Database so long-standing accounts are not stranded.
- *   3. Only once one of those has settled is uploading permitted.
- *
- * Step 3 is what the previous implementation got wrong. It cleared its
- * in-progress flag in a `finally`, including on failure, after which the next
- * backgrounding uploaded an empty device over a populated account using a
- * destructive whole-node write.
+ * Restores before allowing upload and keeps failures distinct from a confirmed
+ * empty account. Optimistic-concurrency conflicts pause automatic backup until
+ * the user restores or starts a new authenticated session.
  */
 export function AutoSync() {
   const { user, isAuthenticated } = useAuth();
+  const deletionFinalizing = useSyncExternalStore(
+    subscribeAccountDeletionFinalizing,
+    isAccountDeletionFinalizing,
+    isAccountDeletionFinalizing,
+  );
 
-  const prevAuthRef = useRef(false);
+  const activeSessionRef = useRef<CloudSyncSessionToken | null>(null);
   const backupTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const backupInFlightRef = useRef(new WeakSet<CloudSyncSessionToken>());
   const lastBackupRef = useRef(0);
   const sessionIdRef = useRef(0);
-
-  /**
-   * Uploading is blocked until a restore attempt has definitively completed
-   * for THIS signed-in session. Unlike the old flag, a failed restore leaves
-   * this false, so a network error can never open the door to an empty upload.
-   */
   const restoreSettledRef = useRef(false);
 
+  const attemptAutomaticBackup = async (
+    sessionToken: CloudSyncSessionToken,
+    userId: string,
+    bypassMinimumGap = false,
+  ) => {
+    if (
+      activeSessionRef.current !== sessionToken ||
+      deletionFinalizing ||
+      isAccountDeletionFinalizing() ||
+      !isCloudSyncSessionCurrent(sessionToken) ||
+      !restoreSettledRef.current ||
+      backupInFlightRef.current.has(sessionToken) ||
+      isCloudSyncConflictBlocked(userId)
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    if (!bypassMinimumGap && now - lastBackupRef.current < MIN_BACKUP_GAP) {
+      return;
+    }
+    lastBackupRef.current = now;
+    backupInFlightRef.current.add(sessionToken);
+    const session = sessionIdRef.current;
+
+    try {
+      const outcome = await backupToCloud(sessionToken);
+      if (
+        session !== sessionIdRef.current ||
+        activeSessionRef.current !== sessionToken ||
+        !isCloudSyncSessionCurrent(sessionToken)
+      ) {
+        return;
+      }
+      if (
+        outcome.status === "conflict" ||
+        outcome.status === "offline" ||
+        outcome.status === "server"
+      ) {
+        reportAutomaticSyncFailure("backup", outcome.status);
+      }
+    } finally {
+      backupInFlightRef.current.delete(sessionToken);
+    }
+  };
+
   useEffect(() => {
-    if (isAuthenticated && !prevAuthRef.current && user) {
-      const session = ++sessionIdRef.current;
-      restoreSettledRef.current = false;
+    const currentUserId =
+      !deletionFinalizing && isAuthenticated && user ? user.id : null;
+    const localSession = ++sessionIdRef.current;
+    let ownedSessionToken: CloudSyncSessionToken | null = null;
+    restoreSettledRef.current = false;
+
+    if (currentUserId) {
+      const sessionToken = beginCloudSyncSession(currentUserId);
+      ownedSessionToken = sessionToken;
+      activeSessionRef.current = sessionToken;
 
       void (async () => {
-        try {
-          const restored = await restoreFromCloud();
-          if (session !== sessionIdRef.current) return;
+        const sessionIsCurrent = async () =>
+          localSession === sessionIdRef.current &&
+          !isAccountDeletionFinalizing() &&
+          activeSessionRef.current === sessionToken &&
+          isCloudSyncSessionCurrent(sessionToken) &&
+          (await getCurrentCloudSyncUserId()) === currentUserId;
 
-          if (restored) {
-            emitDataRestored();
-            restoreSettledRef.current = true;
-            return;
-          }
+        const owner = await prepareLocalSyncOwner(sessionToken);
+        if (!(await sessionIsCurrent())) return;
+        if (owner.status !== "ready") return;
+        if (owner.changed) {
+          const reload = await emitDataRestored();
+          if (!(await sessionIsCurrent()) || reload.status === "failed") return;
+        }
 
-          // Server had nothing. Check the legacy store before concluding this
-          // is a genuinely new account.
-          const migrated = await migrateLegacyFirebaseData(user.id);
-          if (session !== sessionIdRef.current) return;
-
-          if (migrated) emitDataRestored();
-
-          // Reaching here means we know what the server holds, so local data
-          // is now safe to upload.
+        const outcome = await restoreFromCloud(sessionToken);
+        if (!(await sessionIsCurrent())) return;
+        if (outcome.status === "local_changes") {
           restoreSettledRef.current = true;
-        } catch {
-          // Deliberately leave restoreSettledRef false: we do not know what the
-          // server holds, so uploading could destroy it.
+          await attemptAutomaticBackup(sessionToken, currentUserId, true);
+          return;
+        }
+        if (!canUploadAfterRestore(outcome)) return;
+
+        if (outcome.status === "restored") {
+          const reload = await emitDataRestored();
+          if (!(await sessionIsCurrent()) || reload.status === "failed") return;
+          restoreSettledRef.current = true;
+          return;
+        }
+
+        // Legacy RTDB is consulted only after the API definitively confirms
+        // that this account has no Postgres snapshot.
+        const migration = await migrateLegacyFirebaseData(sessionToken);
+        if (!(await sessionIsCurrent())) return;
+
+        if (migration.status === "offline" || migration.status === "server") {
+          reportAutomaticSyncFailure("restore", migration.status);
+          return;
+        }
+
+        if (migration.status === "empty") {
+          restoreSettledRef.current = true;
+          return;
+        }
+
+        if (migration.status === "migrated") {
+          const reload = await emitDataRestored();
+          if (!(await sessionIsCurrent()) || reload.status === "failed") return;
+          const backupStatus = migration.cloudBackup.status;
+          if (!canSettleAfterLegacyCommit(migration.cloudBackup)) return;
+          restoreSettledRef.current = true;
+          if (
+            backupStatus === "conflict" ||
+            backupStatus === "offline" ||
+            backupStatus === "server"
+          ) {
+            reportAutomaticSyncFailure("backup", backupStatus);
+          }
         }
       })();
     }
 
-    if (!isAuthenticated && prevAuthRef.current) {
+    return () => {
       sessionIdRef.current++;
       restoreSettledRef.current = false;
-    }
-
-    prevAuthRef.current = isAuthenticated;
-  }, [isAuthenticated, user]);
+      if (ownedSessionToken) {
+        if (activeSessionRef.current === ownedSessionToken) {
+          activeSessionRef.current = null;
+        }
+        endCloudSyncSession(ownedSessionToken);
+      }
+    };
+  }, [deletionFinalizing, isAuthenticated, user?.id]);
 
   useEffect(() => {
-    if (!isAuthenticated || !user) {
+    if (deletionFinalizing || !isAuthenticated || !user) {
       if (backupTimerRef.current) {
         clearInterval(backupTimerRef.current);
         backupTimerRef.current = null;
@@ -87,22 +197,21 @@ export function AutoSync() {
       return;
     }
 
-    const doBackup = () => {
-      if (!restoreSettledRef.current) return;
-
-      const now = Date.now();
-      if (now - lastBackupRef.current < MIN_BACKUP_GAP) return;
-      lastBackupRef.current = now;
-
-      // backupToCloud independently refuses to upload an empty payload, so
-      // this is defence in depth rather than the only guard.
-      void backupToCloud();
+    const userId = user.id;
+    const doBackup = async () => {
+      if (isAccountDeletionFinalizing()) return;
+      const sessionToken = activeSessionRef.current;
+      if (!sessionToken) return;
+      await attemptAutomaticBackup(sessionToken, userId);
     };
 
-    backupTimerRef.current = setInterval(doBackup, AUTO_BACKUP_INTERVAL);
+    backupTimerRef.current = setInterval(
+      () => void doBackup(),
+      AUTO_BACKUP_INTERVAL,
+    );
 
     const sub = AppState.addEventListener("change", (next: AppStateStatus) => {
-      if (next === "background" || next === "inactive") doBackup();
+      if (next === "background" || next === "inactive") void doBackup();
     });
 
     return () => {
@@ -112,7 +221,7 @@ export function AutoSync() {
       }
       sub.remove();
     };
-  }, [isAuthenticated, user]);
+  }, [deletionFinalizing, isAuthenticated, user?.id]);
 
   return null;
 }

@@ -6,10 +6,12 @@ import { PRODUCT_IDS } from "@/constants/subscription";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Constants from "expo-constants";
 import { useAuth } from "./auth";
+import { createStoreIdentity } from "./storeIdentity";
 
 const REVENUECAT_TEST_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_TEST_API_KEY;
 const REVENUECAT_IOS_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY;
-const REVENUECAT_ANDROID_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY;
+const REVENUECAT_ANDROID_API_KEY =
+  process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY;
 
 export const REVENUECAT_ENTITLEMENT_IDENTIFIER = "Elovia Pro";
 
@@ -22,21 +24,27 @@ function getRevenueCatApiKey(): string {
     if (REVENUECAT_TEST_API_KEY) return REVENUECAT_TEST_API_KEY;
     throw new Error(
       "EXPO_PUBLIC_REVENUECAT_TEST_API_KEY is required for Expo Go / web. " +
-      "See https://rev.cat/sdk-test-store"
+        "See https://rev.cat/sdk-test-store",
     );
   }
 
   if (Platform.OS === "ios") {
     if (REVENUECAT_IOS_API_KEY) return REVENUECAT_IOS_API_KEY;
-    throw new Error("EXPO_PUBLIC_REVENUECAT_IOS_API_KEY is required for iOS production builds");
+    throw new Error(
+      "EXPO_PUBLIC_REVENUECAT_IOS_API_KEY is required for iOS production builds",
+    );
   }
 
   if (Platform.OS === "android") {
     if (REVENUECAT_ANDROID_API_KEY) return REVENUECAT_ANDROID_API_KEY;
-    throw new Error("EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY is required for Android production builds");
+    throw new Error(
+      "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY is required for Android production builds",
+    );
   }
 
-  throw new Error("No RevenueCat API key available for platform: " + Platform.OS);
+  throw new Error(
+    "No RevenueCat API key available for platform: " + Platform.OS,
+  );
 }
 
 export function initializeRevenueCat() {
@@ -55,36 +63,28 @@ export function initializeRevenueCat() {
 function useRevenueCatContext() {
   const queryClient = useQueryClient();
   const { user, isAuthenticated } = useAuth();
-  const lastUserId = useRef<string | null>(null);
+  const userId = isAuthenticated ? user?.id ?? null : null;
+  const identity = useRef<ReturnType<typeof createStoreIdentity> | null>(null);
+  if (!identity.current) identity.current = createStoreIdentity(Purchases);
+  const storeIdentity = identity.current;
+  storeIdentity.setDesired(userId);
   const [identityUserId, setIdentityUserId] = useState<string | null>(null);
 
   useEffect(() => {
-    async function syncIdentity() {
-      try {
-        if (isAuthenticated && user?.id && user.id !== lastUserId.current) {
-          await Purchases.logIn(user.id);
-          lastUserId.current = user.id;
-          setIdentityUserId(user.id);
-          queryClient.invalidateQueries({ queryKey: ["revenuecat"] });
-        } else if (!isAuthenticated && lastUserId.current) {
-          await Purchases.logOut();
-          lastUserId.current = null;
-          setIdentityUserId(null);
-          queryClient.invalidateQueries({ queryKey: ["revenuecat"] });
-        }
-      } catch (e) {
-        console.log("RevenueCat identity sync error:", e);
-      }
-    }
-    syncIdentity();
-  }, [isAuthenticated, user?.id, queryClient]);
+    let active = true;
+    void storeIdentity.sync().then(ready => {
+      if (!active || !ready) return;
+      setIdentityUserId(userId);
+      void queryClient.invalidateQueries({ queryKey: ["revenuecat", "customer-info", userId] });
+    }).catch(() => { if (active) setIdentityUserId(null); });
+    return () => { active = false; };
+  }, [userId, queryClient, storeIdentity]);
+  const isIdentityReady = !!userId && identityUserId === userId;
 
   const customerInfoQuery = useQuery({
-    queryKey: ["revenuecat", "customer-info"],
-    queryFn: async () => {
-      const info = await Purchases.getCustomerInfo();
-      return info;
-    },
+    queryKey: ["revenuecat", "customer-info", userId],
+    enabled: isIdentityReady,
+    queryFn: () => storeIdentity.run(userId, () => Purchases.getCustomerInfo()),
     staleTime: 60 * 1000,
   });
 
@@ -98,59 +98,69 @@ function useRevenueCatContext() {
   });
 
   const purchaseMutation = useMutation({
-    mutationFn: async (packageToPurchase: PurchasesPackage) => {
-      if (!isAuthenticated || !user?.id) throw new Error("Sign in before subscribing.");
-      // Await the store identity to ensure its webhook maps to this Firebase user.
-      if (lastUserId.current !== user.id) {
-        await Purchases.logIn(user.id);
-        lastUserId.current = user.id;
-        setIdentityUserId(user.id);
-      }
+    mutationFn: (packageToPurchase: PurchasesPackage) => storeIdentity.run(userId, async () => {
       const error = purchasePolicyError(packageToPurchase, Platform.OS);
       if (error) throw new Error(error);
       const basePlan = Platform.OS === "android" && packageToPurchase.product.identifier.split(":")[0] === PRODUCT_IDS.monthly
         ? packageToPurchase.product.subscriptionOptions?.find(option => option.isBasePlan && !option.freePhase) : undefined;
       const { customerInfo } = basePlan ? await Purchases.purchaseSubscriptionOption(basePlan) : await Purchases.purchasePackage(packageToPurchase);
       return customerInfo;
-    },
+    }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["revenuecat", "customer-info"] });
+      queryClient.invalidateQueries({
+        queryKey: ["revenuecat", "customer-info"],
+      });
     },
   });
 
   const restoreMutation = useMutation({
-    mutationFn: async () => {
-      return Purchases.restorePurchases();
-    },
+    mutationFn: () => storeIdentity.run(userId, () => Purchases.restorePurchases()),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["revenuecat", "customer-info"] });
+      queryClient.invalidateQueries({
+        queryKey: ["revenuecat", "customer-info"],
+      });
     },
   });
 
-  const isSubscribed =
-    customerInfoQuery.data?.entitlements.active?.[REVENUECAT_ENTITLEMENT_IDENTIFIER] !== undefined;
+  const isSubscribed = isIdentityReady &&
+    customerInfoQuery.data?.entitlements.active?.[
+      REVENUECAT_ENTITLEMENT_IDENTIFIER
+    ] !== undefined;
 
   return {
-    isIdentityReady: isAuthenticated && identityUserId === user?.id,
-    customerInfo: customerInfoQuery.data,
+    isIdentityReady,
+    customerInfo: isIdentityReady ? customerInfoQuery.data : undefined,
     offerings: offeringsQuery.data,
+    offeringsError: offeringsQuery.error,
     isSubscribed,
     isLoading: customerInfoQuery.isLoading || offeringsQuery.isLoading,
+    isOfferingsLoading: offeringsQuery.isLoading,
     purchase: purchaseMutation.mutateAsync,
     restore: restoreMutation.mutateAsync,
     isPurchasing: purchaseMutation.isPending,
     isRestoring: restoreMutation.isPending,
+    refetchOfferings: offeringsQuery.refetch,
     refetchCustomerInfo: () =>
-      queryClient.invalidateQueries({ queryKey: ["revenuecat", "customer-info"] }),
+      queryClient.invalidateQueries({
+        queryKey: ["revenuecat", "customer-info"],
+      }),
   };
 }
 
 type RevenueCatContextValue = ReturnType<typeof useRevenueCatContext>;
 const RevenueCatContext = createContext<RevenueCatContextValue | null>(null);
 
-export function RevenueCatProvider({ children }: { children: React.ReactNode }) {
+export function RevenueCatProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const value = useRevenueCatContext();
-  return <RevenueCatContext.Provider value={value}>{children}</RevenueCatContext.Provider>;
+  return (
+    <RevenueCatContext.Provider value={value}>
+      {children}
+    </RevenueCatContext.Provider>
+  );
 }
 
 export function useRevenueCat() {

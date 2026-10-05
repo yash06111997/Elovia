@@ -10,6 +10,7 @@ import { useApp } from "@/context/AppContext";
 import { useSubscription } from "@/context/SubscriptionContext";
 import { TrialExpiredModal } from "@/components/TrialExpiredModal";
 import { Colors } from "@/constants/colors";
+import { PRIMARY_TABS } from "@/constants/navigation";
 import { useTheme } from "@/hooks/useTheme";
 
 function AppGuard({ children }: { children: React.ReactNode }) {
@@ -46,15 +47,15 @@ function NativeTabLayout() {
       <NativeTabs>
         <NativeTabs.Trigger name="index">
           <Icon sf={{ default: "house", selected: "house.fill" }} />
-          <Label>Dashboard</Label>
+          <Label>{PRIMARY_TABS.home}</Label>
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="workouts">
           <Icon sf={{ default: "dumbbell", selected: "dumbbell.fill" }} />
-          <Label>Workouts</Label>
+          <Label>{PRIMARY_TABS.train}</Label>
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="diet">
           <Icon sf={{ default: "fork.knife", selected: "fork.knife" }} />
-          <Label>Diet</Label>
+          <Label>{PRIMARY_TABS.nutrition}</Label>
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="progress">
           <Icon
@@ -63,11 +64,11 @@ function NativeTabLayout() {
               selected: "chart.line.uptrend.xyaxis",
             }}
           />
-          <Label>Progress</Label>
+          <Label>{PRIMARY_TABS.progress}</Label>
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="profile">
-          <Icon sf={{ default: "person", selected: "person.fill" }} />
-          <Label>Profile</Label>
+          <Icon sf={{ default: "ellipsis.circle", selected: "ellipsis.circle.fill" }} />
+          <Label>{PRIMARY_TABS.more}</Label>
         </NativeTabs.Trigger>
       </NativeTabs>
     </AppGuard>
@@ -105,28 +106,28 @@ function ClassicTabLayout() {
         <Tabs.Screen
           name="index"
           options={{
-            title: "Dashboard",
+            title: PRIMARY_TABS.home,
             tabBarIcon: ({ color }) => (isIOS ? <SymbolView name="house" tintColor={color} size={22} /> : <Ionicons name="home-outline" size={22} color={color} />),
           }}
         />
         <Tabs.Screen
           name="workouts"
           options={{
-            title: "Workouts",
+            title: PRIMARY_TABS.train,
             tabBarIcon: ({ color }) => (isIOS ? <SymbolView name="dumbbell" tintColor={color} size={22} /> : <Ionicons name="barbell-outline" size={22} color={color} />),
           }}
         />
         <Tabs.Screen
           name="diet"
           options={{
-            title: "Diet",
+            title: PRIMARY_TABS.nutrition,
             tabBarIcon: ({ color }) => (isIOS ? <SymbolView name="fork.knife" tintColor={color} size={22} /> : <Ionicons name="restaurant-outline" size={22} color={color} />),
           }}
         />
         <Tabs.Screen
           name="progress"
           options={{
-            title: "Progress",
+            title: PRIMARY_TABS.progress,
             tabBarIcon: ({ color }) =>
               isIOS ? <SymbolView name="chart.line.uptrend.xyaxis" tintColor={color} size={22} /> : <Ionicons name="trending-up-outline" size={22} color={color} />,
           }}
@@ -134,8 +135,8 @@ function ClassicTabLayout() {
         <Tabs.Screen
           name="profile"
           options={{
-            title: "Profile",
-            tabBarIcon: ({ color }) => (isIOS ? <SymbolView name="person" tintColor={color} size={22} /> : <Ionicons name="person-outline" size={22} color={color} />),
+            title: PRIMARY_TABS.more,
+            tabBarIcon: ({ color }) => (isIOS ? <SymbolView name="ellipsis.circle" tintColor={color} size={22} /> : <Ionicons name="ellipsis-horizontal-circle-outline" size={22} color={color} />),
           }}
         />
       </Tabs>

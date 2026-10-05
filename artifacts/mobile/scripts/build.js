@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
 
@@ -16,25 +16,72 @@ function findWorkspaceRoot(startDir) {
     }
     dir = path.dirname(dir);
   }
-  throw new Error("Could not find workspace root (no pnpm-workspace.yaml found)");
+  throw new Error(
+    "Could not find workspace root (no pnpm-workspace.yaml found)",
+  );
 }
 
 const workspaceRoot = findWorkspaceRoot(projectRoot);
 const basePath = (process.env.BASE_PATH || "/").replace(/\/+$/, "");
 
-function exitWithError(message) {
-  console.error(message);
-  if (metroProcess) {
-    metroProcess.kill();
+function resolvePnpmInvocation(
+  env = process.env,
+  platform = process.platform,
+  execPath = process.execPath,
+) {
+  const activeCli = env.npm_execpath;
+  if (
+    typeof activeCli === "string" &&
+    activeCli.length > 0 &&
+    !/\.(?:cmd|bat|exe)$/i.test(activeCli)
+  ) {
+    return { command: execPath, prefixArgs: [activeCli] };
   }
-  process.exit(1);
+
+  if (platform === "win32") {
+    return {
+      command: env.ComSpec || env.COMSPEC || "cmd.exe",
+      prefixArgs: ["/d", "/s", "/c", "pnpm.cmd"],
+    };
+  }
+
+  return { command: "pnpm", prefixArgs: [] };
+}
+
+function stopChildProcessTree(
+  childProcess,
+  platform = process.platform,
+  spawnSyncImpl = spawnSync,
+) {
+  if (!childProcess?.pid) return;
+
+  if (platform === "win32") {
+    spawnSyncImpl(
+      "taskkill.exe",
+      ["/pid", String(childProcess.pid), "/t", "/f"],
+      { stdio: "ignore", windowsHide: true },
+    );
+    return;
+  }
+
+  childProcess.kill("SIGTERM");
+}
+
+function stopMetro() {
+  const processToStop = metroProcess;
+  metroProcess = null;
+  stopChildProcessTree(processToStop);
+}
+
+function exitWithError(message) {
+  throw new Error(message);
 }
 
 function setupSignalHandlers() {
   const cleanup = () => {
     if (metroProcess) {
       console.log("Cleaning up Metro process...");
-      metroProcess.kill();
+      stopMetro();
     }
     process.exit(0);
   };
@@ -70,7 +117,7 @@ function getDeploymentDomain() {
   console.error(
     "ERROR: No deployment domain found. Set REPLIT_INTERNAL_APP_DOMAIN, REPLIT_DEV_DOMAIN, or EXPO_PUBLIC_DOMAIN",
   );
-  process.exit(1);
+  throw new Error("No deployment domain configured");
 }
 
 function prepareDirectories(timestamp) {
@@ -146,9 +193,11 @@ async function startMetro(expoPublicDomain, expoPublicReplId) {
     console.log(`Setting EXPO_PUBLIC_REPL_ID=${expoPublicReplId}`);
   }
 
+  const pnpm = resolvePnpmInvocation();
   metroProcess = spawn(
-    "pnpm",
+    pnpm.command,
     [
+      ...pnpm.prefixArgs,
       "exec",
       "expo",
       "start",
@@ -187,8 +236,18 @@ async function startMetro(expoPublicDomain, expoPublicReplId) {
     }
   }
 
-  console.error("Metro timeout");
-  process.exit(1);
+  throw new Error("Metro timeout");
+}
+
+async function runWithMetroCleanup(
+  operation,
+  cleanup = async () => stopMetro(),
+) {
+  try {
+    return await operation();
+  } finally {
+    await cleanup();
+  }
 }
 
 async function downloadFile(url, outputPath) {
@@ -228,7 +287,12 @@ async function downloadFile(url, outputPath) {
 }
 
 async function downloadBundle(platform, timestamp) {
-  const entryPath = path.resolve(projectRoot, "node_modules", "expo-router", "entry");
+  const entryPath = path.resolve(
+    projectRoot,
+    "node_modules",
+    "expo-router",
+    "entry",
+  );
   const bundlePath = path.relative(workspaceRoot, entryPath);
   const url = new URL(`http://localhost:8081/${bundlePath}.bundle`);
   url.searchParams.set("platform", platform);
@@ -308,11 +372,27 @@ function extractAssets(timestamp) {
   const staticBuild = path.join(projectRoot, "static-build");
   const bundles = {
     ios: fs.readFileSync(
-      path.join(staticBuild, timestamp, "_expo", "static", "js", "ios", "bundle.js"),
+      path.join(
+        staticBuild,
+        timestamp,
+        "_expo",
+        "static",
+        "js",
+        "ios",
+        "bundle.js",
+      ),
       "utf-8",
     ),
     android: fs.readFileSync(
-      path.join(staticBuild, timestamp, "_expo", "static", "js", "android", "bundle.js"),
+      path.join(
+        staticBuild,
+        timestamp,
+        "_expo",
+        "static",
+        "js",
+        "android",
+        "bundle.js",
+      ),
       "utf-8",
     ),
   };
@@ -522,8 +602,9 @@ async function main() {
 
   const downloadTimeout = 600000;
   const downloadPromise = downloadBundlesAndManifests(timestamp);
+  let downloadTimeoutId;
   const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => {
+    downloadTimeoutId = setTimeout(() => {
       reject(
         new Error(
           `Overall download timeout after ${downloadTimeout / 1000} seconds. ` +
@@ -533,7 +614,12 @@ async function main() {
     }, downloadTimeout);
   });
 
-  const manifests = await Promise.race([downloadPromise, timeoutPromise]);
+  let manifests;
+  try {
+    manifests = await Promise.race([downloadPromise, timeoutPromise]);
+  } finally {
+    clearTimeout(downloadTimeoutId);
+  }
 
   console.log("Processing assets...");
   const assets = extractAssets(timestamp);
@@ -557,17 +643,17 @@ async function main() {
   updateManifests(manifests, timestamp, baseUrl, assetsByHash);
 
   console.log("Build complete! Deploy to:", baseUrl);
-
-  if (metroProcess) {
-    metroProcess.kill();
-  }
-  process.exit(0);
 }
 
-main().catch((error) => {
-  console.error("Build failed:", error.message);
-  if (metroProcess) {
-    metroProcess.kill();
-  }
-  process.exit(1);
-});
+if (require.main === module) {
+  runWithMetroCleanup(main).catch((error) => {
+    console.error("Build failed:", error.message);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  resolvePnpmInvocation,
+  runWithMetroCleanup,
+  stopChildProcessTree,
+};

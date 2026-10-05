@@ -1,4 +1,13 @@
-import { boolean, index, jsonb, pgTable, timestamp, varchar } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import {
+  boolean,
+  check,
+  index,
+  jsonb,
+  pgTable,
+  timestamp,
+  varchar,
+} from "drizzle-orm/pg-core";
 import { usersTable } from "./auth";
 
 /**
@@ -15,8 +24,7 @@ export const subscriptionsTable = pgTable(
       .primaryKey()
       .references(() => usersTable.id, { onDelete: "cascade" }),
 
-    // RevenueCat's own identifier for the subscriber, kept so webhook events
-    // that arrive before the user row exists can still be reconciled later.
+    // Legacy compatibility projection. It may only contain the trusted local UID.
     revenuecatUserId: varchar("revenuecat_user_id"),
 
     // "Elovia Pro" entitlement state.
@@ -33,13 +41,17 @@ export const subscriptionsTable = pgTable(
 
     trialStartedAt: timestamp("trial_started_at", { withTimezone: true }),
     trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
-    currentPeriodEndsAt: timestamp("current_period_ends_at", { withTimezone: true }),
+    currentPeriodEndsAt: timestamp("current_period_ends_at", {
+      withTimezone: true,
+    }),
 
-    // Last raw webhook event, for debugging disputes without replaying history.
+    // Legacy compatibility column, scrubbed by migration 0004 and held null.
     lastEvent: jsonb("last_event"),
     lastEventAt: timestamp("last_event_at", { withTimezone: true }),
 
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow()
@@ -48,6 +60,14 @@ export const subscriptionsTable = pgTable(
   (table) => [
     index("IDX_subscriptions_revenuecat_user").on(table.revenuecatUserId),
     index("IDX_subscriptions_entitlement_active").on(table.entitlementActive),
+    check(
+      "subscriptions_last_event_must_be_null",
+      sql`${table.lastEvent} IS NULL`,
+    ),
+    check(
+      "subscriptions_revenuecat_user_is_local",
+      sql`${table.revenuecatUserId} IS NULL OR ${table.revenuecatUserId} = ${table.userId}`,
+    ),
   ],
 );
 

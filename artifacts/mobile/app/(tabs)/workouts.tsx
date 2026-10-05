@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Semantic } from "@/constants/design";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert, ActivityIndicator, Modal, TextInput } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -8,7 +8,7 @@ import { useWorkout, WorkoutDay, CustomWorkoutPlan, WorkoutSession } from "@/con
 import { useApp } from "@/context/AppContext";
 import { useSubscription } from "@/context/SubscriptionContext";
 import { ExerciseCard } from "@/components/ExerciseCard";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { generateWorkoutPlan } from "@/utils/aiEngine";
 import { generateAIWorkout } from "@/utils/api";
 import { handleAiError } from "@/utils/aiErrors";
@@ -19,11 +19,24 @@ import { LiveRecordCelebration } from "@/components/PRCelebration";
 import { CustomPlanBuilderScreen } from "@/screens/CustomPlanBuilderScreen";
 import { useTheme } from "@/hooks/useTheme";
 import { useWorkoutClock } from "@/hooks/useWorkoutClock";
+import {
+  dateFromLocalDateKey,
+  localDateKeysEndingAt,
+  toLocalDateKey,
+} from "@/lib/localDate";
+import { useAuth } from "@/lib/auth";
+import { acknowledgePendingArrival } from "@/lib/geofence";
+import { parsePendingArrivalRouteContext } from "@/lib/pendingArrival";
 
 type ViewMode = "plan" | "history";
 
 export default function WorkoutsScreen() {
   const { isDark, theme } = useTheme();
+  const { isAuthenticated, user } = useAuth();
+  const arrivalParams = useLocalSearchParams<{
+    arrival?: string | string[];
+    arrivalLeaseId?: string | string[];
+  }>();
   const insets = useSafeAreaInsets();
   const {
     plan,
@@ -61,6 +74,22 @@ export default function WorkoutsScreen() {
     bodyParts: string[];
     message: string;
   }>({ bodyParts: [], message: "" });
+
+  useEffect(() => {
+    const rawArrival = Array.isArray(arrivalParams.arrival) ? arrivalParams.arrival[0] : arrivalParams.arrival;
+    const leaseId = Array.isArray(arrivalParams.arrivalLeaseId) ? arrivalParams.arrivalLeaseId[0] : arrivalParams.arrivalLeaseId;
+    const routeContext = parsePendingArrivalRouteContext(rawArrival);
+    if (!isAuthenticated || !user?.id || !leaseId || !routeContext) return;
+
+    let mounted = true;
+    void acknowledgePendingArrival(user.id, leaseId).then((arrival) => {
+      if (!mounted || !arrival) return;
+      Alert.alert(`Welcome to ${arrival.placeName}`, "Your workout area is ready. Choose a session when you want to begin.");
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [arrivalParams.arrival, arrivalParams.arrivalLeaseId, isAuthenticated, user?.id]);
 
   const topPadding = Platform.OS === "web" ? 67 : insets.top + 12;
   const activeDays = getActivePlanDays();
@@ -153,21 +182,27 @@ export default function WorkoutsScreen() {
 
   const noPlan = !plan && customPlans.length === 0;
 
-  const sortedSessions = [...sessions].filter((s) => s.completed).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const sortedSessions = [...sessions]
+    .filter((session) => session.completed)
+    .sort((left, right) => right.date.localeCompare(left.date));
 
   const groupedSessions: Record<string, WorkoutSession[]> = {};
   sortedSessions.forEach((s) => {
     if (!groupedSessions[s.date]) groupedSessions[s.date] = [];
     groupedSessions[s.date].push(s);
   });
-  const dateGroups = Object.keys(groupedSessions).sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
+  const dateGroups = Object.keys(groupedSessions).sort((left, right) =>
+    right.localeCompare(left),
+  );
 
   const formatDate = (dateStr: string) => {
-    const d = new Date(dateStr);
-    const today = new Date().toISOString().split("T")[0];
-    const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0];
+    const now = new Date();
+    const d = dateFromLocalDateKey(dateStr);
+    const today = toLocalDateKey(now);
+    const yesterday = localDateKeysEndingAt(now, 2)[0];
     if (dateStr === today) return "Today";
     if (dateStr === yesterday) return "Yesterday";
+    if (!d) return dateStr;
     return d.toLocaleDateString("en-US", {
       weekday: "short",
       month: "short",

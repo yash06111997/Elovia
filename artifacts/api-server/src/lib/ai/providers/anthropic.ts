@@ -1,4 +1,7 @@
-import { anthropic, isAnthropicConfigured } from "@workspace/integrations-anthropic-ai";
+import {
+  anthropic,
+  isAnthropicConfigured,
+} from "@workspace/integrations-anthropic-ai";
 import {
   ProviderError,
   type AiProvider,
@@ -46,7 +49,9 @@ export class AnthropicProvider implements AiProvider {
       });
     }
 
-    const lastUser = [...opts.messages].reverse().find((m) => m.role === "user");
+    const lastUser = [...opts.messages]
+      .reverse()
+      .find((m) => m.role === "user");
     content.push({ type: "text", text: lastUser?.content ?? "" });
 
     const priorTurns = opts.messages
@@ -58,11 +63,17 @@ export class AnthropicProvider implements AiProvider {
         {
           model,
           max_tokens: opts.maxTokens ?? 2048,
-          ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+          ...(opts.temperature !== undefined
+            ? { temperature: opts.temperature }
+            : {}),
           ...(opts.system ? { system: opts.system } : {}),
           messages: [...priorTurns, { role: "user", content }] as any,
         },
-        opts.timeoutMs ? { timeout: opts.timeoutMs } : undefined,
+        // Each network attempt needs its own durable budget reservation.
+        {
+          maxRetries: 0,
+          ...(opts.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+        },
       );
 
       const block = message.content[0];
@@ -71,8 +82,8 @@ export class AnthropicProvider implements AiProvider {
       return {
         text,
         usage: {
-          inputTokens: message.usage?.input_tokens ?? 0,
-          outputTokens: message.usage?.output_tokens ?? 0,
+          inputTokens: message.usage?.input_tokens ?? NaN,
+          outputTokens: message.usage?.output_tokens ?? NaN,
         },
         provider: this.name,
         model,
@@ -80,12 +91,16 @@ export class AnthropicProvider implements AiProvider {
       };
     } catch (err: any) {
       const status = err?.status ?? err?.response?.status;
-      throw new ProviderError(this.name, err?.message ?? "Anthropic request failed", {
-        // 4xx other than 429 means the request itself is wrong; retrying on a
-        // different provider would just fail the same way.
-        retryable: status === 429 || status === undefined || status >= 500,
-        status,
-      });
+      throw new ProviderError(
+        this.name,
+        err?.message ?? "Anthropic request failed",
+        {
+          // 4xx other than 429 means the request itself is wrong; retrying on a
+          // different provider would just fail the same way.
+          retryable: status === 429 || status === undefined || status >= 500,
+          status,
+        },
+      );
     }
   }
 }

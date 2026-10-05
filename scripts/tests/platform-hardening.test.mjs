@@ -44,16 +44,26 @@ test("authentication does not duplicate Firebase credentials in app-owned storag
   assert.match(auth, /onAuthStateChanged/);
 });
 
-test("OAuth uses cryptographic state, trusted popup origins, and escaped errors", async () => {
+test("OAuth uses a request-bound one-time exchange, trusted popup origins, and escaped errors", async () => {
   const mobileAuth = await source("artifacts/mobile/lib/auth.tsx");
   const serverAuth = await source("artifacts/api-server/src/routes/auth.ts");
 
   assert.match(mobileAuth, /Crypto\.randomUUID\(\)/);
   assert.doesNotMatch(mobileAuth, /Math\.random\(\)/);
   assert.match(mobileAuth, /event\.origin !== expectedOrigin/);
+  assert.match(mobileAuth, /codeChallenge/);
+  assert.match(mobileAuth, /codeVerifier/);
+  assert.match(mobileAuth, /\/api\/auth\/google-mobile\/exchange/);
+  assert.doesNotMatch(serverAuth, /access_type["'],\s*["']offline/);
+  assert.match(serverAuth, /prompt["'],\s*["']select_account/);
   assert.match(serverAuth, /function escapeHtml/);
   assert.doesNotMatch(serverAuth, /postMessage\([\s\S]*?}, '\*'\)/);
-  assert.match(serverAuth, /returnUrl\.includes\("#"\) \? "&" : "#"/);
+  assert.match(serverAuth, /appendOAuthExchangeResult/);
+  assert.doesNotMatch(
+    serverAuth,
+    /idToken=\$\{encodeURIComponent\(idToken\)\}/,
+  );
+  assert.doesNotMatch(serverAuth, /pendingAuthStates/);
 });
 
 test("authenticated users can export and permanently delete their account data", async () => {
@@ -61,14 +71,20 @@ test("authenticated users can export and permanently delete their account data",
     "artifacts/api-server/src/routes/privacy.ts",
   );
   const serverAuth = await source("artifacts/api-server/src/lib/auth.ts");
+  const deletionState = await source(
+    "artifacts/api-server/src/lib/accountDeletion.ts",
+  );
 
   assert.match(
     privacyRoutes,
     /router\.get\(\s*"\/privacy\/export",\s*requireAuth/,
   );
   assert.match(privacyRoutes, /router\.delete\(\s*"\/account",\s*requireAuth/);
-  assert.match(privacyRoutes, /delete\(usersTable\)/);
+  assert.match(privacyRoutes, /tombstoneAndDeleteAccountData/);
   assert.match(privacyRoutes, /deleteFirebaseUser/);
+  assert.match(deletionState, /accountDeletionTombstonesTable/);
+  assert.match(deletionState, /pg_advisory_xact_lock/);
+  assert.match(deletionState, /transaction\.delete\(usersTable\)/);
   assert.match(privacyRoutes, /Content-Disposition/);
   assert.match(privacyRoutes, /Cache-Control", "no-store"/);
   assert.match(serverAuth, /auth\/user-not-found/);
@@ -77,7 +93,7 @@ test("authenticated users can export and permanently delete their account data",
 test("the mobile app exposes privacy, terms, export, and deletion controls", async () => {
   const privacyScreen = await source("artifacts/mobile/app/privacy-data.tsx");
   const rootLayout = await source("artifacts/mobile/app/_layout.tsx");
-  const profile = await source("artifacts/mobile/app/(tabs)/profile.tsx");
+  const profile = await source("artifacts/mobile/app/profile-details.tsx");
 
   assert.match(rootLayout, /name="privacy-data"/);
   assert.match(profile, /Privacy & Data/);

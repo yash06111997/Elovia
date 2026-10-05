@@ -42,6 +42,9 @@ export function StatCard({
       onPress={onPress}
       activeOpacity={0.8}
       disabled={!onPress}
+      accessibilityRole={onPress ? "button" : undefined}
+      accessibilityLabel={`${title}: ${value}${unit ? ` ${unit}` : ""}`}
+      accessibilityHint={onPress ? subtitle : undefined}
     >
       <View style={[styles.iconBg, { backgroundColor: iconColor + "20" }]}>
         <Ionicons name={icon} size={18} color={iconColor} />

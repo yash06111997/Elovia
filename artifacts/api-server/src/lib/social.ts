@@ -18,7 +18,9 @@ export interface NormalizedPair {
 }
 
 export function normalizePair(one: string, two: string): NormalizedPair {
-  return one < two ? { userAId: one, userBId: two } : { userAId: two, userBId: one };
+  return one < two
+    ? { userAId: one, userBId: two }
+    : { userAId: two, userBId: one };
 }
 
 /**
@@ -73,7 +75,12 @@ export async function ensureSocialProfile(
   throw new Error("Could not create social profile");
 }
 
-export type FriendshipState = "none" | "pending_sent" | "pending_received" | "friends" | "blocked";
+export type FriendshipState =
+  | "none"
+  | "pending_sent"
+  | "pending_received"
+  | "friends"
+  | "blocked";
 
 /** What is the relationship between the caller and another user? */
 export async function friendshipState(
@@ -112,11 +119,32 @@ export async function acceptedFriendIds(userId: string): Promise<string[]> {
     .where(
       and(
         eq(friendshipsTable.status, "accepted"),
-        or(eq(friendshipsTable.userAId, userId), eq(friendshipsTable.userBId, userId)),
+        or(
+          eq(friendshipsTable.userAId, userId),
+          eq(friendshipsTable.userBId, userId),
+        ),
       ),
     );
 
   return rows.map((r) => (r.a === userId ? r.b : r.a));
+}
+
+/** Every user hidden in either direction of a durable block edge. */
+export async function blockedUserIds(userId: string): Promise<string[]> {
+  const rows = await db
+    .select({ a: friendshipsTable.userAId, b: friendshipsTable.userBId })
+    .from(friendshipsTable)
+    .where(
+      and(
+        eq(friendshipsTable.status, "blocked"),
+        or(
+          eq(friendshipsTable.userAId, userId),
+          eq(friendshipsTable.userBId, userId),
+        ),
+      ),
+    );
+
+  return rows.map((row) => (row.a === userId ? row.b : row.a));
 }
 
 /**
@@ -125,7 +153,10 @@ export async function acceptedFriendIds(userId: string): Promise<string[]> {
  * True only for the user themselves, or an accepted friend. There is no public
  * tier anywhere in this feature - the content is health data.
  */
-export async function canViewUser(callerId: string, targetId: string): Promise<boolean> {
+export async function canViewUser(
+  callerId: string,
+  targetId: string,
+): Promise<boolean> {
   if (callerId === targetId) return true;
   const { state } = await friendshipState(callerId, targetId);
   return state === "friends";

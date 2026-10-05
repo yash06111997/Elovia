@@ -1,430 +1,544 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Platform } from "react-native";
+import { AppState, Platform, type AppStateStatus } from "react-native";
+import * as Crypto from "expo-crypto";
+import * as KeepAwake from "expo-keep-awake";
+import * as Location from "expo-location";
 
-/**
- * GPS activity recorder.
- *
- * Handles the parts that separate a usable run tracker from a naive one:
- * accuracy filtering, auto-pause, paused-time exclusion, and per-kilometre
- * splits.
- */
+import {
+  runStatsFromState,
+  type ActiveRunState,
+  type RunStats,
+  type RunTrackingMode,
+} from "./runTrackingEngine";
+import {
+  changePersistedRunMode,
+  clearPersistedRun,
+  createAndPersistActiveRun,
+  ingestActiveRunLocations,
+  pausePersistedRun,
+  prepareRunRecovery,
+  readActiveRunForOwner,
+  reconcileActiveRunOwner,
+  resumePersistedRun,
+  startBackgroundRunLocation,
+  stopAndPauseBackgroundRun,
+  stopBackgroundRunLocation,
+  subscribeActiveRun,
+} from "./runTrackingStore";
 
-export interface TrackPoint {
-  latitude: number;
-  longitude: number;
-  altitude: number | null;
-  /** Metres of horizontal accuracy reported by the OS. */
-  accuracy: number | null;
-  speed: number | null;
-  timestamp: number;
-}
+export {
+  estimateCalories,
+  formatDuration,
+  formatPace,
+  haversineMeters,
+  isAcceptableGpsPoint,
+  MAX_ACCEPTABLE_ACCURACY_M,
+  simplifyRunRoute,
+} from "./runTrackingEngine";
+export type {
+  ActiveRunState,
+  RunStats,
+  RunStatus,
+  RunTrackingMode,
+  Split,
+  TrackPoint,
+} from "./runTrackingEngine";
 
-export interface Split {
-  /** 1-indexed kilometre (or mile) number. */
-  index: number;
-  distanceKm: number;
-  durationSec: number;
-  paceMinPerKm: number;
-  elevationGainM: number;
-}
+export type StartRunResult =
+  | { started: true; mode: RunTrackingMode }
+  | {
+      started: false;
+      reason: "permission_denied" | "services_disabled" | "storage" | "native";
+    };
 
-export type RunStatus = "idle" | "recording" | "paused" | "finished";
-
-export interface RunStats {
-  distanceKm: number;
-  /** Seconds actually moving; paused time is excluded. */
-  durationSec: number;
-  currentPaceMinPerKm: number | null;
-  avgPaceMinPerKm: number | null;
-  elevationGainM: number;
-  calories: number;
-  splits: Split[];
-  points: TrackPoint[];
-}
-
-/**
- * Discard fixes worse than this. Early GPS fixes are routinely 50-100m out and
- * including them adds phantom distance before the user has moved a step - the
- * single most common complaint about amateur run trackers.
- */
-export const MAX_ACCEPTABLE_ACCURACY_M = 50;
-
-/** Ignore jumps implying faster than ~45 km/h; that is a GPS glitch, not a run. */
-const MAX_PLAUSIBLE_SPEED_MPS = 12.5;
-
-/** Below this speed for AUTO_PAUSE_AFTER_MS, assume the user stopped. */
-const AUTO_PAUSE_SPEED_MPS = 0.5;
-const AUTO_PAUSE_AFTER_MS = 12_000;
-
-export function isAcceptableGpsPoint(point: TrackPoint): boolean {
-  if (!Number.isFinite(point.latitude) || !Number.isFinite(point.longitude)) return false;
-  return point.accuracy == null || point.accuracy <= MAX_ACCEPTABLE_ACCURACY_M;
-}
-
-export function haversineMeters(a: TrackPoint, b: TrackPoint): number {
-  const R = 6_371_000;
-  const dLat = ((b.latitude - a.latitude) * Math.PI) / 180;
-  const dLon = ((b.longitude - a.longitude) * Math.PI) / 180;
-  const lat1 = (a.latitude * Math.PI) / 180;
-  const lat2 = (b.latitude * Math.PI) / 180;
-
-  const h =
-    Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-}
-
-function paceFrom(distanceKm: number, durationSec: number): number | null {
-  if (distanceKm <= 0.01 || durationSec <= 0) return null;
-  return durationSec / 60 / distanceKm;
-}
-
-export function formatPace(pace: number | null): string {
-  if (pace == null || !Number.isFinite(pace) || pace <= 0) return "--:--";
-  const minutes = Math.floor(pace);
-  const seconds = Math.round((pace - minutes) * 60);
-  // Guard the 59.6 -> 60 rounding case, which would render as "5:60".
-  if (seconds === 60) return `${minutes + 1}:00`;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-export function formatDuration(totalSeconds: number): string {
-  const s = Math.max(0, Math.floor(totalSeconds));
-  const hours = Math.floor(s / 3600);
-  const minutes = Math.floor((s % 3600) / 60);
-  const seconds = s % 60;
-
-  if (hours > 0) {
-    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-  }
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-/**
- * MET-based energy estimate.
- *
- * Running economy scales roughly linearly with pace, so MET is derived from
- * speed rather than assumed. Far better than the flat "8 kcal per minute" the
- * app used previously, which was equally wrong for a walk and a sprint.
- */
-export function estimateCalories(
-  distanceKm: number,
-  durationSec: number,
-  weightKg: number,
-): number {
-  if (durationSec <= 0 || distanceKm <= 0) return 0;
-
-  const speedKmh = distanceKm / (durationSec / 3600);
-  let met: number;
-
-  if (speedKmh < 4) met = 2.5;
-  else if (speedKmh < 6.5) met = 3.5;
-  else if (speedKmh < 8) met = 8.3;
-  else if (speedKmh < 9.7) met = 9.8;
-  else if (speedKmh < 11.3) met = 11.0;
-  else if (speedKmh < 12.9) met = 11.8;
-  else if (speedKmh < 14.5) met = 12.8;
-  else met = 14.5;
-
-  return Math.round((met * 3.5 * weightKg * (durationSec / 60)) / 200);
+export interface FinishedRunDraft {
+  sessionId: string;
+  startedAt: number;
+  endedAt: number;
+  stats: RunStats;
 }
 
 interface UseRunTrackerOptions {
   weightKg: number;
   autoPause: boolean;
+  ownerUserId: string | null;
 }
 
-export function useRunTracker({ weightKg, autoPause }: UseRunTrackerOptions) {
-  const [status, setStatus] = useState<RunStatus>("idle");
-  const [points, setPoints] = useState<TrackPoint[]>([]);
-  const [distanceM, setDistanceM] = useState(0);
-  const [elevationGainM, setElevationGainM] = useState(0);
-  const [movingMs, setMovingMs] = useState(0);
-  const [splits, setSplits] = useState<Split[]>([]);
-  const [autoPaused, setAutoPaused] = useState(false);
-  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
+const EMPTY_STATS: RunStats = {
+  distanceKm: 0,
+  durationSec: 0,
+  currentPaceMinPerKm: null,
+  avgPaceMinPerKm: null,
+  elevationGainM: 0,
+  calories: 0,
+  splits: [],
+  points: [],
+};
 
-  const subscriptionRef = useRef<{ remove: () => void } | null>(null);
-  const lastPointRef = useRef<TrackPoint | null>(null);
-  const lastTickRef = useRef<number | null>(null);
-  const slowSinceRef = useRef<number | null>(null);
-  const splitStartRef = useRef({ distanceM: 0, movingMs: 0, elevation: 0 });
-  const statusRef = useRef<RunStatus>("idle");
-  const tickAccumulatedRef = useRef(0);
+function activateKeepAwake(): void {
+  void KeepAwake.activateKeepAwakeAsync("elovia-active-run").catch(() => {});
+}
 
-  statusRef.current = status;
+function deactivateKeepAwake(): void {
+  try {
+    KeepAwake.deactivateKeepAwake("elovia-active-run");
+  } catch {
+    // Keep-awake is a convenience; recording state remains authoritative.
+  }
+}
 
-  const reset = useCallback(() => {
-    setPoints([]);
-    setDistanceM(0);
-    setElevationGainM(0);
-    setMovingMs(0);
-    setSplits([]);
-    setAutoPaused(false);
-    setGpsAccuracy(null);
-    lastPointRef.current = null;
-    lastTickRef.current = null;
-    slowSinceRef.current = null;
-    tickAccumulatedRef.current = 0;
-    splitStartRef.current = { distanceM: 0, movingMs: 0, elevation: 0 };
+/**
+ * Durable activity recorder.
+ *
+ * Native background batches and the foreground-only permission fallback both
+ * write the same AsyncStorage draft. React renders that durable state instead
+ * of owning a second, volatile recording implementation.
+ */
+export function useRunTracker({
+  weightKg,
+  autoPause,
+  ownerUserId,
+}: UseRunTrackerOptions) {
+  const [activeRun, setActiveRun] = useState<ActiveRunState | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  const [recovered, setRecovered] = useState(false);
+  const [recorderError, setRecorderError] = useState<string | null>(null);
+  const [clockNow, setClockNow] = useState(Date.now());
+  const foregroundSubscriptionRef =
+    useRef<Location.LocationSubscription | null>(null);
+  const startInFlightRef = useRef<Promise<StartRunResult> | null>(null);
+  const lifecycleOperationRef = useRef<Promise<void>>(Promise.resolve());
+  const lifecycleGenerationRef = useRef(0);
+  const foregroundInterruptedRef = useRef(false);
+  const foregroundInterruptedAtRef = useRef<number | null>(null);
+  const activeRunRef = useRef<ActiveRunState | null>(null);
+
+  activeRunRef.current = activeRun;
+
+  const stopForegroundWatch = useCallback(() => {
+    foregroundSubscriptionRef.current?.remove();
+    foregroundSubscriptionRef.current = null;
   }, []);
 
-  const handleLocation = useCallback(
-    (raw: any) => {
-      const coords = raw?.coords;
-      if (!coords) return;
-
-      const point: TrackPoint = {
-        latitude: coords.latitude,
-        longitude: coords.longitude,
-        altitude: typeof coords.altitude === "number" ? coords.altitude : null,
-        accuracy: typeof coords.accuracy === "number" ? coords.accuracy : null,
-        speed: typeof coords.speed === "number" ? coords.speed : null,
-        timestamp: raw.timestamp ?? Date.now(),
-      };
-
-      setGpsAccuracy(point.accuracy);
-
-      // Reject low-confidence fixes outright rather than smoothing them in.
-      if (!isAcceptableGpsPoint(point)) return;
-      if (statusRef.current !== "recording") return;
-
-      const previous = lastPointRef.current;
-      const now = point.timestamp;
-
-      if (!previous) {
-        lastPointRef.current = point;
-        lastTickRef.current = now;
-        setPoints([point]);
-        return;
-      }
-
-      const elapsedMs = Math.max(0, now - (lastTickRef.current ?? now));
-      const segmentM = haversineMeters(previous, point);
-      const impliedSpeed = elapsedMs > 0 ? segmentM / (elapsedMs / 1000) : 0;
-
-      // A physically impossible jump is a dropped-fix artefact. Re-anchor
-      // without accruing distance.
-      if (impliedSpeed > MAX_PLAUSIBLE_SPEED_MPS) {
-        lastPointRef.current = point;
-        lastTickRef.current = now;
-        return;
-      }
-
-      const observedSpeed = point.speed != null && point.speed >= 0 ? point.speed : impliedSpeed;
-
-      if (autoPause) {
-        if (observedSpeed < AUTO_PAUSE_SPEED_MPS) {
-          slowSinceRef.current ??= now;
-          if (now - slowSinceRef.current >= AUTO_PAUSE_AFTER_MS) setAutoPaused(true);
-        } else {
-          slowSinceRef.current = null;
-          setAutoPaused(false);
-        }
-      }
-
-      const movingNow = !autoPause || observedSpeed >= AUTO_PAUSE_SPEED_MPS;
-
-      if (movingNow) {
-        setDistanceM((prev) => {
-          const nextDistance = prev + segmentM;
-
-          // Close out a split each whole kilometre.
-          const previousKm = Math.floor(prev / 1000);
-          const nextKm = Math.floor(nextDistance / 1000);
-          if (nextKm > previousKm) {
-            setMovingMs((currentMoving) => {
-              const start = splitStartRef.current;
-              setElevationGainM((currentElevation) => {
-                setSplits((prevSplits) => [
-                  ...prevSplits,
-                  {
-                    index: nextKm,
-                    distanceKm: 1,
-                    durationSec: Math.round((currentMoving - start.movingMs) / 1000),
-                    paceMinPerKm:
-                      (currentMoving - start.movingMs) / 1000 / 60 /
-                      Math.max(0.001, (nextDistance - start.distanceM) / 1000),
-                    elevationGainM: Math.round(currentElevation - start.elevation),
-                  },
-                ]);
-                splitStartRef.current = {
-                  distanceM: nextDistance,
-                  movingMs: currentMoving,
-                  elevation: currentElevation,
-                };
-                return currentElevation;
-              });
-              return currentMoving;
+  const startForegroundWatch = useCallback(
+    async (sessionId: string): Promise<boolean> => {
+      stopForegroundWatch();
+      if (Platform.OS === "web") return true;
+      try {
+        foregroundSubscriptionRef.current = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.BestForNavigation,
+            distanceInterval: 5,
+            timeInterval: 2_000,
+          },
+          (location) => {
+            void ingestActiveRunLocations([location]).catch(() => {
+              setRecorderError("Elovia could not save the latest GPS point.");
             });
-          }
-
-          return nextDistance;
-        });
-
-        // Only count ascent, and only when both altitudes look trustworthy.
-        if (
-          previous.altitude != null &&
-          point.altitude != null &&
-          point.altitude > previous.altitude
-        ) {
-          const gain = point.altitude - previous.altitude;
-          // Sub-metre changes are noise in consumer GPS altitude.
-          if (gain >= 1 && gain < 30) setElevationGainM((prev) => prev + gain);
-        }
+          },
+          (message) => {
+            setRecorderError(
+              message || "Location updates stopped unexpectedly.",
+            );
+            stopForegroundWatch();
+            void pausePersistedRun(ownerUserId, sessionId)
+              .then((paused) => {
+                if (paused) setActiveRun(paused);
+              })
+              .catch(() => {
+                setRecorderError(
+                  "Location stopped and the run could not be paused safely.",
+                );
+              });
+          },
+        );
+        return true;
+      } catch {
+        foregroundSubscriptionRef.current = null;
+        return false;
       }
-
-      setPoints((prev) => [...prev, point]);
-      lastPointRef.current = point;
-      lastTickRef.current = now;
     },
-    [autoPause],
+    [ownerUserId, stopForegroundWatch],
   );
 
-  const start = useCallback(async (): Promise<boolean> => {
-    if (Platform.OS === "web") {
-      reset();
-      setStatus("recording");
-      return true;
-    }
-
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const Location = require("expo-location") as typeof import("expo-location");
-
-      const permission = await Location.requestForegroundPermissionsAsync();
-      if (permission.status !== "granted") return false;
-
-      reset();
-      setStatus("recording");
-
-      // Keep the screen on: a run tracker that stops updating when the display
-      // sleeps is worse than useless.
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const KeepAwake = require("expo-keep-awake");
-        KeepAwake.activateKeepAwakeAsync?.();
-      } catch {
-        // Optional.
-      }
-
-      const subscription = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.BestForNavigation,
-          distanceInterval: 5,
-          timeInterval: 2000,
-        },
-        handleLocation,
-      );
-
-      subscriptionRef.current = subscription;
-      return true;
-    } catch {
-      setStatus("idle");
-      return false;
-    }
-  }, [handleLocation, reset]);
-
-  const pause = useCallback(() => {
-    setStatus("paused");
-    slowSinceRef.current = null;
-  }, []);
-
-  const resume = useCallback(() => {
-    // Drop the stale anchor so the paused interval does not register as one
-    // enormous segment the moment recording resumes.
-    lastPointRef.current = null;
-    lastTickRef.current = null;
-    setStatus("recording");
-  }, []);
-
-  const stop = useCallback(() => {
-    subscriptionRef.current?.remove();
-    subscriptionRef.current = null;
-    setStatus("finished");
-
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const KeepAwake = require("expo-keep-awake");
-      KeepAwake.deactivateKeepAwake?.();
-    } catch {
-      // Optional.
-    }
-  }, []);
-
-  /**
-   * Elapsed-time tick.
-   *
-   * Kept separate from the location stream so the clock advances smoothly even
-   * when GPS fixes are sparse, and stops immediately on pause rather than
-   * waiting for the next fix that never comes.
-   */
   useEffect(() => {
-    if (status !== "recording" || autoPaused) return;
+    let mounted = true;
+    const unsubscribe = subscribeActiveRun((state) => {
+      if (!mounted) return;
+      setActiveRun(state?.ownerUserId === ownerUserId ? state : null);
+    });
+
+    void prepareRunRecovery(ownerUserId)
+      .then(({ state, recovered: wasRecovered }) => {
+        if (!mounted) return;
+        setActiveRun(state);
+        setRecovered(wasRecovered);
+      })
+      .catch(() => {
+        if (mounted)
+          setRecorderError("Elovia could not restore the previous run.");
+      })
+      .finally(() => {
+        if (mounted) setHydrated(true);
+      });
+
+    // TaskManager can run in a separate JS runtime, so an in-memory event is
+    // not guaranteed. Poll the tiny draft header while this screen is visible.
+    const poll = setInterval(() => {
+      void readActiveRunForOwner(ownerUserId)
+        .then((next) => {
+          if (!mounted) return;
+          setActiveRun((current) =>
+            current?.revision === next?.revision ? current : next,
+          );
+        })
+        .catch(() => {
+          if (mounted)
+            setRecorderError("Elovia could not refresh the saved run state.");
+        });
+    }, 1_500);
+
+    return () => {
+      mounted = false;
+      clearInterval(poll);
+      unsubscribe();
+      stopForegroundWatch();
+      deactivateKeepAwake();
+    };
+  }, [ownerUserId, stopForegroundWatch]);
+
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    const generation = lifecycleGenerationRef.current + 1;
+    lifecycleGenerationRef.current = generation;
+    const isCurrent = () => lifecycleGenerationRef.current === generation;
+    const handleAppState = (nextAppState: AppStateStatus) => {
+      lifecycleOperationRef.current = lifecycleOperationRef.current
+        .catch(() => {})
+        .then(async () => {
+          const current = activeRunRef.current;
+          if (
+            nextAppState !== "active" &&
+            current?.status === "recording" &&
+            current.trackingMode === "foreground"
+          ) {
+            foregroundInterruptedRef.current = true;
+            foregroundInterruptedAtRef.current ??= Date.now();
+            stopForegroundWatch();
+            const paused = await pausePersistedRun(
+              ownerUserId,
+              current.sessionId,
+              foregroundInterruptedAtRef.current,
+            );
+            if (paused && isCurrent()) {
+              setActiveRun(paused);
+              setRecorderError(
+                "Run paused because background location is off. Return to Elovia to resume.",
+              );
+            }
+            return;
+          }
+
+          if (nextAppState === "active" && foregroundInterruptedRef.current) {
+            let stored = await readActiveRunForOwner(ownerUserId);
+            if (!isCurrent()) return;
+            if (!stored || stored.trackingMode !== "foreground") {
+              foregroundInterruptedRef.current = false;
+              foregroundInterruptedAtRef.current = null;
+              return;
+            }
+            if (stored.status === "recording") {
+              stored = await pausePersistedRun(
+                ownerUserId,
+                stored.sessionId,
+                foregroundInterruptedAtRef.current ?? stored.lastUpdatedAt,
+              );
+              if (!isCurrent()) return;
+              if (!stored) {
+                setRecorderError(
+                  "The interrupted run could not be frozen safely.",
+                );
+                return;
+              }
+            }
+            if (!(await startForegroundWatch(stored.sessionId))) {
+              if (!isCurrent()) return;
+              setRecorderError("Location updates could not be resumed.");
+              return;
+            }
+            const resumed = await resumePersistedRun(
+              ownerUserId,
+              stored.sessionId,
+              "foreground",
+              Date.now(),
+            );
+            if (!isCurrent()) {
+              stopForegroundWatch();
+              return;
+            }
+            if (!resumed) {
+              stopForegroundWatch();
+              setRecorderError("The paused run could not be resumed safely.");
+              return;
+            }
+            foregroundInterruptedRef.current = false;
+            foregroundInterruptedAtRef.current = null;
+            setRecorderError(null);
+            setActiveRun(resumed);
+          }
+        })
+        .catch(() => {
+          if (isCurrent()) {
+            setRecorderError(
+              "Elovia could not safely update the run after app state changed.",
+            );
+          }
+        });
+    };
+    const subscription = AppState.addEventListener("change", handleAppState);
+    return () => {
+      lifecycleGenerationRef.current += 1;
+      subscription.remove();
+    };
+  }, [ownerUserId, startForegroundWatch, stopForegroundWatch]);
+
+  useEffect(() => {
+    if (activeRun?.status !== "recording" || activeRun.autoPaused) return;
+    const interval = setInterval(() => setClockNow(Date.now()), 1_000);
+    return () => clearInterval(interval);
+  }, [activeRun?.autoPaused, activeRun?.status]);
+
+  const performStart = useCallback(async (): Promise<StartRunResult> => {
+    setRecorderError(null);
+    setRecovered(false);
+
+    if (!(await reconcileActiveRunOwner(ownerUserId))) {
+      return { started: false, reason: "storage" };
+    }
+    if (activeRun) return { started: true, mode: activeRun.trackingMode };
+
+    let mode: RunTrackingMode = "foreground";
+    if (Platform.OS !== "web") {
+      try {
+        const provider = await Location.getProviderStatusAsync();
+        if (!provider.locationServicesEnabled) {
+          return { started: false, reason: "services_disabled" };
+        }
+        const foreground = await Location.requestForegroundPermissionsAsync();
+        if (foreground.status !== "granted") {
+          return { started: false, reason: "permission_denied" };
+        }
+        let background = await Location.getBackgroundPermissionsAsync();
+        if (background.status !== "granted" && background.canAskAgain) {
+          background = await Location.requestBackgroundPermissionsAsync();
+        }
+        mode = background.status === "granted" ? "background" : "foreground";
+      } catch {
+        return { started: false, reason: "native" };
+      }
+    }
 
     const startedAt = Date.now();
-    const interval = setInterval(() => {
-      const delta = Date.now() - startedAt;
-      setMovingMs((prev) => prev + Math.min(1000, delta - (tickAccumulatedRef.current ?? 0)));
-      tickAccumulatedRef.current = delta;
-    }, 1000);
-
-    return () => {
-      clearInterval(interval);
-      tickAccumulatedRef.current = 0;
-    };
-  }, [status, autoPaused]);
-
-  useEffect(() => {
-    return () => {
-      subscriptionRef.current?.remove();
-      subscriptionRef.current = null;
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        require("expo-keep-awake").deactivateKeepAwake?.();
-      } catch {
-        // Optional.
-      }
-    };
-  }, []);
-
-  const stats: RunStats = useMemo(() => {
-    const distanceKm = distanceM / 1000;
-    const durationSec = movingMs / 1000;
-
-    // Current pace from the trailing window, so it responds to the last minute
-    // rather than being dragged by the whole run.
-    const recent = points.slice(-12);
-    let currentPace: number | null = null;
-    if (recent.length >= 2) {
-      let recentM = 0;
-      for (let i = 1; i < recent.length; i++) {
-        recentM += haversineMeters(recent[i - 1], recent[i]);
-      }
-      const recentSec = (recent[recent.length - 1].timestamp - recent[0].timestamp) / 1000;
-      currentPace = paceFrom(recentM / 1000, recentSec);
+    const sessionId = Crypto.randomUUID();
+    let state: ActiveRunState;
+    try {
+      state = await createAndPersistActiveRun({
+        sessionId,
+        ownerUserId,
+        startedAt,
+        trackingMode: mode,
+        autoPauseEnabled: autoPause,
+        weightKg,
+      });
+    } catch {
+      return { started: false, reason: "storage" };
     }
 
+    setActiveRun(state);
+    setClockNow(startedAt);
+    activateKeepAwake();
+
+    if (mode === "background") {
+      const backgroundStart = await startBackgroundRunLocation();
+      if (backgroundStart === "active") return { started: true, mode };
+      if (
+        backgroundStart === "unknown" &&
+        !(await stopBackgroundRunLocation())
+      ) {
+        setRecorderError(
+          "Background recorder status could not be verified. Elovia will keep treating this as an active background run so it never starts a second GPS recorder.",
+        );
+        return { started: true, mode };
+      }
+      mode = "foreground";
+      const changed = await changePersistedRunMode(
+        ownerUserId,
+        sessionId,
+        mode,
+      );
+      if (changed) setActiveRun(changed);
+    }
+
+    if (await startForegroundWatch(sessionId)) {
+      return { started: true, mode: "foreground" };
+    }
+
+    await clearPersistedRun(ownerUserId, sessionId).catch(() => false);
+    setActiveRun(null);
+    deactivateKeepAwake();
+    return { started: false, reason: "native" };
+  }, [activeRun, autoPause, ownerUserId, startForegroundWatch, weightKg]);
+
+  const start = useCallback((): Promise<StartRunResult> => {
+    if (startInFlightRef.current) return startInFlightRef.current;
+    const operation = performStart().finally(() => {
+      startInFlightRef.current = null;
+    });
+    startInFlightRef.current = operation;
+    return operation;
+  }, [performStart]);
+
+  const pause = useCallback(async (): Promise<boolean> => {
+    if (!activeRun) return false;
+    stopForegroundWatch();
+    const paused =
+      activeRun.trackingMode === "background"
+        ? await stopAndPauseBackgroundRun(
+            ownerUserId,
+            activeRun.sessionId,
+            Date.now(),
+          )
+        : await pausePersistedRun(ownerUserId, activeRun.sessionId, Date.now());
+    if (!paused) {
+      if (activeRun.trackingMode === "background") {
+        setRecorderError(
+          "Background GPS could not be stopped cleanly. Try pausing again.",
+        );
+      }
+      return false;
+    }
+    setActiveRun(paused);
+    return true;
+  }, [activeRun, ownerUserId, stopForegroundWatch]);
+
+  const resume = useCallback(async (): Promise<boolean> => {
+    if (!activeRun || activeRun.status !== "paused") return false;
+    setRecorderError(null);
+    let mode = activeRun.trackingMode;
+    let resumed = await resumePersistedRun(
+      ownerUserId,
+      activeRun.sessionId,
+      mode,
+      Date.now(),
+    );
+    if (!resumed) return false;
+    setActiveRun(resumed);
+    activateKeepAwake();
+    if (mode === "background") {
+      const backgroundStart = await startBackgroundRunLocation();
+      if (backgroundStart === "active") return true;
+      if (
+        backgroundStart === "unknown" &&
+        !(await stopBackgroundRunLocation())
+      ) {
+        setRecorderError(
+          "Background recorder status could not be verified. Elovia will not start a second GPS recorder.",
+        );
+        return true;
+      }
+      mode = "foreground";
+      const changed = await changePersistedRunMode(
+        ownerUserId,
+        activeRun.sessionId,
+        mode,
+      );
+      if (!changed) return false;
+      resumed = changed;
+      setActiveRun(changed);
+    }
+    if (
+      mode === "foreground" &&
+      !(await startForegroundWatch(activeRun.sessionId))
+    ) {
+      const paused = await pausePersistedRun(ownerUserId, activeRun.sessionId);
+      if (paused) setActiveRun(paused);
+      setRecorderError("Location updates could not be resumed.");
+      return false;
+    }
+    return true;
+  }, [activeRun, ownerUserId, startForegroundWatch]);
+
+  /** Keep the frozen draft until HealthContext confirms its durable write. */
+  const stop = useCallback(async (): Promise<FinishedRunDraft | null> => {
+    if (!activeRun) return null;
+    const endedAt = Date.now();
+    stopForegroundWatch();
+    const paused =
+      activeRun.trackingMode === "background"
+        ? await stopAndPauseBackgroundRun(
+            ownerUserId,
+            activeRun.sessionId,
+            endedAt,
+          )
+        : await pausePersistedRun(ownerUserId, activeRun.sessionId, endedAt);
+    deactivateKeepAwake();
+    if (!paused) return null;
+    setActiveRun(paused);
     return {
-      distanceKm,
-      durationSec,
-      currentPaceMinPerKm: currentPace,
-      avgPaceMinPerKm: paceFrom(distanceKm, durationSec),
-      elevationGainM: Math.round(elevationGainM),
-      calories: estimateCalories(distanceKm, durationSec, weightKg),
-      splits,
-      points,
+      sessionId: paused.sessionId,
+      startedAt: paused.startedAt,
+      endedAt,
+      stats: runStatsFromState(paused, endedAt),
     };
-  }, [distanceM, movingMs, points, elevationGainM, splits, weightKg]);
+  }, [activeRun, ownerUserId, stopForegroundWatch]);
+
+  const completeSave = useCallback(
+    async (sessionId: string): Promise<boolean> => {
+      const cleared = await clearPersistedRun(ownerUserId, sessionId);
+      if (cleared) {
+        setActiveRun(null);
+        setRecovered(false);
+      }
+      return cleared;
+    },
+    [ownerUserId],
+  );
+
+  const reset = useCallback(async (): Promise<boolean> => {
+    if (!activeRun) return true;
+    stopForegroundWatch();
+    const nativeStopped = await stopBackgroundRunLocation();
+    if (!nativeStopped) return false;
+    const cleared = await clearPersistedRun(ownerUserId, activeRun.sessionId);
+    if (cleared) {
+      setActiveRun(null);
+      setRecovered(false);
+      setRecorderError(null);
+    }
+    deactivateKeepAwake();
+    return cleared;
+  }, [activeRun, ownerUserId, stopForegroundWatch]);
+
+  const stats = useMemo(
+    () => (activeRun ? runStatsFromState(activeRun, clockNow) : EMPTY_STATS),
+    [activeRun, clockNow],
+  );
 
   return {
-    status,
+    status: activeRun?.status ?? ("idle" as const),
     stats,
-    autoPaused,
-    gpsAccuracy,
+    autoPaused: activeRun?.autoPaused ?? false,
+    gpsAccuracy: activeRun?.lastAccuracyM ?? null,
+    trackingMode: activeRun?.trackingMode ?? null,
+    startedAt: activeRun?.startedAt ?? null,
+    recovered,
+    recorderError,
+    hydrated,
     start,
     pause,
     resume,
     stop,
+    completeSave,
     reset,
   };
 }

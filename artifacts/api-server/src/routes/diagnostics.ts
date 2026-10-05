@@ -4,6 +4,8 @@ import { db, subscriptionsTable, aiUsageTable, userDataTable, usersTable } from 
 import { isAnthropicConfigured } from "@workspace/integrations-anthropic-ai";
 import { requireAuth } from "../middlewares/aiGate";
 import { STRUCTURED_MODEL as NVIDIA_STRUCTURED_MODEL } from "../lib/ai/providers/nvidia";
+import { loadRevenueCatConfig } from "../lib/revenuecatConfig";
+import { buildRevenueCatDiagnostics } from "../lib/revenuecatPresentation";
 
 const router: IRouter = Router();
 
@@ -28,6 +30,20 @@ interface Check {
  */
 router.get("/diagnostics", requireAuth, async (req: Request, res: Response) => {
   const checks: Check[] = [];
+  let revenueCatDiagnostics = buildRevenueCatDiagnostics({
+    configuration: {
+      valid: false,
+      webhookSecretPresent: Boolean(process.env.REVENUECAT_WEBHOOK_SECRET),
+      apiKeyPresent: Boolean(process.env.REVENUECAT_SECRET_API_KEY),
+      subjectHashKeyPresent: Boolean(
+        process.env.REVENUECAT_SUBJECT_HASH_KEY,
+      ),
+      proProductCount: 0,
+      coachingProductCount: 0,
+      normalizedReads: process.env.REVENUECAT_NORMALIZED_READS,
+    },
+    counts: {},
+  });
 
   // --- Google OAuth -------------------------------------------------------
   // Checked because a missing value here fails at Google rather than in our
@@ -94,10 +110,14 @@ router.get("/diagnostics", requireAuth, async (req: Request, res: Response) => {
         required: true,
       });
     } catch (err) {
+      req.log.warn(
+        { errorType: err instanceof Error ? err.name : "UnknownError" },
+        "PostgreSQL diagnostics unavailable",
+      );
       checks.push({
         name: "postgres",
         status: "error",
-        detail: err instanceof Error ? err.message.slice(0, 200) : "Connection failed",
+        detail: "Connection or schema validation failed",
         required: true,
       });
     }
@@ -142,26 +162,108 @@ router.get("/diagnostics", requireAuth, async (req: Request, res: Response) => {
     required: false,
   });
 
-  // --- RevenueCat webhook -------------------------------------------------
-  const hasWebhookSecret = Boolean(process.env.REVENUECAT_WEBHOOK_SECRET);
-  let subscriptionRows = 0;
+  // --- RevenueCat normalized billing state --------------------------------
+  let revenueCatConfigurationValid = false;
+  let revenueCatCountsAvailable = false;
   try {
-    const [row] = await db
-      .select({ count: sql<number>`COUNT(*)::int` })
-      .from(subscriptionsTable);
-    subscriptionRows = row?.count ?? 0;
-  } catch {
-    // Table check above already reported this.
+    const configuration = loadRevenueCatConfig(process.env);
+    revenueCatConfigurationValid = true;
+    const safeConfiguration = {
+      valid: true,
+      webhookSecretPresent: true,
+      apiKeyPresent: true,
+      subjectHashKeyPresent: true,
+      proProductCount: configuration.proProducts.length,
+      coachingProductCount: configuration.coachingProducts.length,
+      normalizedReads: configuration.normalizedReads,
+    };
+    revenueCatDiagnostics = buildRevenueCatDiagnostics({
+      configuration: safeConfiguration,
+      counts: {},
+    });
+    const counts = await db.execute<{
+      due_events: number;
+      failed_events: number;
+      pending_events: number;
+      pending_identity_phase: number;
+      pending_entitlement_phase: number;
+      pruned_events: number;
+      noncanonical_customers: number;
+      missing_customer_states: number;
+    }>(sql`
+      SELECT
+        (SELECT count(*)::integer
+         FROM "revenuecat_webhook_events"
+         WHERE "disposition" = 'pending'
+           AND "next_attempt_at" <= clock_timestamp()
+           AND ("processing_lease_id" IS NULL
+                OR "processing_lease_until" <= clock_timestamp())) AS "due_events",
+        (SELECT count(*)::integer
+         FROM "revenuecat_webhook_events"
+         WHERE "disposition" = 'pending' AND "attempt_count" > 0) AS "failed_events",
+        (SELECT count(*)::integer
+         FROM "revenuecat_webhook_events"
+         WHERE "disposition" = 'pending') AS "pending_events",
+        (SELECT count(*)::integer
+         FROM "revenuecat_webhook_events"
+         WHERE "disposition" = 'pending'
+           AND "identity_required" = true
+           AND "identity_applied_at" IS NULL) AS "pending_identity_phase",
+        (SELECT count(*)::integer
+         FROM "revenuecat_webhook_events"
+         WHERE "disposition" = 'pending'
+           AND "entitlement_required" = true
+           AND "entitlement_applied_at" IS NULL) AS "pending_entitlement_phase",
+        (SELECT count(*)::integer
+         FROM "revenuecat_webhook_events"
+         WHERE "pruned_identity_count" > 0) AS "pruned_events",
+        (SELECT count(*)::integer
+         FROM "revenuecat_customer_state"
+         WHERE "canonicalization_state" <> 'canonical') AS "noncanonical_customers",
+        (SELECT count(*)::integer
+         FROM "users" AS live_user
+         LEFT JOIN "revenuecat_customer_state" AS state
+           ON state."user_id" = live_user."id"
+         WHERE state."user_id" IS NULL) AS "missing_customer_states"
+    `);
+    const row = counts.rows[0];
+    revenueCatCountsAvailable = true;
+    revenueCatDiagnostics = buildRevenueCatDiagnostics({
+      configuration: safeConfiguration,
+      counts: {
+        dueEvents: row?.due_events,
+        failedEvents: row?.failed_events,
+        pendingEvents: row?.pending_events,
+        pendingIdentityPhase: row?.pending_identity_phase,
+        pendingEntitlementPhase: row?.pending_entitlement_phase,
+        prunedEvents: row?.pruned_events,
+        noncanonicalCustomers: row?.noncanonical_customers,
+        missingCustomerStates: row?.missing_customer_states,
+      },
+    });
+  } catch (error) {
+    req.log.warn(
+      { errorType: error instanceof Error ? error.name : "UnknownError" },
+      "RevenueCat diagnostics unavailable",
+    );
   }
 
   checks.push({
     name: "revenuecat_webhook",
-    status: hasWebhookSecret ? (subscriptionRows > 0 ? "ok" : "degraded") : "not_configured",
-    detail: !hasWebhookSecret
-      ? "REVENUECAT_WEBHOOK_SECRET not set. The webhook rejects every delivery, so no purchase will ever grant server-side access."
-      : subscriptionRows > 0
-        ? `Configured; ${subscriptionRows} subscription record(s) received`
-        : "Secret is set but no webhook events have arrived yet. Confirm the RevenueCat dashboard points at /api/webhooks/revenuecat.",
+    status: !revenueCatConfigurationValid
+      ? "not_configured"
+      : !revenueCatCountsAvailable
+        ? "error"
+        : revenueCatDiagnostics.ready
+          ? "ok"
+          : "degraded",
+    detail: !revenueCatConfigurationValid
+      ? "RevenueCat configuration is invalid or incomplete."
+      : !revenueCatCountsAvailable
+        ? "RevenueCat state counts are unavailable."
+        : revenueCatDiagnostics.ready
+          ? "Normalized RevenueCat billing state is ready."
+          : "Normalized RevenueCat billing state is still reconciling.",
     required: true,
   });
 
@@ -174,6 +276,7 @@ router.get("/diagnostics", requireAuth, async (req: Request, res: Response) => {
     status: requiredFailing.length > 0 ? "unhealthy" : anyDegraded ? "degraded" : "healthy",
     checkedAt: new Date().toISOString(),
     checks,
+    revenueCat: revenueCatDiagnostics,
     blocking: requiredFailing.map((c) => c.name),
   });
 });

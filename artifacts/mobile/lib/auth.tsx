@@ -1,13 +1,124 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  type ReactNode,
+} from "react";
 import { Platform, Alert } from "react-native";
-import { GoogleAuthProvider, signInWithCredential, onAuthStateChanged, signOut, type User as FirebaseUser } from "firebase/auth";
+import {
+  GoogleAuthProvider,
+  signInWithCredential,
+  onAuthStateChanged,
+  signOut,
+  type User as FirebaseUser,
+} from "firebase/auth";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
 import * as Crypto from "expo-crypto";
 import { getFirebaseAuth } from "./firebase";
+import {
+  getAccountStorageScopeKey,
+  setAccountStorageAuthScope,
+} from "./accountSyncStorage";
+import { reconcilePushRegistration, unregisterFromPush } from "./push";
+import {
+  canCompletePushLogout,
+  runPushSafeSignOut,
+  type PushLogoutDetachmentOutcome,
+} from "./pushOwnership";
+import { cancelAllReminders, reconcileReminderSchedule } from "./notifications";
+import { reconcileGeofences, stopAllGeofences } from "./geofence";
+import {
+  canCompleteNativeStateLogout,
+  captureNativeLifecycleFence,
+  clearNativeAccountState,
+  isNativeLifecycleFenceCurrent,
+  reconcileNativeAccountState,
+  resumeNativeLifecycleOwner,
+  setNativeLifecycleAuthOwner,
+  suspendNativeLifecycleOwner,
+  type NativeCleanupOutcome,
+  type NativeLifecycleSuspensionLease,
+} from "./nativeLifecycleCleanup";
+import {
+  LogoutSingleFlight,
+  runLogoutWorkflow,
+  type LogoutOperation,
+  type LogoutOutcome,
+} from "./logoutWorkflow";
+import {
+  AccountDeletionRecoveryStore,
+  isAccountDeletionFinalizing,
+  isProvablyPreDeletionBoundaryError,
+  prepareAccountDeletionRequest,
+  recoverAccountDeletionFinalization,
+} from "./accountDeletionRecovery";
+import { stopAndClearActiveRunForOwner } from "./runTrackingStore";
+import {
+  isAppleSignInCancellation,
+  signInWithAppleFirebase,
+} from "./appleSignIn";
+import { deleteMyAccount, getAccountDeletionStatus } from "@/utils/api";
+
+export type { LogoutOutcome } from "./logoutWorkflow";
+
+export type LogoutOptions =
+  | { operation?: "sign_out"; beforeSignOut?: never }
+  | {
+      operation: Extract<LogoutOperation, "account_deletion">;
+      /** Runs after verified cleanup, while Firebase auth is still valid. */
+      beforeSignOut: (context: { requestId: string }) => Promise<{
+        deleted: boolean;
+        finalizing: boolean;
+      }>;
+    };
+
+function resumeLifecycleAfterBlockedLogout(
+  ownerUserId: string,
+  suspensionLease: NativeLifecycleSuspensionLease,
+): void {
+  if (!resumeNativeLifecycleOwner(suspensionLease)) return;
+  const lifecycleFence = captureNativeLifecycleFence(ownerUserId);
+  if (!lifecycleFence) return;
+  void reconcilePushRegistration(ownerUserId);
+  void reconcileNativeAccountState({
+    ownerUserId,
+    isCurrent: () => isNativeLifecycleFenceCurrent(lifecycleFence),
+    cancelReminders: cancelAllReminders,
+    stopGeofences: stopAllGeofences,
+    reconcileReminders: () =>
+      reconcileReminderSchedule({
+        expectedUserId: ownerUserId,
+        lifecycleFence,
+      }),
+    reconcileGeofences: () => reconcileGeofences(ownerUserId, lifecycleFence),
+  });
+}
 
 function generateUUID(): string {
   return Crypto.randomUUID();
+}
+
+async function createMobileOAuthProof(): Promise<{
+  state: string;
+  codeVerifier: string;
+  codeChallenge: string;
+}> {
+  const state = generateUUID();
+  const codeVerifier = `${generateUUID()}${generateUUID()}`.replaceAll("-", "");
+  const digest = await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    codeVerifier,
+    { encoding: Crypto.CryptoEncoding.BASE64 },
+  );
+  const codeChallenge = digest
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/g, "");
+  return { state, codeVerifier, codeChallenge };
 }
 
 interface User {
@@ -23,8 +134,10 @@ interface AuthContextValue {
   isLoading: boolean;
   isAuthenticated: boolean;
   authError: string | null;
+  /** Google remains available on every platform for backwards compatibility. */
   login: () => Promise<void>;
-  logout: () => Promise<void>;
+  loginWithApple: () => Promise<void>;
+  logout: (options?: LogoutOptions) => Promise<LogoutOutcome>;
   getIdToken: () => Promise<string | null>;
 }
 
@@ -34,7 +147,11 @@ const AuthContext = createContext<AuthContextValue>({
   isAuthenticated: false,
   authError: null,
   login: async () => {},
-  logout: async () => {},
+  loginWithApple: async () => {},
+  logout: async () => ({
+    status: "already_signed_out",
+    operation: "sign_out",
+  }),
   getIdToken: async () => null,
 });
 
@@ -50,7 +167,9 @@ function firebaseUserToUser(fbUser: FirebaseUser): User {
   };
 }
 
-const API_BASE = process.env.EXPO_PUBLIC_DOMAIN ? `https://${process.env.EXPO_PUBLIC_DOMAIN}` : "";
+const API_BASE = process.env.EXPO_PUBLIC_DOMAIN
+  ? `https://${process.env.EXPO_PUBLIC_DOMAIN}`
+  : "";
 
 function getErrorMessage(err: unknown): string {
   if (err && typeof err === "object" && "code" in err) {
@@ -68,6 +187,10 @@ function getErrorMessage(err: unknown): string {
         return "This account has been disabled. Please contact support.";
       case "auth/cancelled-popup-request":
         return "Another sign-in is already in progress.";
+      case "auth/account-exists-with-different-credential":
+        return "An account already exists for this email. Use the sign-in provider you originally chose.";
+      case "auth/operation-not-allowed":
+        return "This sign-in method is not enabled yet. Please use Google or contact support.";
       default:
         break;
     }
@@ -76,7 +199,9 @@ function getErrorMessage(err: unknown): string {
   return "Sign-in failed. Please try again.";
 }
 
-async function handleIdTokenFirebase(idToken: string): Promise<FirebaseUser | null> {
+async function handleIdTokenFirebase(
+  idToken: string,
+): Promise<FirebaseUser | null> {
   const firebaseAuth = await getFirebaseAuth();
   if (!firebaseAuth) return null;
   const credential = GoogleAuthProvider.credential(idToken);
@@ -84,18 +209,53 @@ async function handleIdTokenFirebase(idToken: string): Promise<FirebaseUser | nu
   return result.user;
 }
 
+async function redeemMobileOAuthCode(input: {
+  code: string;
+  state: string;
+  codeVerifier: string;
+}): Promise<string> {
+  const response = await fetch(`${API_BASE}/api/auth/google-mobile/exchange`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const body = (await response.json().catch(() => null)) as {
+    idToken?: unknown;
+  } | null;
+  if (!response.ok || typeof body?.idToken !== "string" || !body.idToken) {
+    throw new Error(
+      response.status === 400
+        ? "This sign-in link expired or was already used. Please try again."
+        : "Elovia could not finish sign-in. Check your connection and try again.",
+    );
+  }
+  return body.idToken;
+}
+
 function loginWithPopupWindow(authUrl: string, state: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const expectedOrigin = API_BASE ? new URL(API_BASE).origin : window.location.origin;
-    const popup = window.open(authUrl, "elovia-auth", "width=500,height=600,menubar=no,toolbar=no");
+    const expectedOrigin = API_BASE
+      ? new URL(API_BASE).origin
+      : window.location.origin;
+    const popup = window.open(
+      authUrl,
+      "elovia-auth",
+      "width=500,height=600,menubar=no,toolbar=no",
+    );
     if (!popup) {
-      reject(new Error("Popup was blocked. Please allow popups and try again."));
+      reject(
+        new Error("Popup was blocked. Please allow popups and try again."),
+      );
       return;
     }
 
     const handler = (event: MessageEvent) => {
       if (event.origin !== expectedOrigin) return;
-      if ((event.data?.type === "elovia-auth" || event.data?.type === "fitai-auth") && event.data?.state === state) {
+      if (
+        (event.data?.type === "elovia-auth" ||
+          event.data?.type === "fitai-auth") &&
+        event.data?.state === state
+      ) {
         window.removeEventListener("message", handler);
         clearInterval(checkClosed);
         if (event.data.idToken) {
@@ -121,21 +281,90 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
+  const logoutSingleFlight = useRef<LogoutSingleFlight | null>(null);
+  const accountDeletionStore = useRef<AccountDeletionRecoveryStore | null>(
+    null,
+  );
+  if (!logoutSingleFlight.current) {
+    logoutSingleFlight.current = new LogoutSingleFlight();
+  }
+  if (!accountDeletionStore.current) {
+    accountDeletionStore.current = new AccountDeletionRecoveryStore();
+  }
 
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
     let mounted = true;
     getFirebaseAuth()
-      .then((firebaseAuth) => {
+      .then(async (firebaseAuth) => {
         if (!mounted) return;
+        const recovery = await recoverAccountDeletionFinalization({
+          store: accountDeletionStore.current!,
+          currentUserId: firebaseAuth.currentUser?.uid ?? null,
+          async confirmRemote(marker) {
+            if (
+              marker.phase === "request_started" &&
+              marker.requestId &&
+              firebaseAuth.currentUser?.uid === marker.ownerUserId
+            ) {
+              try {
+                const deletion = await deleteMyAccount(marker.requestId);
+                return deletion.deleted || deletion.finalizing
+                  ? { status: "confirmed" as const }
+                  : { status: "not_started" as const };
+              } catch (error) {
+                if (!marker.ownerUserId) throw error;
+                const status = await getAccountDeletionStatus(
+                  marker.requestId,
+                  marker.ownerUserId,
+                );
+                return status.started
+                  ? { status: "confirmed" as const }
+                  : { status: "not_started" as const };
+              }
+            }
+            const status = await getAccountDeletionStatus(
+              marker.requestId,
+              marker.ownerUserId,
+            );
+            return status.started
+              ? { status: "confirmed" as const }
+              : { status: "not_started" as const };
+          },
+          signOut: () => signOut(firebaseAuth),
+        });
+        if (!mounted) return;
+        if (recovery.status === "pending") {
+          setNativeLifecycleAuthOwner(null);
+          setAccountStorageAuthScope(null, false);
+          setUser(null);
+          setAuthError(
+            "Account deletion is finalizing. Reopen Elovia to finish signing out and removing local data safely.",
+          );
+          setIsLoading(false);
+        }
         unsubscribe = onAuthStateChanged(firebaseAuth, (fbUser) => {
           if (!mounted) return;
-          setUser(fbUser ? firebaseUserToUser(fbUser) : null);
+          if (isAccountDeletionFinalizing()) {
+            setNativeLifecycleAuthOwner(null);
+            setAccountStorageAuthScope(null, false);
+            setUser(null);
+            setIsLoading(false);
+            return;
+          }
+          const nextUser = fbUser ? firebaseUserToUser(fbUser) : null;
+          setNativeLifecycleAuthOwner(nextUser?.id ?? null);
+          setAccountStorageAuthScope(nextUser?.id ?? null, false);
+          setUser(nextUser);
           setIsLoading(false);
         });
       })
       .catch(() => {
-        if (mounted) setIsLoading(false);
+        if (mounted) {
+          setNativeLifecycleAuthOwner(null);
+          setAccountStorageAuthScope(null, false);
+          setIsLoading(false);
+        }
       });
     return () => {
       mounted = false;
@@ -151,18 +380,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async () => {
     setAuthError(null);
+    if (isAccountDeletionFinalizing()) {
+      setAuthError(
+        "Account deletion is finalizing. Reopen Elovia to complete it safely before signing in again.",
+      );
+      return;
+    }
     try {
-      const state = generateUUID();
-
       if (Platform.OS === "web") {
+        const state = generateUUID();
         const authUrl = `${API_BASE}/api/auth/google-mobile?mode=popup&state=${encodeURIComponent(state)}`;
         const idToken = await loginWithPopupWindow(authUrl, state);
         await handleIdTokenFirebase(idToken);
       } else {
+        const { state, codeVerifier, codeChallenge } =
+          await createMobileOAuthProof();
         const returnUrl = Linking.createURL("auth");
-        const authUrl = `${API_BASE}/api/auth/google-mobile?returnUrl=${encodeURIComponent(returnUrl)}&state=${encodeURIComponent(state)}`;
+        const authUrl = `${API_BASE}/api/auth/google-mobile?returnUrl=${encodeURIComponent(returnUrl)}&state=${encodeURIComponent(state)}&codeChallenge=${encodeURIComponent(codeChallenge)}`;
 
-        const result = await WebBrowser.openAuthSessionAsync(authUrl, returnUrl);
+        const result = await WebBrowser.openAuthSessionAsync(
+          authUrl,
+          returnUrl,
+        );
 
         if (result.type === "cancel" || result.type === "dismiss") {
           setAuthError("Sign-in was cancelled.");
@@ -171,19 +410,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         if (result.type === "success" && result.url) {
           const returnedStateRaw = result.url.match(/[?&#]state=([^&]+)/)?.[1];
-          const returnedState = returnedStateRaw ? decodeURIComponent(returnedStateRaw) : null;
+          const returnedState = returnedStateRaw
+            ? decodeURIComponent(returnedStateRaw)
+            : null;
           if (!returnedState || returnedState !== state) {
             const msg = "Security check failed. Please try signing in again.";
             setAuthError(msg);
             Alert.alert("Sign-In Error", msg);
             return;
           }
-          const rawToken = result.url.match(/[?&#]idToken=([^&]+)/)?.[1];
-          const idToken = rawToken ? decodeURIComponent(rawToken) : null;
-          if (idToken) {
+          const rawCode = result.url.match(/[?&#]code=([^&]+)/)?.[1];
+          const exchangeCode = rawCode ? decodeURIComponent(rawCode) : null;
+          if (exchangeCode) {
+            const idToken = await redeemMobileOAuthCode({
+              code: exchangeCode,
+              state,
+              codeVerifier,
+            });
             await handleIdTokenFirebase(idToken);
           } else {
-            const msg = "No authentication token received. Please try again.";
+            const msg = "No sign-in code received. Please try again.";
             setAuthError(msg);
             Alert.alert("Sign-In Error", msg);
           }
@@ -201,21 +447,252 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const logout = useCallback(async () => {
+  const loginWithApple = useCallback(async () => {
+    setAuthError(null);
+    if (isAccountDeletionFinalizing()) {
+      setAuthError(
+        "Account deletion is finalizing. Reopen Elovia to complete it safely before signing in again.",
+      );
+      return;
+    }
+    if (Platform.OS !== "ios") {
+      setAuthError("Sign in with Apple is available in the iOS app.");
+      return;
+    }
+
     try {
-      const firebaseAuth = await getFirebaseAuth();
-      await signOut(firebaseAuth);
-      setUser(null);
-      setAuthError(null);
-    } catch (err) {
-      console.error("Logout error:", err);
-      const msg = getErrorMessage(err);
-      setAuthError(msg);
-      if (Platform.OS !== "web") {
-        Alert.alert("Sign-Out Error", msg);
-      }
+      await signInWithAppleFirebase();
+    } catch (error) {
+      if (isAppleSignInCancellation(error)) return;
+      const message = getErrorMessage(error);
+      console.error("Apple sign-in failed", {
+        errorType: error instanceof Error ? error.name : "UnknownError",
+        errorCode:
+          error && typeof error === "object" && "code" in error
+            ? String((error as { code?: unknown }).code)
+            : undefined,
+      });
+      setAuthError(message);
+      Alert.alert("Sign-In Error", message);
     }
   }, []);
+
+  const logout = useCallback((options: LogoutOptions = {}) => {
+    const operation = options.operation ?? "sign_out";
+    return logoutSingleFlight.current!.run(async () => {
+      let suspendedOwnerUserId: string | null = null;
+      let suspensionLease: NativeLifecycleSuspensionLease | null = null;
+      let firebaseAuth: Awaited<ReturnType<typeof getFirebaseAuth>>;
+      try {
+        firebaseAuth = await getFirebaseAuth();
+      } catch (error) {
+        console.error("Logout workflow failed", {
+          phase: "prepare",
+          errorType: error instanceof Error ? error.name : "UnknownError",
+        });
+        const unavailable: LogoutOutcome = {
+          status: "blocked",
+          operation,
+          reason: "preparation_failed",
+          message:
+            "Elovia could not start privacy cleanup. You are still signed in; try again.",
+        };
+        setAuthError(unavailable.message);
+        return unavailable;
+      }
+      let pushDetachment: PushLogoutDetachmentOutcome = {
+        serverDetached: true,
+        nativeDetached: false,
+        cleanupPending: false,
+      };
+      const ownerUserId = firebaseAuth.currentUser?.uid ?? null;
+      if (ownerUserId) {
+        suspensionLease = suspendNativeLifecycleOwner(ownerUserId);
+        suspendedOwnerUserId = ownerUserId;
+      }
+      let nativeCleanup: NativeCleanupOutcome = {
+        remindersCleared: true,
+        geofencesCleared: true,
+        verified: true,
+      };
+      let activeRunCleared = true;
+      const deletionRequestId =
+        operation === "account_deletion" ? generateUUID() : null;
+      const outcome = await runLogoutWorkflow({
+        operation,
+        isAuthenticated: ownerUserId !== null,
+        async prepare() {
+          if (ownerUserId) {
+            pushDetachment = await unregisterFromPush(ownerUserId);
+            activeRunCleared = await stopAndClearActiveRunForOwner(ownerUserId);
+            nativeCleanup = await clearNativeAccountState({
+              ownerUserId,
+              cancelReminders: cancelAllReminders,
+              stopGeofences: stopAllGeofences,
+            });
+          }
+          const failedNativeState = [
+            !activeRunCleared ? "the active run recorder" : null,
+            !nativeCleanup.remindersCleared ? "reminders" : null,
+            !nativeCleanup.geofencesCleared ? "saved-place triggers" : null,
+          ].filter(Boolean);
+          const blockedMessage =
+            failedNativeState.length > 0
+              ? `Elovia could not verify removal of ${failedNativeState.join(" and ")}. You are still signed in; try signing out again.`
+              : "Elovia could not safely disconnect push notifications. You are still signed in; check your connection and try signing out again.";
+          return {
+            pushDetached: canCompletePushLogout(pushDetachment),
+            nativeDetached:
+              activeRunCleared && canCompleteNativeStateLogout(nativeCleanup),
+            blockedMessage,
+          };
+        },
+        beforeSignOut:
+          operation === "account_deletion" &&
+          ownerUserId &&
+          deletionRequestId &&
+          options.operation === "account_deletion"
+            ? async () => {
+                const store = accountDeletionStore.current!;
+                const preparation = await prepareAccountDeletionRequest(
+                  store,
+                  ownerUserId,
+                  deletionRequestId,
+                );
+                if (preparation === "prepared_pending") {
+                  return {
+                    status: "pending_pre_request" as const,
+                    message:
+                      "Elovia could not safely start the deletion request. Reopen the app to restore this account without losing local data.",
+                  };
+                }
+
+                try {
+                  const remote = await options.beforeSignOut({
+                    requestId: deletionRequestId,
+                  });
+                  if (!remote.deleted && !remote.finalizing) {
+                    throw new Error(
+                      "The server did not confirm the deletion boundary.",
+                    );
+                  }
+                  try {
+                    await store.advance(
+                      ownerUserId,
+                      deletionRequestId,
+                      "remote_confirmed",
+                    );
+                  } catch {
+                    return remote.finalizing
+                      ? {
+                          status: "confirmed" as const,
+                          identityFinalizing: true as const,
+                          message:
+                            "Your Elovia data was deleted. Server identity removal is finishing in the background.",
+                        }
+                      : { status: "confirmed" as const };
+                  }
+                  return remote.finalizing
+                    ? {
+                        status: "confirmed" as const,
+                        identityFinalizing: true as const,
+                        message:
+                          "Your Elovia data was deleted. Server identity removal is finishing in the background.",
+                      }
+                    : { status: "confirmed" as const };
+                } catch (error) {
+                  if (isProvablyPreDeletionBoundaryError(error)) {
+                    const aborted = await store
+                      .abortBeforeRemoteCommit(ownerUserId, deletionRequestId)
+                      .catch(() => false);
+                    if (aborted) throw error;
+                  }
+                  console.error("Account deletion request is ambiguous", {
+                    errorType:
+                      error instanceof Error ? error.name : "UnknownError",
+                  });
+                  return {
+                    status: "pending_remote" as const,
+                    message:
+                      "The server response was interrupted after deletion started. Reopen Elovia while online so it can safely confirm the deletion before signing out.",
+                  };
+                }
+              }
+            : undefined,
+        async signOut() {
+          const result = await runPushSafeSignOut(pushDetachment, () =>
+            signOut(firebaseAuth),
+          );
+          if (result !== "signed-out") {
+            throw new Error("Push detachment was not verified.");
+          }
+        },
+        onError(error, phase) {
+          console.error("Logout workflow failed", {
+            phase,
+            errorType: error instanceof Error ? error.name : "UnknownError",
+          });
+        },
+      });
+
+      let completedOutcome = outcome;
+      if (
+        operation === "account_deletion" &&
+        (outcome.status === "signed_out" ||
+          (outcome.status === "finalizing" && outcome.localSignOutComplete))
+      ) {
+        try {
+          await accountDeletionStore.current!.completeLocalFinalization();
+        } catch (error) {
+          console.error("Account deletion local finalization failed", {
+            errorType: error instanceof Error ? error.name : "UnknownError",
+          });
+          completedOutcome = {
+            status: "finalizing",
+            operation: "account_deletion",
+            reason: "local_clear_failed",
+            localSignOutComplete: true,
+            message:
+              "You are signed out, but Elovia still needs to finish removing local data. Reopen the app to retry safely.",
+          };
+        }
+      }
+
+      if (
+        completedOutcome.status === "signed_out" ||
+        completedOutcome.status === "finalizing"
+      ) {
+        setNativeLifecycleAuthOwner(null);
+        setAccountStorageAuthScope(null, false);
+        setUser(null);
+        const cleanupMessage =
+          operation === "sign_out" && pushDetachment.cleanupPending
+            ? "Signed out safely. Server notification cleanup will retry when this account reconnects."
+            : null;
+        setAuthError(cleanupMessage);
+        if (cleanupMessage && Platform.OS !== "web") {
+          Alert.alert("Signed out safely", cleanupMessage);
+        }
+        if (completedOutcome.status === "finalizing") {
+          setAuthError(completedOutcome.message);
+        }
+        return completedOutcome;
+      }
+
+      if (completedOutcome.status === "blocked") {
+        setAuthError(completedOutcome.message);
+        if (suspendedOwnerUserId && suspensionLease) {
+          resumeLifecycleAfterBlockedLogout(
+            suspendedOwnerUserId,
+            suspensionLease,
+          );
+        }
+      }
+      return completedOutcome;
+    });
+  }, []);
+
+  const accountScopeKey = getAccountStorageScopeKey();
 
   return (
     <AuthContext.Provider
@@ -225,11 +702,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated: !!user,
         authError,
         login,
+        loginWithApple,
         logout,
         getIdToken,
       }}
     >
-      {children}
+      <React.Fragment key={accountScopeKey}>
+        {isLoading ? null : children}
+      </React.Fragment>
     </AuthContext.Provider>
   );
 }

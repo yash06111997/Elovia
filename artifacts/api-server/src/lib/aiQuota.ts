@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { db, aiUsageTable } from "@workspace/db";
+import {
+  db,
+  aiUsageTable,
+  aiRequestsTable,
+  aiAttemptsTable,
+} from "@workspace/db";
 import { and, eq, sql } from "drizzle-orm";
 import type { AccessTier } from "./entitlements";
+import {
+  withAccountLock,
+  type AccountLockTransaction,
+} from "./accountDeletion";
+import type { ProviderName } from "./ai/types";
 
 export type AiRoute =
   | "recognize-food"
@@ -58,7 +68,7 @@ const DAILY_LIMITS: Record<AccessTier, Record<AiRoute, number>> = {
   },
 };
 
-/** Hard ceiling on a single user's daily AI spend, in micro-USD (1e-6 USD). */
+/** Daily estimated budget (not an exact provider invoice cap), in micro-USD (1e-6 USD). */
 export const DAILY_COST_CEILING_MICROS: Record<AccessTier, number> = {
   free: 0,
   trial: 300_000, // $0.30
@@ -75,158 +85,253 @@ export function currentDay(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/** Issued by the server; never accepted from a client body. */
+export interface QuotaClaim {
+  id: string;
+  userId: string;
+}
 export interface QuotaDecision {
   allowed: boolean;
   limit: number;
   used: number;
   remaining: number;
-  reason?: "tier_not_permitted" | "daily_limit_reached" | "cost_ceiling_reached";
+  reason?:
+    | "tier_not_permitted"
+    | "daily_limit_reached"
+    | "cost_ceiling_reached";
   resetsAt: string;
+  claim?: QuotaClaim;
+}
+function resetFor(day: string): string {
+  return new Date(Date.parse(day + "T00:00:00Z") + 86_400_000).toISOString();
+}
+export class AiBudgetError extends Error {
+  readonly code = "cost_ceiling_reached";
+  constructor(readonly resetsAt: string) {
+    super("Today's estimated AI budget has been reached");
+  }
+}
+export class AiAccountingError extends Error {
+  readonly code = "quota_unavailable";
+  constructor() {
+    super("Could not safely account for AI usage");
+  }
+}
+function usageKey(row: { userId: string; day: string; route: string }) {
+  return and(
+    eq(aiUsageTable.userId, row.userId),
+    eq(aiUsageTable.day, row.day),
+    eq(aiUsageTable.route, row.route),
+  );
+}
+async function spendFor(
+  tx: AccountLockTransaction,
+  userId: string,
+  day: string,
+): Promise<number> {
+  const [row] = await tx
+    .select({
+      total: sql<number>`COALESCE(SUM(${aiUsageTable.estimatedCostMicros}), 0)::int`,
+    })
+    .from(aiUsageTable)
+    .where(and(eq(aiUsageTable.userId, userId), eq(aiUsageTable.day, day)));
+  return row?.total ?? 0;
+}
+async function requestFor(tx: AccountLockTransaction, claim: QuotaClaim) {
+  const [row] = await tx
+    .select()
+    .from(aiRequestsTable)
+    .where(
+      and(
+        eq(aiRequestsTable.id, claim.id),
+        eq(aiRequestsTable.userId, claim.userId),
+      ),
+    );
+  if (!row) throw new AiAccountingError();
+  return row;
 }
 
-function nextUtcMidnight(): string {
-  const d = new Date();
-  d.setUTCHours(24, 0, 0, 0);
-  return d.toISOString();
-}
-
-/**
- * Atomically claim one request against the user's daily quota.
- *
- * The increment happens BEFORE the upstream LLM call, and the post-increment
- * count is what's compared against the limit. Checking first and incrementing
- * after would let a burst of concurrent requests all read the same
- * under-limit value and sail through together.
- *
- * On refusal the claim is released, so a blocked request doesn't consume budget.
- */
+/** Count and durable claim commit together under the account's transaction lock. */
 export async function claimQuota(
   userId: string,
   tier: AccessTier,
   route: AiRoute,
 ): Promise<QuotaDecision> {
-  const limit = dailyLimitFor(tier, route);
-  const resetsAt = nextUtcMidnight();
-
-  if (limit <= 0) {
-    return {
-      allowed: false,
-      limit: 0,
-      used: 0,
-      remaining: 0,
-      reason: "tier_not_permitted",
-      resetsAt,
-    };
-  }
-
   const day = currentDay();
-
-  const [row] = await db
-    .insert(aiUsageTable)
-    .values({ id: randomUUID(), userId, day, route, requestCount: 1 })
-    .onConflictDoUpdate({
-      target: [aiUsageTable.userId, aiUsageTable.day, aiUsageTable.route],
-      set: {
-        requestCount: sql`${aiUsageTable.requestCount} + 1`,
-        updatedAt: new Date(),
-      },
-    })
-    .returning({
-      requestCount: aiUsageTable.requestCount,
-      estimatedCostMicros: aiUsageTable.estimatedCostMicros,
-    });
-
-  const used = row?.requestCount ?? 1;
-
-  if (used > limit) {
-    await releaseQuota(userId, route);
-    return {
-      allowed: false,
-      limit,
-      used: limit,
-      remaining: 0,
-      reason: "daily_limit_reached",
-      resetsAt,
-    };
-  }
-
-  // Cost ceiling is evaluated across every route for the day, not just this one.
-  const spentToday = await dailySpendMicros(userId);
-  if (spentToday >= DAILY_COST_CEILING_MICROS[tier]) {
-    await releaseQuota(userId, route);
-    return {
-      allowed: false,
-      limit,
-      used: used - 1,
-      remaining: Math.max(0, limit - (used - 1)),
-      reason: "cost_ceiling_reached",
-      resetsAt,
-    };
-  }
-
-  return { allowed: true, limit, used, remaining: Math.max(0, limit - used), resetsAt };
+  const limit = dailyLimitFor(tier, route);
+  const resetsAt = resetFor(day);
+  const decision = (
+    used: number,
+    reason?: QuotaDecision["reason"],
+  ): QuotaDecision => ({
+    allowed: !reason,
+    limit,
+    used,
+    remaining: Math.max(0, limit - used),
+    resetsAt,
+    ...(reason ? { reason } : {}),
+  });
+  if (limit <= 0) return decision(0, "tier_not_permitted");
+  return withAccountLock(userId, async (tx) => {
+    const key = { userId, day, route };
+    const [row] = await tx.select().from(aiUsageTable).where(usageKey(key));
+    const used = row?.requestCount ?? 0;
+    if (used >= limit) return decision(used, "daily_limit_reached");
+    const ceiling = DAILY_COST_CEILING_MICROS[tier];
+    if ((await spendFor(tx, userId, day)) >= ceiling)
+      return decision(used, "cost_ceiling_reached");
+    const id = randomUUID();
+    await tx
+      .insert(aiRequestsTable)
+      .values({ id, ...key, costCeilingMicros: ceiling });
+    await tx
+      .insert(aiUsageTable)
+      .values({ id: randomUUID(), ...key, requestCount: 1 })
+      .onConflictDoUpdate({
+        target: [aiUsageTable.userId, aiUsageTable.day, aiUsageTable.route],
+        set: {
+          requestCount: sql`${aiUsageTable.requestCount} + 1`,
+          updatedAt: new Date(),
+        },
+      });
+    return { ...decision(used + 1), claim: { id, userId } };
+  });
 }
 
-/** Give back a claim when the request never reached the provider. */
-export async function releaseQuota(userId: string, route: AiRoute): Promise<void> {
-  try {
-    await db
+/** Close on finish OR disconnect. Refund only claims with no provider attempt. */
+export async function releaseQuota(claim: QuotaClaim): Promise<void> {
+  await withAccountLock(claim.userId, async (tx) => {
+    const row = await requestFor(tx, claim);
+    if (row.status === "closed") return;
+    if (row.status === "claimed") {
+      await tx
+        .update(aiUsageTable)
+        .set({
+          requestCount: sql`GREATEST(${aiUsageTable.requestCount} - 1, 0)`,
+          updatedAt: new Date(),
+        })
+        .where(usageKey(row));
+    }
+    await tx
+      .update(aiRequestsTable)
+      .set({ status: "closed" })
+      .where(eq(aiRequestsTable.id, row.id));
+  });
+}
+
+/** Each fallback reserves separately; no database lock is held during provider IO. */
+export async function reserveAttempt(
+  claim: QuotaClaim,
+  provider: ProviderName,
+  reservedCostMicros: number,
+): Promise<string> {
+  if (
+    !Number.isSafeInteger(reservedCostMicros) ||
+    reservedCostMicros <= 0 ||
+    reservedCostMicros > 2_147_483_647
+  ) {
+    throw new AiAccountingError();
+  }
+  return withAccountLock(claim.userId, async (tx) => {
+    const row = await requestFor(tx, claim);
+    if (row.status === "closed") throw new Error("AI request is closed");
+    const spent = await spendFor(tx, row.userId, row.day);
+    if (spent + reservedCostMicros > row.costCeilingMicros)
+      throw new AiBudgetError(resetFor(row.day));
+    const id = randomUUID();
+    await tx
+      .insert(aiAttemptsTable)
+      .values({ id, requestId: row.id, provider, reservedCostMicros });
+    const updated = await tx
       .update(aiUsageTable)
-      .set({ requestCount: sql`GREATEST(${aiUsageTable.requestCount} - 1, 0)` })
+      .set({
+        estimatedCostMicros: sql`${aiUsageTable.estimatedCostMicros} + ${reservedCostMicros}`,
+        updatedAt: new Date(),
+      })
+      .where(usageKey(row))
+      .returning({ id: aiUsageTable.id });
+    if (updated.length !== 1) throw new AiAccountingError();
+    await tx
+      .update(aiRequestsTable)
+      .set({ status: "started" })
+      .where(eq(aiRequestsTable.id, row.id));
+    return id;
+  });
+}
+
+interface MeasuredUsage {
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostMicros: number;
+  provider: ProviderName;
+  model: string;
+}
+function validCount(value: number) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 2_147_483_647;
+}
+
+/** Settle once. Unknown usage or a failed write leaves the reservation debited. */
+export async function settleAttempt(
+  claim: QuotaClaim,
+  attemptId: string,
+  usage: MeasuredUsage,
+): Promise<void> {
+  if (
+    ![usage.inputTokens, usage.outputTokens, usage.estimatedCostMicros].every(
+      validCount,
+    ) ||
+    usage.inputTokens + usage.outputTokens === 0
+  )
+    return;
+  await withAccountLock(claim.userId, async (tx) => {
+    const request = await requestFor(tx, claim);
+    const [attempt] = await tx
+      .select()
+      .from(aiAttemptsTable)
       .where(
         and(
-          eq(aiUsageTable.userId, userId),
-          eq(aiUsageTable.day, currentDay()),
-          eq(aiUsageTable.route, route),
+          eq(aiAttemptsTable.id, attemptId),
+          eq(aiAttemptsTable.requestId, request.id),
         ),
       );
-  } catch {
-    // A failed release only over-counts against the user's own daily quota,
-    // which resets at UTC midnight. Never fail the request over it.
-  }
+    if (!attempt || attempt.provider !== usage.provider)
+      throw new AiAccountingError();
+    if (attempt.settledAt) return;
+    await tx
+      .update(aiAttemptsTable)
+      .set({
+        model: usage.model,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        estimatedCostMicros: usage.estimatedCostMicros,
+        settledAt: new Date(),
+      })
+      .where(eq(aiAttemptsTable.id, attempt.id));
+    const delta = usage.estimatedCostMicros - attempt.reservedCostMicros;
+    const updated = await tx
+      .update(aiUsageTable)
+      .set({
+        inputTokens: sql`${aiUsageTable.inputTokens} + ${usage.inputTokens}`,
+        outputTokens: sql`${aiUsageTable.outputTokens} + ${usage.outputTokens}`,
+        estimatedCostMicros: sql`${aiUsageTable.estimatedCostMicros} + ${delta}`,
+        provider: usage.provider,
+        updatedAt: new Date(),
+      })
+      .where(usageKey(request))
+      .returning({ id: aiUsageTable.id });
+    if (updated.length !== 1) throw new AiAccountingError();
+  });
 }
 
-/** Total estimated spend for this user today, across all AI routes. */
+/** Includes unresolved reservations, not just successfully parsed responses. */
 export async function dailySpendMicros(userId: string): Promise<number> {
   const [row] = await db
     .select({
       total: sql<number>`COALESCE(SUM(${aiUsageTable.estimatedCostMicros}), 0)::int`,
     })
     .from(aiUsageTable)
-    .where(and(eq(aiUsageTable.userId, userId), eq(aiUsageTable.day, currentDay())));
-
+    .where(
+      and(eq(aiUsageTable.userId, userId), eq(aiUsageTable.day, currentDay())),
+    );
   return row?.total ?? 0;
-}
-
-/** Record what a completed call actually cost, for the ceiling above. */
-export async function recordUsage(
-  userId: string,
-  route: AiRoute,
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    estimatedCostMicros: number;
-    provider: string;
-  },
-): Promise<void> {
-  try {
-    await db
-      .update(aiUsageTable)
-      .set({
-        inputTokens: sql`${aiUsageTable.inputTokens} + ${usage.inputTokens}`,
-        outputTokens: sql`${aiUsageTable.outputTokens} + ${usage.outputTokens}`,
-        estimatedCostMicros: sql`${aiUsageTable.estimatedCostMicros} + ${usage.estimatedCostMicros}`,
-        provider: usage.provider,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(aiUsageTable.userId, userId),
-          eq(aiUsageTable.day, currentDay()),
-          eq(aiUsageTable.route, route),
-        ),
-      );
-  } catch {
-    // Accounting is best-effort; never fail a served response over it.
-  }
 }
