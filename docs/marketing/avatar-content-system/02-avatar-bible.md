@@ -56,7 +56,7 @@ https://www.figma.com/design/iJPbaH31wlsZ53dEXhUuCQ
 | **Emblem** | A small cyan **lightning bolt** (from the Elovia logo) on the thigh, hip or chest. Nothing else is branded. |
 | **Outfit base** | Charcoal **`#2A2A3A`** to near-black athletic wear |
 | **World** | Charcoal background **`#0A0A0F`**, cyan rim light, a glowing cyan floor line. Deliberately the opposite of Swolo's mint. |
-| **Never** | Real brand logos, Swolo's teal/mint palette or faceless-hulk silhouette, nudity or suggestive posing, medical credentials, "I lost X kg" claims |
+| **Never** | Real brand logos, Swolo's teal/mint palette or faceless-hulk silhouette, nudity or explicit posing, medical credentials, "I lost X kg" claims |
 
 ---
 
@@ -80,9 +80,9 @@ https://www.figma.com/design/iJPbaH31wlsZ53dEXhUuCQ
 | Head | Smooth, rounded bean shape. No nose, no mouth, no ears, no hair | Same, plus a **sculpted high ponytail** in the same material |
 | Eyes | Two large **glowing white ovals**. All emotion comes from eye shape | Same |
 | Body material | Matte soft-touch vinyl, **deep electric blue `#1590C8`**, faint cyan inner glow along muscle edges | Same |
-| Physique (Level 3) | **Lean athletic aesthetic**: broad shoulders, V-taper, defined abs. A natural athlete, **not** a mass monster | **Toned athletic hourglass**: toned shoulders and arms, flat toned core, narrow waist, strong glutes and legs. **Lean and feminine, not bulky** |
-| Outfit | Charcoal shorts, thin cyan side stripe, small cyan bolt on the left thigh | Charcoal high-neck sports bra plus high-waisted leggings, thin cyan side stripe, cyan bolt on the left hip |
-| Shoes | **Black training shoes with cyan soles** (canonical from v2; the first turnaround sheets show bare feet, so regenerate the golden set with shoes) | Same |
+| Physique (Level 3) | **Highly defined, lean aesthetic**: chiseled six-pack and obliques, full chest, capped shoulders, wide lats and V-taper, sculpted quads and calves. Shredded like a fitness model, **not** a mass monster | **Highly toned athletic hourglass**: visible abs and obliques, sculpted shoulders and arms, very narrow waist, strong rounded glutes, defined quads. **Curvy and feminine, not bulky** |
+| Outfit | Charcoal shorts, thin cyan side stripe, small cyan bolt on the left thigh | **Short cropped** charcoal sports bra with a scoop neckline and bare midriff, plus high-waisted leggings, thin cyan side stripe, cyan bolt on the left hip |
+| Shoes | **Black training shoes with cyan soles** (canonical; the v2.1 sheets include them) | Same |
 | Hands | Simple rounded hands, 4 fingers, no detail | Same |
 | Scale | Human-size in the gym world. Can shrink to 15 cm for food-scan scenes, a running gag | Same |
 
@@ -153,16 +153,16 @@ ELA — an original stylized 3D female fitness mascot: a faceless humanoid with 
 rounded head (no nose, no mouth, no ears), two large glowing white oval eyes and a
 sculpted high ponytail of the same material; body of smooth matte soft-touch vinyl in
 deep electric blue (#1590C8) with a faint cyan inner glow; [LEVEL] physique; simple
-rounded hands; wears a charcoal high-neck sports bra and charcoal high-waisted leggings
-with a thin bright cyan (#00D4FF) side stripe and a small cyan lightning-bolt emblem on
+rounded hands; wears a short cropped charcoal sports bra with a scoop neckline and bare
+midriff, and charcoal high-waisted leggings with a thin bright cyan (#00D4FF) side stripe and a small cyan lightning-bolt emblem on
 the left hip, and black training shoes with cyan soles.
 ```
 
 **[LEVEL] fill-ins:**
 - `L1` → `an ordinary everyday body with a soft belly, rounded shoulders and slightly slouched posture`
 - `L2` → `a noticeably fitter body with upright posture, a firmer core and some shoulder and arm definition`
-- `L3 Elo` → `a lean athletic aesthetic physique with broad shoulders, V-taper and defined abs, a natural athlete, not a bodybuilder`
-- `L3 Ela` → `a toned athletic hourglass physique with toned shoulders and arms, a flat toned core, narrow waist and strong legs, lean and feminine, not bulky`
+- `L3 Elo` → `a highly defined aesthetic athletic physique: sharply chiseled six-pack abs and obliques, full defined chest, round capped shoulders, defined arms, wide lats and a strong V-taper, sculpted quads and calves, clear muscle separation; lean and shredded like a fitness model, not a giant bodybuilder`
+- `L3 Ela` → `a highly toned and defined athletic hourglass physique: visible defined abs and obliques, sculpted shoulders and toned defined arms, very narrow waist, strong rounded glutes, defined quads and calves; lean, curvy and feminine like a fitness model, not bulky`
 
 **World block:**
 ```
@@ -197,7 +197,7 @@ no text, no extra fingers, no realistic human skin, no bodybuilder mass on Ela`.
 |---|---|
 | Sheet | [`characters/raja-lion-sheet.jpg`](characters/raja-lion-sheet.jpg) |
 | Concept | The lion everyone secretly thinks they are. *Raja* means "king" in Hindi and reads fine globally. |
-| Look | A humanoid lion in high-end animated-feature 3D. **Full golden-amber mane with bronze tips**, amber eyes, short golden fur over **heroic muscle definition** (broad shoulders, big chest and arms, V-taper, abs). Lion-paw hands and feet, tail with a dark tuft. **Charcoal shorts with a cyan stripe and bolt, cyan wrist wraps.** |
+| Look | A humanoid lion in high-end animated-feature 3D. **Full golden-amber mane with bronze tips**, amber eyes, short golden fur over an **extremely muscular, hyper-defined champion-bodybuilder physique** (massive shoulders and traps, striated chest, huge arms with veins, eight-pack, wide lats, teardrop quads, diamond calves). Lion-paw hands and feet, tail with a dark tuft. **Charcoal shorts with a cyan stripe and bolt, cyan wrist wraps.** |
 | Personality | Calm, regal confidence. He doesn't shout; he roars once, at the end. He believes in you more than you do. |
 | Voice | Deep, warm, unhurried. **Can speak** (he has a mouth), but use it sparingly; mostly narrator plus a roar. |
 | Use | "Raja Mode" episodes: challenge launches, milestone celebrations (Day 30 completions), "the version of you at Level 3". About 1 in 10 videos (3 of the first 30). |
@@ -208,10 +208,12 @@ no text, no extra fingers, no realistic human skin, no bodybuilder mass on Ela`.
 ```
 RAJA — an original anthropomorphic lion fitness mascot in high-end 3D animated feature film
 style: a majestic humanoid lion standing upright, full flowing golden-amber mane with
-darker bronze tips, intense friendly amber eyes, strong noble muzzle, short golden fur over
-clearly visible heroic muscle definition (very broad shoulders, big chest and arms, V-taper,
-defined abs, powerful legs — aesthetic superhero proportions, not grotesque), lion-paw hands
-and feet, long tail with a dark tuft; wears charcoal athletic shorts with a thin cyan
+darker bronze tips, intense friendly amber eyes, strong noble muzzle, short golden fur;
+EXTREMELY MUSCULAR, hyper-defined champion bodybuilder physique clearly visible under the
+fur — massive rounded shoulders and huge traps, deep striated chest, enormous biceps and
+triceps with visible veins, chiseled eight-pack abs and sharp obliques, very wide lats and a
+dramatic V-taper, sweeping teardrop quads, diamond-shaped calves, visible muscle striations;
+heroic, powerful and aesthetic, not grotesque; lion-paw hands and feet, long tail with a dark tuft; wears charcoal athletic shorts with a thin cyan
 (#00D4FF) side stripe and small cyan lightning-bolt emblem, and cyan wrist wraps.
 ```
 
@@ -222,8 +224,8 @@ and feet, long tail with a dark tuft; wears charcoal athletic shorts with a thin
 | | |
 |---|---|
 | Sheet | [`characters/kabir-realistic-male-sheet.jpg`](characters/kabir-realistic-male-sheet.jpg) |
-| Who | An original, **fictional**, AI-generated Indian man, about 28, about 183 cm. Handsome and warm: strong jaw, brown eyes, textured black hair with a fade, short trimmed beard. **Lean aesthetic physique, about 11% body fat**: fit and attainable, not extreme. |
-| Wardrobe | Fitted charcoal training tee with the cyan bolt, black joggers, white trainers. For physique shots: a charcoal tank. |
+| Who | An original, **fictional**, AI-generated Indian man, about 28, about 183 cm. Handsome and warm: strong jaw, brown eyes, textured black hair with a fade, short trimmed beard. **Shirtless, very well-defined aesthetic physique, about 8% body fat**: chiseled six-pack, V-lines, full chest, capped shoulders, veiny forearms, wide back. A fitness model, not an extreme bodybuilder. |
+| Wardrobe | **Shirtless** with black tapered joggers (cyan side stripe and bolt) and white trainers. For explainer or talking shots, the fitted charcoal tee from the v1 sheet. |
 | Persona | "The friend who got fit and explains it simply." Never a doctor, dietitian or certified coach. |
 | Use | Paid-ad A/B tests against Elo and Ela, **labelled as AI**. Not for the organic feed. |
 | Risks | Faces drift (use one reference image, and face-lock or image-to-video only). "Is it AI?" backlash. AI-generated human exercise form is often wrong. **Never** a testimonial or a before/after. |
@@ -233,9 +235,11 @@ and feet, long tail with a dark tuft; wears charcoal athletic shorts with a thin
 KABIR — an original fictional AI-generated fitness host (not a real person): Indian man,
 about 28, about 183 cm, very handsome with a warm friendly face, strong jawline, warm brown
 eyes, short textured black hair with a clean fade, neatly trimmed short beard, warm
-medium-brown skin with natural texture; lean athletic aesthetic physique around 11% body
-fat, broad shoulders, V-taper, defined chest and arms; wearing a fitted charcoal training
-t-shirt with a small electric-cyan lightning-bolt emblem, black tapered joggers, white
+medium-brown skin with natural texture; SHIRTLESS, showing a very well-defined aesthetic
+physique at about 8% body fat: chiseled six-pack abs, defined obliques and V-lines, broad
+full chest, round capped shoulders, defined arms with visible forearm veins, wide back with
+a strong V-taper; fitness-model build, not an extreme bodybuilder; wearing black tapered
+joggers with a thin electric-cyan side stripe and a small cyan lightning-bolt emblem, white
 training shoes.
 ```
 
@@ -246,8 +250,9 @@ training shoes.
 | | |
 |---|---|
 | Sheet | [`characters/meera-realistic-female-sheet.jpg`](characters/meera-realistic-female-sheet.jpg) |
-| Who | An original, **fictional**, AI-generated Indian woman, about 26, about 168 cm. Warm and bright: brown eyes, long dark wavy hair in a high ponytail. **Fit athletic hourglass**: toned shoulders and arms, toned core, narrow waist, strong glutes and legs. **Toned, not bulky.** |
-| Wardrobe | Charcoal high-neck sports bra plus high-waisted leggings with cyan piping and the bolt; white trainers. **Confident, athletic, non-suggestive posing.** |
+| Who | An original, **fictional**, AI-generated Indian woman, about 26, about 168 cm. Glamorous and warm: brown eyes, long dark wavy hair in a high ponytail. **Sculpted athletic hourglass**: toned defined shoulders and arms, visible abs and obliques, very narrow waist, strong rounded glutes, toned legs. **Toned, not bulky.** |
+| Wardrobe | **Short cropped** charcoal sports bra with a **low V-neckline** and thin straps, bare midriff, cyan piping and the bolt; high-waisted leggings; white trainers. Confident sportswear-campaign posing. |
+| Reach note | The image model refused "plunge neckline + cleavage" wording; the low-V cropped bra is as far as it went. Instagram and Facebook don't recommend "sexually suggestive" content to non-followers, so keep the most revealing cuts for paid placements, where you control delivery. |
 | Persona | "The confident gym big-sister." Not a medical expert. |
 | Use | Paid-ad A/B tests, **labelled as AI**. Not for the organic feed. |
 | Risks | Everything listed for Kabir, plus body-image scrutiny. Never imply this body is a 30-day result. Platforms limit reach on sexualised fitness content, so keep framing athletic. |
@@ -256,12 +261,13 @@ training shoes.
 ```
 MEERA — an original fictional AI-generated fitness host (not a real person): Indian woman,
 about 26, about 168 cm, beautiful with a warm friendly face, bright brown eyes, long
-dark-brown wavy hair in a high ponytail, warm light-brown skin with natural texture; fit
-athletic hourglass physique — toned shoulders and arms, toned core with a narrow waist,
-strong rounded glutes and toned legs, feminine and toned, not bulky; wearing a charcoal
-high-neck sports bra and matching high-waisted leggings with thin electric-cyan piping and
-a small cyan lightning-bolt emblem, white training shoes; confident, natural,
-non-provocative athletic posing.
+dark-brown wavy hair in a high ponytail, glowing warm light-brown skin; very fit sculpted
+athletic hourglass physique — toned defined shoulders and arms, visible abs and obliques,
+narrow waist, strong rounded glutes, toned athletic legs; feminine and toned, not bulky;
+wearing a short cropped charcoal sports bra with a low V-neckline and thin straps, bare toned
+midriff, thin electric-cyan piping and a small cyan lightning-bolt emblem, matching charcoal
+high-waisted leggings with cyan side piping, white training shoes; confident sportswear-
+campaign posing.
 ```
 
 ---

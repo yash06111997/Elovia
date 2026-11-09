@@ -45,7 +45,8 @@ Codex. Researched 9 Nov 2026.
 ## Start this week (Week 0: 10–15 Nov)
 
 - [ ] Claim the handles and set up both profiles, **including Instagram's "AI-generated profile" label** (`06` §1)
-- [ ] Regenerate the **golden sheets with shoes** (canonical v2) and lock them (`02` §2.2)
+- [x] Golden sheets regenerated with shoes and more muscle definition (v2.1, 9 Nov)
+- [ ] Optional: regenerate the Level 1/2/3 lineup to match the more-defined Level 3 bodies (`02` §2.3)
 - [ ] Lock the narrator voice in ElevenLabs (EN, then Hinglish)
 - [ ] Install the Remotion plugin, plus fal *or* Creative Claw, plus ElevenLabs (`08` §2)
 - [ ] Produce D01–D07 with the template before posting D01 (`04`)
