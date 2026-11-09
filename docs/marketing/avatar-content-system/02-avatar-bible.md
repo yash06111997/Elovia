@@ -1,182 +1,293 @@
-# 02 · Avatar bible: meet Elo
+# 02 · Avatar bible v2: the Elovia cast
 
-Elo is the one character every video is built around. This file is the source of truth for how Elo
-looks, sounds, behaves and never behaves. If a generated clip contradicts this file, the clip is
-wrong. Regenerate it; don't adjust the bible to fit.
+This file is the source of truth for every character: how each one looks, moves, sounds and is
+prompted. If a generated clip contradicts it, the clip is wrong; regenerate.
 
----
+**v2 (9 Nov 2026)** replaces the v1 "tiny spark" Elo. After the Swolo teardown (`07`), the main
+avatar is now a full-body character, so it can *do* the moves. The v1 scan beam survives as
+Elo's signature move.
 
-## 1. The decision: why a stylized mascot, not a realistic AI human
+Character sheets were generated with Figma AI (gpt-image-2.5) and live in [`characters/`](characters/):
 
-| Option | Reach potential | Trust / compliance risk | Consistency over 30+ videos | Owned IP | Verdict |
-|---|---|---|---|---|---|
-| **Hyper-real AI human** ("AI coach", "AI girl who lost 10 kg") | High at first; "is it AI?" debate drives comments | **High.** Reads as a fake testimonial (FTC fake-review rule in the US, ASCI disclosure rules in India). Backlash once people notice, and a health app can't afford to look deceptive | Medium: faces drift between generations | No. Looks like every AI-UGC ad | ❌ |
-| **Talking food / talking organs only** (no host) | High. Proven format | Low | Medium: the cast keeps changing | Weak. Nobody follows a samosa; viewers remember the video, not the account | ⚠️ Use as the *supporting cast* |
-| **Stylized branded mascot as host + talking food/body cast** | High. You get the proven format plus a recurring face | Low: obviously animated, so nobody is deceived | **High.** Simple shapes and two colours stay on-model | **Yes.** Elo is Elovia's character | ✅ **Go with this** |
-
-The rule that makes this work: **Elo is the AI that lives inside Elovia.** When Elo scans a food,
-the card that pops up *is* the app's scan result, so every video ends inside the product without a
-hard-sell CTA. Most viral AI-character accounts get views and no installs because the product
-isn't part of the story. With Elo, the product is how the story resolves.
-
----
-
-## 2. Identity card
-
-| | |
+| File | What it is |
 |---|---|
-| **Name** | Elo (say "EE-lo"). Hearing "Elo" over and over primes "Elovia". |
-| **What Elo is** | The spark from the Elovia logo, come to life. Elo lives in your phone and climbs out when you're about to make a questionable food decision. |
-| **Pronouns** | "Elo" or "it". Elo isn't a person and isn't gendered. |
-| **One-line personality** | Your brutally honest best friend, who happens to know the calories in everything. |
-| **Core tension** | Elo loves you and judges your plate. It never judges your body. |
-| **Superpower** | The **Scan**: eyes flash, a blue beam sweeps the food, a calorie card pops up with a *zzt-ding*. |
-| **Weakness (comedy engine)** | Elo is tiny, about 15 cm tall. Food is bigger than Elo, and every samosa is a boss fight. |
-| **Catchphrase (EN)** | "Scan it first." |
-| **Catchphrase (Hinglish)** | "Pehle scan, phir khana." |
-| **Sign-off** | Two-finger salute plus a crackle of light: "Elo out." ⚡ |
+| [`elo-male-sheet.jpg`](characters/elo-male-sheet.jpg) | Elo: turnaround (front, ¾, side, ¾ back, back) plus 6 eye expressions |
+| [`ela-female-sheet.jpg`](characters/ela-female-sheet.jpg) | Ela: turnaround plus 6 eye expressions |
+| [`elo-ela-level-up.jpg`](characters/elo-ela-level-up.jpg) | Elo and Ela at Level 1, 2 and 3 |
+| [`style-frame-wall-sit.jpg`](characters/style-frame-wall-sit.jpg) | A sample 9:16 frame: wall sit with the anatomy overlay |
+| [`raja-lion-sheet.jpg`](characters/raja-lion-sheet.jpg) | Raja, the aspirational lion: turnaround plus 5 expressions |
+| [`kabir-realistic-male-sheet.jpg`](characters/kabir-realistic-male-sheet.jpg) | Kabir, the realistic male host |
+| [`meera-realistic-female-sheet.jpg`](characters/meera-realistic-female-sheet.jpg) | Meera, the realistic female host |
+
+The Figma file holding all of them is "Elovia – Avatar Character Sheets":
+https://www.figma.com/design/iJPbaH31wlsZ53dEXhUuCQ
 
 ---
 
-## 3. Visual spec (keep it identical in every frame)
+## 0. Which avatar to go with
 
-Fewer details means AI tools keep the character on-model. Every extra accessory is another thing
-that can drift, so this spec stays short.
+| | **Elo and Ela** (stylised duo) | **Raja** (lion) | **Kabir** (realistic man) | **Meera** (realistic woman) |
+|---|---|---|---|---|
+| Relatability ("that's me") | ★★★★★ No face, so anyone projects onto them; Level 1 body = everyone's start | ★★★ "I'm a lion" identity, but not "me" | ★★★ Aspirational more than relatable | ★★★ Aspirational more than relatable |
+| Aspiration | ★★★★ (Level 3) | ★★★★★ | ★★★★★ | ★★★★★ |
+| Appeal to women | ★★★★★ Ela is built for them | ★★ (add "Rani", a lioness, to fix this) | ★★★ | ★★★★ |
+| Consistency over 30+ videos | ★★★★★ Simple shapes, one colour | ★★★ Fur and mane drift | ★★★ Faces drift | ★★★ Faces drift |
+| Trust and compliance risk | **Low.** Obviously fictional | **Low** | **High.** AI human: labels, "is it AI?" backlash, FTC/ASCI | **High.** Same, plus body-image scrutiny |
+| Owned, distinctive IP | ★★★★★ | ★★★★ | ★★ Looks like every AI influencer | ★★ |
+| Exercise demos accurate? | Good (stylised form, easy to check) | OK | ⚠️ AI-generated human form errors are easy to spot and look wrong | ⚠️ Same |
+
+### Recommendation
+
+- **Lead with Elo and Ela.** They're the main characters of every series.
+- **Use Raja as the hype character:** occasional "Raja Mode" motivation and challenge-launch
+  episodes. He's the "who you feel like at Level 3" alter ego.
+- **Keep Kabir and Meera for paid-ad A/B tests only,** always labelled as AI. If you want real
+  human faces in the organic feed, use **real people**: the founder, real trainers, real users.
+  Research shows realistic AI influencers lose engagement once audiences notice, and platforms now
+  limit unlabelled AI profiles (see `01`).
+
+---
+
+## 1. Rules shared by every character
 
 | Element | Spec |
 |---|---|
-| **Silhouette** | Rounded gumdrop/bean body. Head and body are one shape, no neck. About as wide as it is tall. |
-| **Crest** | One lightning-bolt-shaped tuft on top, leaning forward like the runner in the logo. Brighter white-blue at the tip. |
-| **Colour** | Body **#00D4FF** (Elovia electric blue) with a soft inner glow. Never another colour. |
-| **Eyes** | Large, round, white, with simple black pupils. They glow brighter during a Scan. |
-| **Mouth** | Small, dark, simple. It only opens when Elo speaks, which keeps lip-sync clean. |
-| **Arms / legs** | Short, stubby, rounded. No visible fingers, just mitten hands. |
-| **Accessories (only two)** | (1) Black wrist sweatband with a tiny glowing display that shows numbers. (2) White running shoes with a blue sole. |
-| **Material** | Matte soft vinyl, like a designer toy, with subtle subsurface glow. No fur, no glitter, no texture noise. |
-| **Scale** | About 15 cm tall in real-world scenes. Elo stands on plates, counters and phone screens. |
-| **Light** | Elo casts a faint blue glow on nearby surfaces. In dark scenes Elo is the main light source. |
-| **Seasonal swaps** | One small accessory at a time: a marigold garland in wedding season, a scarf in winter, a party hat at New Year. Never a full costume. |
-
-### Visual "never" list
-
-- Never realistic human skin, a human face or human hands
-- Never a different body colour, an extra outfit, or more than one seasonal accessory
-- Never real brand logos (no Maggi, Parle-G, Coca-Cola, McDonald's, Starbucks). Use generic food.
-- Never shown eating junk with a "cheat day" message, drinking alcohol or smoking
-- Never a "before/after" body. Elo has no body to transform, and that's deliberate.
+| **Brand accent** | Electric cyan **`#00D4FF`**: side stripes, the bolt emblem, wrist wraps, glow lines |
+| **Emblem** | A small cyan **lightning bolt** (from the Elovia logo) on the thigh, hip or chest. Nothing else is branded. |
+| **Outfit base** | Charcoal **`#2A2A3A`** to near-black athletic wear |
+| **World** | Charcoal background **`#0A0A0F`**, cyan rim light, a glowing cyan floor line. Deliberately the opposite of Swolo's mint. |
+| **Never** | Real brand logos, Swolo's teal/mint palette or faceless-hulk silhouette, nudity or suggestive posing, medical credentials, "I lost X kg" claims |
 
 ---
 
-## 4. Personality and voice
+## 2. ELO and ELA: the main cast
 
-### Behaviour sliders
+### 2.1 Identity
 
-| Trait | Level | What it looks like |
+| | **ELO** | **ELA** |
 |---|---|---|
-| Honest | 10/10 | Says the number out loud, every time |
-| Savage | 7/10 | Roasts **habits and foods**, never bodies or people |
-| Caring | 8/10 | Every roast ends with a swap or a "you've got this" |
-| Dramatic | 8/10 | Faints at big numbers, gasps, slow-mo despair |
-| Preachy | 0/10 | Never lectures for more than one line |
+| Who | The guy who's starting from where you are | The girl who's starting from where you are |
+| One-liner | "Day 1 is for everyone." | "Strong, not bulky." |
+| Personality | Optimistic, slightly lazy at Level 1, determined, funny about his struggles | Focused, witty, competitive, celebrates small wins |
+| Relationship | Training partners and friendly rivals. They race each other's streaks, the same mechanic as Elovia's social challenges | |
+| Signature move | **The Scan.** Eyes flare, a cyan beam sweeps the food, a calorie card pops up | **The Streak Flex.** A bolt of light runs up her arm as the streak counter ticks up |
+| Sign-off | Two-finger salute plus an electric crackle | Thumbs-up plus a sparkle in the eye |
 
-### How Elo talks
+### 2.2 Visual spec (the "golden" design)
 
-- Short sentences of eight words or fewer.
-- Numbers first: "260. For ONE samosa." Not "Samosas are quite calorie-dense."
-- Always gives a way out: a swap, a portion ("half, HALF"), or a "log it and move on".
-- Hinglish: natural code-switching, urban and neutral. "Bhai" and "yaar" at most once per video.
-- Elo doesn't say "diet", "fat", "skinny", "cheat meal" or "guilt". It says "plan", "fuel", "log it" and "worth it?".
-
-### Voice casting (lock one voice per language and never change it)
-
-| | English (US/global) | Hinglish (India) |
+| Element | ELO | ELA |
 |---|---|---|
-| Timbre | Mid-high, bright, a little raspy. Not chipmunk-pitched. | The same timbre, so the character feels identical |
-| Delivery | Dry, fast, smirking. Comedic timing with a beat before the number. | Playful, quicker, punchier on the number |
-| Avoid | A cartoon squeak, a "corporate assistant" tone, an American-sitcom laugh track | An over-acted "Bollywood" accent, regional caricature |
+| Head | Smooth, rounded bean shape. No nose, no mouth, no ears, no hair | Same, plus a **sculpted high ponytail** in the same material |
+| Eyes | Two large **glowing white ovals**. All emotion comes from eye shape | Same |
+| Body material | Matte soft-touch vinyl, **deep electric blue `#1590C8`**, faint cyan inner glow along muscle edges | Same |
+| Physique (Level 3) | **Lean athletic aesthetic**: broad shoulders, V-taper, defined abs. A natural athlete, **not** a mass monster | **Toned athletic hourglass**: toned shoulders and arms, flat toned core, narrow waist, strong glutes and legs. **Lean and feminine, not bulky** |
+| Outfit | Charcoal shorts, thin cyan side stripe, small cyan bolt on the left thigh | Charcoal high-neck sports bra plus high-waisted leggings, thin cyan side stripe, cyan bolt on the left hip |
+| Shoes | **Black training shoes with cyan soles** (canonical from v2; the first turnaround sheets show bare feet, so regenerate the golden set with shoes) | Same |
+| Hands | Simple rounded hands, 4 fingers, no detail | Same |
+| Scale | Human-size in the gym world. Can shrink to 15 cm for food-scan scenes, a running gag | Same |
 
-How to build the voice: design one voice in a voice-design tool and save it as "Elo-EN". Make
-"Elo-HI" from the same base. Save both IDs in your production sheet. Every video uses these two
-IDs, nothing else. See `05-production-pipeline.md`.
+### 2.3 The level-up system (the relatability engine)
 
----
+Swolo's hulk is maximum-swole from Day 1. **Elo and Ela start where the viewer is.**
 
-## 5. The supporting cast
-
-The cast stays small on purpose. Each recurring character needs its own reference sheet, and more
-characters means more drift. Start with these seven; add more only after one has earned a series.
-
-### The Food Gang (antagonists)
-
-| Character | Look | Personality | Signature line | Market |
+| Level | When it's used | ELO | ELA | Eyes and glow |
 |---|---|---|---|---|
-| **Samosa Bhai** | Golden samosa, tiny black sunglasses, gold chain | Smooth-talking dealer | "Ek aur lele, kya farak padta hai?" | India |
-| **The Jamun Twins** | Two glossy gulab jamuns, always together, dripping syrup | Sweet-talking manipulators | "We're *only* 175. Combined." | India |
-| **2AM Noodles** | Steaming bowl of generic instant noodles, hoodie hood made of steam | Enabler, only shows up at night | "Nobody's watching…" | Both |
-| **Butter Naan** | Puffy naan, shiny with butter, flexing | Gym-bro gaslighter | "I'm basically protein, bro." | India |
-| **Holiday Pie** | Slice of pie wearing a tiny cardigan | Passive-aggressive relative | "Your aunt *made* me." | US |
+| **Level 1: "Day 1"** | Start of every 30-day video; "you right now" | Soft belly, rounded shoulders, slight slouch | Ordinary body, slight slouch | Tired, half-closed eyes; dim floor line |
+| **Level 2: "Day 30"** | End of a 30-day video | Upright, firmer core, some shoulder and arm definition | Upright, toned, firmer core | Determined eyes; brighter floor line |
+| **Level 3: "Day 90+"** | Consistency and milestone episodes, Raja Mode, the profile picture | Lean athletic V-taper, abs | Toned athletic hourglass | Proud eyes; full glowing floor line |
 
-### The Body Squad (allies, sometimes victims)
+**Honesty rule:** a 30-day video only ever goes **Level 1 → Level 2**, and Level 2 is a *modest*,
+believable change. Put "illustrative" in the corner. Level 3 is reserved for "90 days / a year of
+consistency". Being honest about results is the brand; Swolo's implied transformations are the
+contrast.
 
-| Character | Look | Personality | Running gag |
-|---|---|---|---|
-| **Glutes** | Two round, sleepy pillow-like characters in an eye mask | Permanently asleep | Only wake up for squats, and complain |
-| **Your Liver** | Tired office-worker organ, tie askew, coffee mug | Overworked accountant | Files "complaints" after festivals |
+**Product tie-in:** the levels mirror Elovia's achievements and streaks. "Elo just hit Level 2.
+Where's your streak?"
 
-### What humans look like
+### 2.4 Expression set (eyes only)
 
-**There is no on-screen human character.** The viewer is "You": first-person POV, with only hands,
-a plate and a phone in frame. That avoids the fake-human problem and makes every video read as
-"this is me". Real hands and real phone screen recordings are encouraged. Shoot them on your own
-phone, it's quick, and they help the clip read as real.
+| Emotion | Eye shape |
+|---|---|
+| Neutral | Two vertical ovals |
+| Determined | Ovals slanted inward (angry-focused) |
+| Happy | Upturned arcs ^ ^ |
+| Shocked | Wide perfect circles, a little bigger |
+| Exhausted | Half-closed, flat on top |
+| Proud | Closed happy arcs plus a small sparkle |
+| *(add as needed)* Suspicious | One eye narrowed |
+| *(add as needed)* In pain | Squeezed > < shapes with sweat drops |
+
+### 2.5 Pose library (generate once, reuse as start frames)
+
+Idle stand · wall sit · plank · side plank · dead hang · squat (bottom) · push-up (top and bottom) ·
+glute bridge · Surya Namaskar sequence (12 poses) · walking · stairs · the Scan (beam from the eyes) ·
+the Faint (falling back at a big calorie number) · the Streak Flex · the thumbs-up ending ·
+tired-on-the-sofa (Level 1 intro) · phone in hand (app screen moment).
+
+### 2.6 Voice
+
+- **Elo and Ela don't speak** (no mouth, so **no lip sync**: faster, cheaper and more consistent production).
+- **A narrator, "the Elovia Coach",** speaks to *you* in second person ("Week one, your legs shake.").
+  - **EN:** warm, confident, quick, slightly playful.
+  - **Hinglish:** the same energy, with natural code-switching.
+  - Lock **one voice ID per language** in ElevenLabs and never change it.
+- **Character sounds only:** effort grunts, a "hmph", a gasp, the *zzt-ding* of the Scan, the electric crackle.
+
+### 2.7 Copy-paste prompt blocks
+
+Paste the character block **word for word** into every image or video prompt, then add the scene.
+
+**ELO block:**
+```
+ELO — an original stylized 3D fitness mascot: a faceless humanoid with a smooth rounded
+bean-shaped head (no nose, no mouth, no ears, no hair) and two large glowing white oval
+eyes; body of smooth matte soft-touch vinyl in deep electric blue (#1590C8) with a faint
+cyan inner glow along the muscle edges; [LEVEL] physique; simple rounded hands; wears
+charcoal athletic shorts with a thin bright cyan (#00D4FF) side stripe and a small cyan
+lightning-bolt emblem on the left thigh, and black training shoes with cyan soles.
+```
+
+**ELA block:**
+```
+ELA — an original stylized 3D female fitness mascot: a faceless humanoid with a smooth
+rounded head (no nose, no mouth, no ears), two large glowing white oval eyes and a
+sculpted high ponytail of the same material; body of smooth matte soft-touch vinyl in
+deep electric blue (#1590C8) with a faint cyan inner glow; [LEVEL] physique; simple
+rounded hands; wears a charcoal high-neck sports bra and charcoal high-waisted leggings
+with a thin bright cyan (#00D4FF) side stripe and a small cyan lightning-bolt emblem on
+the left hip, and black training shoes with cyan soles.
+```
+
+**[LEVEL] fill-ins:**
+- `L1` → `an ordinary everyday body with a soft belly, rounded shoulders and slightly slouched posture`
+- `L2` → `a noticeably fitter body with upright posture, a firmer core and some shoulder and arm definition`
+- `L3 Elo` → `a lean athletic aesthetic physique with broad shoulders, V-taper and defined abs, a natural athlete, not a bodybuilder`
+- `L3 Ela` → `a toned athletic hourglass physique with toned shoulders and arms, a flat toned core, narrow waist and strong legs, lean and feminine, not bulky`
+
+**World block:**
+```
+Seamless dark charcoal background (#0A0A0F), soft electric-cyan rim light, a faint glowing
+cyan floor line, high-end 3D render, cinematic lighting, vertical 9:16, leave the top third
+clear for captions, no text, no watermark.
+```
+
+**Anatomy overlay add-on:**
+```
+A semi-transparent glowing medical-illustration overlay shows the [MUSCLES] highlighted in
+warm orange-red inside the body, like an x-ray anatomy view.
+```
+
+**Negative list:** `no mouth, no nose, no hair on Elo, no teal or mint colours, no logos,
+no text, no extra fingers, no realistic human skin, no bodybuilder mass on Ela`.
+
+### 2.8 Consistency checklist (every 10th video, compare against the golden sheets)
+
+- [ ] Body colour `#1590C8`, not teal, not cyan, not navy
+- [ ] Eyes are white ovals; no mouth has appeared
+- [ ] Ela's ponytail is present; Elo has no hair
+- [ ] Bolt emblem on the correct side; cyan stripe on the shorts or leggings
+- [ ] Level matches the script (no Level 3 bodies in a "Day 1" shot)
+- [ ] Ela isn't drifting towards bulky; Elo isn't drifting towards a hulk
 
 ---
 
-## 6. Signature moments (the brand's repeatable "beats")
+## 3. RAJA: the aspirational lion (hype character)
 
-These are the moments viewers will recognise and wait for. Put at least one in every video.
+| | |
+|---|---|
+| Sheet | [`characters/raja-lion-sheet.jpg`](characters/raja-lion-sheet.jpg) |
+| Concept | The lion everyone secretly thinks they are. *Raja* means "king" in Hindi and reads fine globally. |
+| Look | A humanoid lion in high-end animated-feature 3D. **Full golden-amber mane with bronze tips**, amber eyes, short golden fur over **heroic muscle definition** (broad shoulders, big chest and arms, V-taper, abs). Lion-paw hands and feet, tail with a dark tuft. **Charcoal shorts with a cyan stripe and bolt, cyan wrist wraps.** |
+| Personality | Calm, regal confidence. He doesn't shout; he roars once, at the end. He believes in you more than you do. |
+| Voice | Deep, warm, unhurried. **Can speak** (he has a mouth), but use it sparingly; mostly narrator plus a roar. |
+| Use | "Raja Mode" episodes: challenge launches, milestone celebrations (Day 30 completions), "the version of you at Level 3". About 1 in 10 videos (3 of the first 30). |
+| Female counterpart (optional) | **RANI**, a lioness. Sleek, toned and athletic, not bulky; same outfit system with leggings. Add her if Raja tests well with women. |
+| Watch out | Fur and mane drift between generations, so use image-to-video from the golden sheet, never text-to-video. Keep it heroic, not sexualised. Avoid any resemblance to famous animated lions: no "Simba", no "Mufasa", no "Sher Khan". |
 
-1. **The Scan.** Eyes flash, blue beam, *zzt-ding*, a calorie card pops up. The card copies the real
-   Elovia scan result (dark card, #00D4FF accent, Inter Bold numbers). In the app, the AI photo scan
-   is a **Pro** feature, so Elo's signature move is also the best advert for upgrading. Never call it free.
-2. **The Faint.** For any number over about 400 kcal, Elo falls backwards in slow motion with a
-   wristband *beep-beep-beep*.
-3. **The Bargain.** Elo holds up mitten hands: "Half. HALF." The food negotiates.
-4. **The Wristband Flash.** The tiny display on Elo's wrist shows the running total for the day.
-5. **Elo out.** A two-finger salute and a crackle. Use it as the loop point at the end.
+**RAJA block:**
+```
+RAJA — an original anthropomorphic lion fitness mascot in high-end 3D animated feature film
+style: a majestic humanoid lion standing upright, full flowing golden-amber mane with
+darker bronze tips, intense friendly amber eyes, strong noble muzzle, short golden fur over
+clearly visible heroic muscle definition (very broad shoulders, big chest and arms, V-taper,
+defined abs, powerful legs — aesthetic superhero proportions, not grotesque), lion-paw hands
+and feet, long tail with a dark tuft; wears charcoal athletic shorts with a thin cyan
+(#00D4FF) side stripe and small cyan lightning-bolt emblem, and cyan wrist wraps.
+```
 
 ---
 
-## 7. Do / Don't for anyone writing Elo scripts
+## 4. KABIR: realistic male host (ads and A/B tests only)
+
+| | |
+|---|---|
+| Sheet | [`characters/kabir-realistic-male-sheet.jpg`](characters/kabir-realistic-male-sheet.jpg) |
+| Who | An original, **fictional**, AI-generated Indian man, about 28, about 183 cm. Handsome and warm: strong jaw, brown eyes, textured black hair with a fade, short trimmed beard. **Lean aesthetic physique, about 11% body fat**: fit and attainable, not extreme. |
+| Wardrobe | Fitted charcoal training tee with the cyan bolt, black joggers, white trainers. For physique shots: a charcoal tank. |
+| Persona | "The friend who got fit and explains it simply." Never a doctor, dietitian or certified coach. |
+| Use | Paid-ad A/B tests against Elo and Ela, **labelled as AI**. Not for the organic feed. |
+| Risks | Faces drift (use one reference image, and face-lock or image-to-video only). "Is it AI?" backlash. AI-generated human exercise form is often wrong. **Never** a testimonial or a before/after. |
+
+**KABIR block:**
+```
+KABIR — an original fictional AI-generated fitness host (not a real person): Indian man,
+about 28, about 183 cm, very handsome with a warm friendly face, strong jawline, warm brown
+eyes, short textured black hair with a clean fade, neatly trimmed short beard, warm
+medium-brown skin with natural texture; lean athletic aesthetic physique around 11% body
+fat, broad shoulders, V-taper, defined chest and arms; wearing a fitted charcoal training
+t-shirt with a small electric-cyan lightning-bolt emblem, black tapered joggers, white
+training shoes.
+```
+
+---
+
+## 5. MEERA: realistic female host (ads and A/B tests only)
+
+| | |
+|---|---|
+| Sheet | [`characters/meera-realistic-female-sheet.jpg`](characters/meera-realistic-female-sheet.jpg) |
+| Who | An original, **fictional**, AI-generated Indian woman, about 26, about 168 cm. Warm and bright: brown eyes, long dark wavy hair in a high ponytail. **Fit athletic hourglass**: toned shoulders and arms, toned core, narrow waist, strong glutes and legs. **Toned, not bulky.** |
+| Wardrobe | Charcoal high-neck sports bra plus high-waisted leggings with cyan piping and the bolt; white trainers. **Confident, athletic, non-suggestive posing.** |
+| Persona | "The confident gym big-sister." Not a medical expert. |
+| Use | Paid-ad A/B tests, **labelled as AI**. Not for the organic feed. |
+| Risks | Everything listed for Kabir, plus body-image scrutiny. Never imply this body is a 30-day result. Platforms limit reach on sexualised fitness content, so keep framing athletic. |
+
+**MEERA block:**
+```
+MEERA — an original fictional AI-generated fitness host (not a real person): Indian woman,
+about 26, about 168 cm, beautiful with a warm friendly face, bright brown eyes, long
+dark-brown wavy hair in a high ponytail, warm light-brown skin with natural texture; fit
+athletic hourglass physique — toned shoulders and arms, toned core with a narrow waist,
+strong rounded glutes and toned legs, feminine and toned, not bulky; wearing a charcoal
+high-neck sports bra and matching high-waisted leggings with thin electric-cyan piping and
+a small cyan lightning-bolt emblem, white training shoes; confident, natural,
+non-provocative athletic posing.
+```
+
+---
+
+## 6. Supporting cast (for food and body episodes)
+
+These carry over from v1. They appear *with* Elo and Ela, never on their own.
+
+| Character | Look | Use |
+|---|---|---|
+| **Samosa Bhai** | Golden samosa, tiny black sunglasses, gold chain | Smooth-talking food villain (IN) |
+| **The Jamun Twins** | Two glossy gulab jamuns dripping syrup | Wedding and festival episodes (IN) |
+| **2AM Noodles** | A bowl of generic instant noodles with a steam "hood" | Late-night cravings (both markets) |
+| **Butter Naan** | Puffy, buttery, flexing | "I'm basically protein" gym-bro jokes (IN) |
+| **Holiday Pie** | A pie slice in a cardigan | US holidays |
+| **The Body Squad** | Glutes (sleepy pillows), Liver (tired office worker) | Body-reaction comedy |
+
+---
+
+## 7. Do and don't (every character)
 
 | Do | Don't |
 |---|---|
-| Use calorie numbers from the Elovia food database (they match what the app shows) | Quote numbers you can't trace, or claim exact precision ("approx." is fine) |
-| Roast the food, the habit or the situation | Roast the viewer's body, weight or appearance |
-| Give a swap or a portion every time | End on shame |
-| Keep health statements general and true ("protein keeps you fuller for longer") | Make medical or weight-loss promises ("lose 5 kg in 2 weeks") |
-| Show the real app screen for 1–2 seconds | Fake app features that aren't shipped yet |
-| Label videos as AI-generated using each platform's toggle | Present Elo or any AI clip as a real person or real testimonial |
-| Keep Elo a **friend with a calculator** | Make Elo a doctor, dietitian or "expert". Since July 2026 YouTube treats AI personas posing as health experts as unmonetisable, and India's NMC and ASCI flag them too. For technical topics, bring in a real, qualified person on screen with their credentials. |
-| Let Elo talk about itself as AI ("I live in your phone") | Let Elo claim results ("I lost 5 kg with Elovia"). Elo has no body and no results, and AI testimonials are banned under the US FTC rule. |
-
----
-
-## 8. Why the evidence points to this design (Nov 2026)
-
-- **Talking food and object characters are the format that's working.** "AI food yelling at you"
-  clips reached millions of views per post from December 2025 to January 2026. "Fruit Love Island"
-  gained about 3 million TikTok followers in 9–10 days in March 2026. **No calorie or nutrition app
-  has claimed the format yet.** Elo plus the Food Gang does.
-- **Hyper-real AI humans are fading and risky.** A trending AI "French guy" saw engagement drop by
-  about half within four weeks once people realised he was AI. Faked weight-loss transformation
-  accounts were removed by TikTok. GLP-1 apps were exposed by the press for "sobbing AI women"
-  slideshows. Human-like AI fitness influencers in India are losing followers.
-- **Cartoon characters lose less trust than realistic AI people.** A 2026 study found a cartoon-like
-  virtual influencer was rated more trustworthy than a human-like one. The harshest audience backlash
-  goes to realistic AI *people* in emotional ads; mascots get teased rather than resented.
-- **But installs come from real people and real product moments.** Cal AI's growth came from real
-  creators scanning real plates, with the calorie reveal in the first seconds. That's why every Elo
-  video shows the real app screen, and why Day 20 brings in the real founder.
-
-Detail and sources: `01-what-is-working-now.md`.
+| Use calorie numbers from the Elovia app, with "~" and the portion | Make medical claims, promise weight loss, say "detox" or "cure" |
+| Show honest 30-day changes (Level 1 → 2) | Show Level 3 bodies as a 30-day result |
+| Put a source line on screen for every science claim | Say "research shows" without citing anything |
+| Label everything as AI (platform toggles plus an on-screen tag) | Present any character as a real person, a customer or a credentialed expert |
+| Roast foods and habits | Roast bodies |
+| Show the real app for 1–2 seconds | Show features that aren't shipped. The AI photo scan is **Pro**, so never call it free |

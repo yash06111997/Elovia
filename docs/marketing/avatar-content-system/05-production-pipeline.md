@@ -2,6 +2,13 @@
 
 How one person can make about one Elo video a day without Elo drifting off-model.
 
+> **v2 update (9 Nov 2026).** The character is now the full-body **Elo and Ela** duo from
+> `02-avatar-bible.md`. Use the **v2 prompt blocks and golden sheets** in `characters/`, not the v1
+> "15 cm spark" block in §2 below. Because they have no mouths, **dialogue shots and lip sync are
+> gone**: a narrator voice plus image-to-video for the movement beats is all you need. **Final
+> assembly is the Remotion template** (`marketing/video-studio/`), driven from Claude Code or Codex
+> as described in **`08-animation-toolchain.md`**. Use CapCut only for quick manual fixes.
+
 > **Tool landscape as of 9 Nov 2026.** AI video tools change monthly. Prices and limits below
 > come from vendor pages and third-party reviews gathered on that date; several are single-source.
 > **Check the price on each vendor's own page before you subscribe.** Re-check this file every

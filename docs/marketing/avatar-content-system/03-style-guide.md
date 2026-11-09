@@ -5,6 +5,27 @@ off**, and every video should feel like part of the same show.
 
 ---
 
+## v2 additions: the "30 days" format (these win where they conflict with older sections)
+
+The Remotion template in `marketing/video-studio/` implements all of this; see
+`characters/demo-elo-wall-sit.mp4`.
+
+| Element | Spec |
+|---|---|
+| **Captions** | **One word at a time**, Inter Black (900), about 130px, centred at y≈300. White, with key words in **cyan `#00D4FF`**. Lowercase. Pops in on each word. |
+| **Day counter** | Top-left pill `DAY 07`, with cyan text on charcoal. Counts up within each beat. |
+| **Level badge** | Top-right pill `LV 1` / `LV 2`, charcoal text on cyan. Changes from Level 1 to 2 only at Week 4. |
+| **30-day progress bar** | A thin bar at y≈1450 (above the bottom UI safe zone) with a glowing cyan fill and `day / 30`. **This replaces Swolo's big faint "Week One" lettering.** |
+| **Series sticker** | Top-left pill above the day counter, `#FF6B35`, for example `30 DAYS · LEGS`. |
+| **Annotation colours** | Pain or strain glow `#FF3D71` · movement arrows `#00D4FF` · posture and measurement lines `#FFD600` · "win" ticks `#00E676` · **anatomy muscles: warm orange-red, semi-transparent "x-ray" overlay** (see `characters/style-frame-wall-sit.jpg`) |
+| **Comparison** | `DAY 1` (grey) vs `DAY 30` (cyan), with the Level 1 and Level 2 characters side by side. Always marked "illustrative". |
+| **Disclosure** | `AI character · illustrative`, always on, bottom-left. |
+| **Source line** | Small grey text under the progress bar on any beat that makes a science claim. |
+| **End card** | A charcoal card with a glowing cyan bolt, "Day 1 starts today.", the challenge CTA, and "Track every rep · streaks · PRs". |
+| **Voice** | The "Elovia Coach" narrator speaks in second person. Elo and Ela have no mouth, so there's no lip sync. |
+
+---
+
 ## 1. Technical specs
 
 | | Spec |

@@ -1,9 +1,8 @@
 # 01 · What's working right now (research as of 9 Nov 2026)
 
-> **Read this first.** The avatar and videos you were looking at didn't come through with the
-> request, so this is a breakdown of the **format families** going viral right now, not of that
-> particular account. To get a teardown of their exact videos, paste the profile link plus 3–5
-> video links (or screenshots, captions and view counts) and run the template at the bottom of this file.
+> **Update (9 Nov 2026):** the account in question is **Swolo (@swolotips)**. Its full teardown
+> is in **`07-swolo-teardown.md`**. This file stays as the wider market scan of what's working across
+> AI-character formats.
 
 **Confidence labels** used below:
 - **[A]** credible press or primary source
