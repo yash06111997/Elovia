@@ -16,8 +16,8 @@ Character sheets were generated with Figma AI (gpt-image-2.5) and live in [`char
 | [`elo-ela-level-up.jpg`](characters/elo-ela-level-up.jpg) | Elo and Ela at Level 1, 2 and 3 |
 | [`style-frame-wall-sit.jpg`](characters/style-frame-wall-sit.jpg) | A sample 9:16 frame: wall sit with the anatomy overlay |
 | [`raja-lion-sheet.jpg`](characters/raja-lion-sheet.jpg) | Raja, the aspirational lion: turnaround plus 5 expressions |
-| [`kabir-realistic-male-sheet.jpg`](characters/kabir-realistic-male-sheet.jpg) | Kabir, the realistic male host |
-| [`meera-realistic-female-sheet.jpg`](characters/meera-realistic-female-sheet.jpg) | Meera, the realistic female host |
+| [`oliver-realistic-male-sheet.jpg`](characters/oliver-realistic-male-sheet.jpg) | Oliver, the realistic British male host |
+| [`mila-realistic-female-sheet.jpg`](characters/mila-realistic-female-sheet.jpg) | Mila, the realistic Russian female host |
 
 The Figma file holding all of them is "Elovia – Avatar Character Sheets":
 https://www.figma.com/design/iJPbaH31wlsZ53dEXhUuCQ
@@ -26,7 +26,7 @@ https://www.figma.com/design/iJPbaH31wlsZ53dEXhUuCQ
 
 ## 0. Which avatar to go with
 
-| | **Elo and Ela** (stylised duo) | **Raja** (lion) | **Kabir** (realistic man) | **Meera** (realistic woman) |
+| | **Elo and Ela** (stylised duo) | **Raja** (lion) | **Oliver** (realistic British man) | **Mila** (realistic Russian woman) |
 |---|---|---|---|---|
 | Relatability ("that's me") | ★★★★★ No face, so anyone projects onto them; Level 1 body = everyone's start | ★★★ "I'm a lion" identity, but not "me" | ★★★ Aspirational more than relatable | ★★★ Aspirational more than relatable |
 | Aspiration | ★★★★ (Level 3) | ★★★★★ | ★★★★★ | ★★★★★ |
@@ -41,7 +41,7 @@ https://www.figma.com/design/iJPbaH31wlsZ53dEXhUuCQ
 - **Lead with Elo and Ela.** They're the main characters of every series.
 - **Use Raja as the hype character:** occasional "Raja Mode" motivation and challenge-launch
   episodes. He's the "who you feel like at Level 3" alter ego.
-- **Keep Kabir and Meera for paid-ad A/B tests only,** always labelled as AI. If you want real
+- **Keep Oliver and Mila for paid-ad A/B tests only** (US/global placements), always labelled as AI. If you want real
   human faces in the organic feed, use **real people**: the founder, real trainers, real users.
   Research shows realistic AI influencers lose engagement once audiences notice, and platforms now
   limit unlabelled AI profiles (see `01`).
@@ -219,55 +219,58 @@ heroic, powerful and aesthetic, not grotesque; lion-paw hands and feet, long tai
 
 ---
 
-## 4. KABIR: realistic male host (ads and A/B tests only)
+## 4. OLIVER: realistic British male host (ads and A/B tests only)
 
 | | |
 |---|---|
-| Sheet | [`characters/kabir-realistic-male-sheet.jpg`](characters/kabir-realistic-male-sheet.jpg) |
-| Who | An original, **fictional**, AI-generated Indian man, about 28, about 183 cm. Handsome and warm: strong jaw, brown eyes, textured black hair with a fade, short trimmed beard. **Shirtless, very well-defined aesthetic physique, about 8% body fat**: chiseled six-pack, V-lines, full chest, capped shoulders, veiny forearms, wide back. A fitness model, not an extreme bodybuilder. |
-| Wardrobe | **Shirtless** with black tapered joggers (cyan side stripe and bolt) and white trainers. For explainer or talking shots, the fitted charcoal tee from the v1 sheet. |
-| Persona | "The friend who got fit and explains it simply." Never a doctor, dietitian or certified coach. |
-| Use | Paid-ad A/B tests against Elo and Ela, **labelled as AI**. Not for the organic feed. |
+| Sheet | [`characters/oliver-realistic-male-sheet.jpg`](characters/oliver-realistic-male-sheet.jpg) |
+| Who | An original, **fictional**, AI-generated British man (not a real person; should resemble no celebrity), about 28, about 185 cm. Handsome and warm: strong jaw, blue-grey eyes, short textured light-brown hair with a fade, light stubble, fair skin. **Shirtless, very well-defined aesthetic physique, about 8% body fat**: chiseled six-pack, V-lines, full chest, capped shoulders, veiny forearms, wide back. A fitness model, not an extreme bodybuilder. |
+| Wardrobe | **Shirtless** with black tapered joggers (cyan side stripe and bolt) and white trainers. For explainer shots, add a fitted charcoal tee with the bolt. |
+| Persona | "The mate from the gym who explains it simply." Never a doctor, dietitian or certified coach. |
+| Voice | A British English accent (neutral, friendly, southern-English). Lock the voice ID like the narrator's. |
+| Use | Paid-ad A/B tests against Elo and Ela, **labelled as AI**, best suited to **UK, US and global** placements. Not for the organic feed. |
+| Market fit | Elovia's organic plan is India-first; a British host will feel less "like me" to Indian viewers. Test him on the US/global account and in ads. |
 | Risks | Faces drift (use one reference image, and face-lock or image-to-video only). "Is it AI?" backlash. AI-generated human exercise form is often wrong. **Never** a testimonial or a before/after. |
 
-**KABIR block:**
+**OLIVER block:**
 ```
-KABIR — an original fictional AI-generated fitness host (not a real person): Indian man,
-about 28, about 183 cm, very handsome with a warm friendly face, strong jawline, warm brown
-eyes, short textured black hair with a clean fade, neatly trimmed short beard, warm
-medium-brown skin with natural texture; SHIRTLESS, showing a very well-defined aesthetic
-physique at about 8% body fat: chiseled six-pack abs, defined obliques and V-lines, broad
-full chest, round capped shoulders, defined arms with visible forearm veins, wide back with
-a strong V-taper; fitness-model build, not an extreme bodybuilder; wearing black tapered
+OLIVER — an original fictional AI-generated fitness host (not a real person, not resembling
+any celebrity): British man, about 28, about 185 cm, very handsome with a warm confident face,
+strong jawline, blue-grey eyes, short textured light-brown hair with a neat fade, light
+designer stubble, fair skin with natural texture; SHIRTLESS, showing a very well-defined
+aesthetic physique at about 8% body fat: chiseled six-pack abs, defined obliques and V-lines,
+broad full chest, round capped shoulders, defined arms with visible forearm veins, wide back
+with a strong V-taper; fitness-model build, not an extreme bodybuilder; wearing black tapered
 joggers with a thin electric-cyan side stripe and a small cyan lightning-bolt emblem, white
 training shoes.
 ```
 
 ---
 
-## 5. MEERA: realistic female host (ads and A/B tests only)
+## 5. MILA: realistic Russian female host (ads and A/B tests only)
 
 | | |
 |---|---|
-| Sheet | [`characters/meera-realistic-female-sheet.jpg`](characters/meera-realistic-female-sheet.jpg) |
-| Who | An original, **fictional**, AI-generated Indian woman, about 26, about 168 cm. Glamorous and warm: brown eyes, long dark wavy hair in a high ponytail. **Sculpted athletic hourglass**: toned defined shoulders and arms, visible abs and obliques, very narrow waist, strong rounded glutes, toned legs. **Toned, not bulky.** |
+| Sheet | [`characters/mila-realistic-female-sheet.jpg`](characters/mila-realistic-female-sheet.jpg) |
+| Who | An original, **fictional**, AI-generated Russian woman (not a real person; should resemble no celebrity), about 26, about 170 cm. Glamorous and warm: high cheekbones, grey-green eyes, long light-blonde hair in a high ponytail, fair skin. **Sculpted athletic hourglass**: toned defined shoulders and arms, visible abs and obliques, very narrow waist, strong rounded glutes, toned legs. **Toned, not bulky.** |
 | Wardrobe | **Short cropped** charcoal sports bra with a **low V-neckline** and thin straps, bare midriff, cyan piping and the bolt; high-waisted leggings; white trainers. Confident sportswear-campaign posing. |
+| Voice | English with a light Russian accent for US/global (keep it natural, not a caricature). Lock the voice ID. |
 | Reach note | The image model refused "plunge neckline + cleavage" wording; the low-V cropped bra is as far as it went. Instagram and Facebook don't recommend "sexually suggestive" content to non-followers, so keep the most revealing cuts for paid placements, where you control delivery. |
-| Persona | "The confident gym big-sister." Not a medical expert. |
-| Use | Paid-ad A/B tests, **labelled as AI**. Not for the organic feed. |
-| Risks | Everything listed for Kabir, plus body-image scrutiny. Never imply this body is a 30-day result. Platforms limit reach on sexualised fitness content, so keep framing athletic. |
+| Persona | "The confident, no-excuses training partner." Not a medical expert. |
+| Use | Paid-ad A/B tests, **labelled as AI**, best suited to **US and global** placements. Not for the organic feed. |
+| Risks | Everything listed for Oliver, plus body-image scrutiny. Never imply this body is a 30-day result. |
 
-**MEERA block:**
+**MILA block:**
 ```
-MEERA — an original fictional AI-generated fitness host (not a real person): Indian woman,
-about 26, about 168 cm, beautiful with a warm friendly face, bright brown eyes, long
-dark-brown wavy hair in a high ponytail, glowing warm light-brown skin; very fit sculpted
-athletic hourglass physique — toned defined shoulders and arms, visible abs and obliques,
-narrow waist, strong rounded glutes, toned athletic legs; feminine and toned, not bulky;
-wearing a short cropped charcoal sports bra with a low V-neckline and thin straps, bare toned
-midriff, thin electric-cyan piping and a small cyan lightning-bolt emblem, matching charcoal
-high-waisted leggings with cyan side piping, white training shoes; confident sportswear-
-campaign posing.
+MILA — an original fictional AI-generated fitness host (not a real person, not resembling any
+celebrity): Russian woman, about 26, about 170 cm, beautiful with a warm confident face, high
+cheekbones, grey-green eyes, long light-blonde hair in a high ponytail, fair glowing skin;
+very fit sculpted athletic hourglass physique — toned defined shoulders and arms, visible abs
+and obliques, narrow waist, strong rounded glutes, toned athletic legs; feminine and toned,
+not bulky; wearing a short cropped charcoal sports bra with a low V-neckline and thin straps,
+bare toned midriff, thin electric-cyan piping and a small cyan lightning-bolt emblem, matching
+charcoal high-waisted leggings with cyan side piping, white training shoes; confident
+sportswear-campaign posing.
 ```
 
 ---

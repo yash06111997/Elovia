@@ -17,7 +17,7 @@ Codex. Researched 9 Nov 2026.
    give. Ela is **toned, not bulky.**
 3. **Other avatars, all designed and rendered** (`02`, `characters/`):
    - **Raja**, the muscular lion: a hype character, for about 1 in 10 episodes.
-   - **Kabir and Meera**, realistic humans: paid A/B tests only, always labelled as AI.
+   - **Oliver (British) and Mila (Russian)**, realistic humans: paid A/B tests only, always labelled as AI.
 4. **The plan:** 30 episodes, 16 Nov to 15 Dec. Elo 12, Ela 11, duo 3, Raja 3, founder 1.
    - Swolo's proven format, plus Level 1→2 honesty, a food and habit lane, India specials
      (murga pose, uthak-baithak, Surya Namaskar), try-it-now tests, and the real app in every video.
@@ -32,7 +32,7 @@ Codex. Researched 9 Nov 2026.
 | File | What's in it |
 |---|---|
 | [`07-swolo-teardown.md`](07-swolo-teardown.md) | **Start here.** Swolo's format, numbers, layer-by-layer teardown, and where Elovia beats them |
-| [`02-avatar-bible.md`](02-avatar-bible.md) | **Character sheets** for Elo, Ela, Raja, Kabir and Meera: specs, level-up system, expressions, poses, voice, copy-paste prompt blocks, consistency checklist, scorecard |
+| [`02-avatar-bible.md`](02-avatar-bible.md) | **Character sheets** for Elo, Ela, Raja, Oliver and Mila: specs, level-up system, expressions, poses, voice, copy-paste prompt blocks, consistency checklist, scorecard |
 | [`characters/`](characters/) | Rendered sheets (turnarounds and expressions), the Level 1/2/3 lineup, a style frame, and the demo MP4 |
 | [`04-30-video-plan.md`](04-30-video-plan.md) | The 30 episodes, each with hook, weekly beats, anatomy, honest payoff, app moment, source to verify and comment bait |
 | [`08-animation-toolchain.md`](08-animation-toolchain.md) | Every plugin, skill and MCP needed in Claude Code and Codex, plus the end-to-end episode pipeline |

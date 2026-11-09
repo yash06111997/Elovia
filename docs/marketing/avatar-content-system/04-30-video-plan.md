@@ -209,10 +209,10 @@ golden sheets, locking the voice and banking Days 1–7.
 | Eat 2 eggs at breakfast | Elo | 🌍 | Food lane (Swolo's eggs episode flopped; only do it with the Scan twist) |
 | Skip the 2AM snack (2AM Noodles cameo) | Elo | 🌍 | Food Gang cameo |
 | Rani (lioness) intro | Rani | 🌍 | Only if Raja tests well with women |
-| Kabir / Meera ad versions of D01 and D02 | Kabir, Meera | 🌍 | **Paid A/B only, labelled as AI** |
+| Oliver / Mila ad versions of D01 and D02 | Oliver, Mila | 🌍 | **Paid A/B only, labelled as AI** |
 
 ## Bank and review rules
 
 - Produce D01–D07 before posting D01. **D14, D25 and D30 depend on comments and data**, so make them 1–2 days before.
 - **Day 10 review:** compare Elo vs Ela, movement vs food, IN vs EN by saves and shares per 1K views. Give the winning lane more slots.
-- **Avatar test:** run Kabir and Meera only as paid or Instagram **Trial Reels** variants of the D01 and D02 scripts. Never on the main grid.
+- **Avatar test:** run Oliver and Mila only as paid or Instagram **Trial Reels** variants of the D01 and D02 scripts. Never on the main grid.
