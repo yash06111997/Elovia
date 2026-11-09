@@ -1,0 +1,22 @@
+{
+  "name": "elovia-video-studio",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Programmatic Elo/Ela short-form videos (Remotion). Standalone: not part of the pnpm workspace.",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts ThirtyDay out/thirty-day.mp4",
+    "render:episode": "node scripts/render-episode.mjs"
+  },
+  "dependencies": {
+    "@fontsource/inter": "5.3.0",
+    "@remotion/cli": "4.0.538",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "remotion": "4.0.538"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.8",
+    "typescript": "5.8.3"
+  }
+}

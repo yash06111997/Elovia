@@ -1,0 +1,73 @@
+{
+  "series": "30 DAYS \u00b7 LEGS",
+  "challenge": "wall sit",
+  "disclosure": "AI character \u00b7 illustrative",
+  "cta": "Start the 30-day wall sit in Elovia",
+  "beats": [
+    {
+      "seconds": 3.2,
+      "caption": "What happens if you wall sit every day for 30 days?",
+      "highlight": [
+        "30",
+        "days"
+      ],
+      "image": "elo/elo-l1.jpg",
+      "dayFrom": 1,
+      "dayTo": 1,
+      "level": 1,
+      "zoom": "in",
+      "layout": "character"
+    },
+    {
+      "seconds": 3.6,
+      "caption": "Week one. Your legs shake at thirty seconds.",
+      "highlight": [
+        "shake"
+      ],
+      "image": "elo/wall-sit.jpg",
+      "dayFrom": 1,
+      "dayTo": 7,
+      "level": 1,
+      "zoom": "in"
+    },
+    {
+      "seconds": 3.6,
+      "caption": "Week two. Your quads and glutes start adapting.",
+      "highlight": [
+        "quads",
+        "glutes"
+      ],
+      "image": "elo/wall-sit.jpg",
+      "dayFrom": 8,
+      "dayTo": 14,
+      "level": 1,
+      "zoom": "out"
+    },
+    {
+      "seconds": 3.6,
+      "caption": "Week four. Stairs feel easier. A full minute feels doable.",
+      "highlight": [
+        "minute"
+      ],
+      "image": "elo/elo-l2.jpg",
+      "dayFrom": 15,
+      "dayTo": 30,
+      "level": 2,
+      "zoom": "in",
+      "layout": "character"
+    },
+    {
+      "seconds": 3.4,
+      "caption": "No six-pack in 30 days. Stronger legs? Yes.",
+      "highlight": [
+        "stronger"
+      ],
+      "image": "elo/elo-l1.jpg",
+      "compareWith": "elo/elo-l2.jpg",
+      "dayFrom": 30,
+      "dayTo": 30,
+      "level": 2,
+      "zoom": "none"
+    }
+  ]
+}
